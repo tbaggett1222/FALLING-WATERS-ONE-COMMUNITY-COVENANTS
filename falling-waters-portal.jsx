@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -33,6 +33,14 @@ const SEED_COMMENTS = [
 const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
 const TOTAL_LOTS = 200;
 const VOTES_NEEDED = 134;
+const STR_CONCERN_OPTIONS = [
+  "Traffic & parking pressure",
+  "Parties, loud noise, and disturbances",
+  "Drug activity / security concerns",
+  "Wildlife safety (bear incidents)",
+  "Property value and neighborhood character",
+  "Legal clarity and enforceability",
+];
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -40,12 +48,15 @@ const store = {
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
+const todayLabel = () =>
+  new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
 // ── ICONS ────────────────────────────────────────────────────────────────────
 const Icon = {
   home: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>,
   doc: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>,
   compare: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></svg>,
-  warn: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><triangle points="12,2 2,22 22,22"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+  warn: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12,2 2,22 22,22"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
   home2: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
   vote: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20,6 9,17 4,12"/></svg>,
   chat: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>,
@@ -149,10 +160,9 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── HOME PAGE ────────────────────────────────────────────────────────────────
-function HomePage({ user, votes }) {
-  const total = votes.eliminate + votes.permit + votes.undecided;
-  const engaged = votes.eliminate + votes.permit;
-  const engPct = Math.round((engaged / TOTAL_LOTS) * 100);
+function HomePage({ votes, stats }) {
+  const communityEngaged = Math.min(TOTAL_LOTS, votes.eliminate + votes.permit + votes.undecided);
+  const engPct = Math.round((communityEngaged / TOTAL_LOTS) * 100);
   const yesPct = Math.round((votes.eliminate / TOTAL_LOTS) * 100);
   return (
     <div>
@@ -173,7 +183,7 @@ function HomePage({ user, votes }) {
         {[
           { num:TOTAL_LOTS, label:"Total lots", accent:C.forest },
           { num:VOTES_NEEDED, label:"Votes needed (2/3)", accent:C.stone },
-          { num:engaged, label:"Owners engaged", accent:"#2563EB" },
+          { num:communityEngaged, label:"Owners engaged", accent:"#2563EB" },
           { num:`${yesPct}%`, label:"Supporting STR elimination", accent:C.danger },
         ].map((s,i) => (
           <div key={i} style={S.statCard(s.accent)}>
@@ -186,10 +196,13 @@ function HomePage({ user, votes }) {
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <div style={S.card}>
           <div style={S.cardTitle}>Overall engagement</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have logged in and participated</div>
-          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{engaged} of {TOTAL_LOTS} lots engaged</span><span>{engPct}%</span></div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have participated in the survey process</div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{communityEngaged} of {TOTAL_LOTS} lots engaged</span><span>{engPct}%</span></div>
           <div style={S.meter}><div style={S.meterFill(engPct, C.forest)}/></div>
-          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {TOTAL_LOTS - engaged} owners not yet reached</div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {TOTAL_LOTS - communityEngaged} owners not yet reached</div>
+          <div style={{ marginTop:10, fontSize:12, color:C.muted, lineHeight:1.55 }}>
+            Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
+          </div>
         </div>
         <div style={S.card}>
           <div style={S.cardTitle}>STR vote progress</div>
@@ -321,6 +334,18 @@ function ComparisonPage() {
   return (
     <div>
       <div style={S.alert("warn")}><strong>Attorney-confirmed:</strong> Georgia will not impose a restriction not in an owner's chain of title. Owners whose title only includes the 2014 declaration have no short-term rental restriction today. The unified CC&R is the only way to establish consistent, enforceable rules for all 200 lots.</div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginBottom:12 }}>
+        {[
+          { title:"Biggest legal mismatch", body:"Only the 2021 document uses the strict 2/3 of all lots threshold. 2008 and 2014 rely on quorum-based meeting votes.", color:C.stone },
+          { title:"Biggest STR mismatch", body:"2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color:C.danger },
+          { title:"Biggest owner-protection mismatch", body:"2014 capped annual dues increases at 10%, but 2008 and 2021 do not include a cap.", color:"#1D4ED8" },
+        ].map((item, idx) => (
+          <div key={idx} style={{ ...S.card, marginBottom:0, borderTop:`3px solid ${item.color}` }}>
+            <div style={{ fontWeight:700, fontSize:13, color:item.color, marginBottom:6 }}>{item.title}</div>
+            <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{item.body}</div>
+          </div>
+        ))}
+      </div>
       <div style={{ ...S.card, padding:0, overflow:"hidden" }}>
         <div style={{ overflowX:"auto" }}>
           <table style={S.table}>
@@ -350,6 +375,151 @@ function ComparisonPage() {
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── PROPOSED UNIFIED CC&R PAGE ───────────────────────────────────────────────
+function ProposedCovenantPage() {
+  const strategy = [
+    {
+      phase: "1. Validate legal foundation",
+      detail:
+        "Finalize attorney memo confirming lawful adoption pathway, required notice periods, and recording requirements for all 200 lots.",
+    },
+    {
+      phase: "2. Publish one plain-language draft",
+      detail:
+        "Release one consolidated CC&R draft with change tracking from 2008, 2014, and 2021 documents so owners can see every difference.",
+    },
+    {
+      phase: "3. Owner comment and refinement",
+      detail:
+        "Collect lot-owner comments in the portal and by certified mail response cards, then issue a revised draft with response notes.",
+    },
+    {
+      phase: "4. Certified vote execution",
+      detail:
+        "Issue ballot package to every owner, allow proxy voting, and complete attorney-supervised tabulation against the 2/3-of-all-lots threshold.",
+    },
+    {
+      phase: "5. Record and enforce one standard",
+      detail:
+        "Record the approved declaration in county records and retire legacy ambiguity so one enforceable covenant applies to all lots.",
+    },
+  ];
+
+  const proposedArticles = [
+    {
+      article: "Article 1 — Community-Wide Applicability",
+      summary:
+        "One declaration binds all lots and supersedes inconsistent provisions from prior instruments upon valid adoption and recording.",
+      source: "Resolves 2008 / 2014 / 2021 patchwork and title ambiguity.",
+    },
+    {
+      article: "Article 2 — Amendment & Voting Standard",
+      summary:
+        "Any amendment requires affirmative approval of two-thirds (2/3) of all lots (134 of 200), not just a meeting quorum.",
+      source: "Uses the stricter 2021 threshold to prevent low-turnout governance changes.",
+    },
+    {
+      article: "Article 3 — Leasing and STR Rule",
+      summary:
+        "No rentals under 12 months unless the community later approves a regulated STR framework by the same 2/3 standard.",
+      source: "Restores original 2008 long-term leasing posture while creating explicit, enforceable STR clarity.",
+    },
+    {
+      article: "Article 4 — Nuisance, Safety, and Conduct",
+      summary:
+        "Adds explicit standards for noise, large parties, illegal drug activity, parking obstruction, and wildlife-feeding prohibitions.",
+      source: "Responds to owner concerns and closes enforcement gaps in current documents.",
+    },
+    {
+      article: "Article 5 — Assessment Guardrails",
+      summary:
+        "Annual assessment increases above 15% require owner approval; ordinary increases remain board-managed for operational continuity.",
+      source: "Balances 2014 owner protections with practical HOA operations.",
+    },
+    {
+      article: "Article 6 — Dispute Resolution",
+      summary:
+        "Mandatory mediation before litigation, while keeping a supermajority owner threshold for major litigation decisions.",
+      source: "Combines 2008 mediation-first posture with stronger community oversight.",
+    },
+  ];
+
+  return (
+    <div>
+      <div style={S.alert("info")}>
+        <strong>Draft proposal for One Community Covenant:</strong> this page presents the unified CC&R structure owners are being asked to evaluate. Final legal text will follow attorney markup and owner feedback.
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>What changes if we do nothing?</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 10 }}>
+          {[
+            {
+              title: "No single enforceable STR rule",
+              detail:
+                "Some lots remain unrestricted while others are restricted, increasing conflict, perceived unfairness, and enforcement failures.",
+              color: C.danger,
+            },
+            {
+              title: "Higher sale and financing friction",
+              detail:
+                "Conflicting covenants continue to trigger lender/title scrutiny, delaying closings and adding legal cost for owners.",
+              color: "#9A3412",
+            },
+            {
+              title: "Governance legitimacy risk",
+              detail:
+                "Selective enforcement weakens trust in the HOA and increases legal disputes over board authority.",
+              color: C.amber,
+            },
+          ].map((item, idx) => (
+            <div key={idx} style={{ border: `1px solid ${C.border}`, borderTop: `3px solid ${item.color}`, borderRadius: 8, padding: "12px 14px", background: C.white }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: item.color, marginBottom: 6 }}>{item.title}</div>
+              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{item.detail}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Proposed unified CC&R articles</div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={{ ...S.th, minWidth: 220 }}>Proposed article</th>
+                <th style={{ ...S.th, minWidth: 320 }}>Summary</th>
+                <th style={{ ...S.th, minWidth: 280 }}>Why this provision exists</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proposedArticles.map((row, i) => (
+                <tr key={i} style={{ background: i % 2 === 0 ? C.white : C.parchment }}>
+                  <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.article}</td>
+                  <td style={S.td}>{row.summary}</td>
+                  <td style={{ ...S.td, color: C.muted }}>{row.source}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Strategy to get to One Community Covenant</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10, marginTop: 10 }}>
+          {strategy.map((step, i) => (
+            <div key={i} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", background: C.parchment }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: C.forest, marginBottom: 4 }}>{step.phase}</div>
+              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{step.detail}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
@@ -457,8 +627,15 @@ function RisksPage() {
 
 // ── COMMENTS PAGE ────────────────────────────────────────────────────────────
 function CommentsPage({ user, comments, onAdd }) {
-  const [topic, setTopic] = useState("all"); const [stance, setStance] = useState(""); const [text, setText] = useState(""); const [submitting, setSubmitting] = useState(false); const [done, setDone] = useState(false);
-  const filtered = comments.filter(c => (topic==="all" || c.topic===topic) && (stance==="" || c.stance===stance));
+  const [formTopic, setFormTopic] = useState("str");
+  const [formStance, setFormStance] = useState("");
+  const [formConcern, setFormConcern] = useState(STR_CONCERN_OPTIONS[0]);
+  const [filterTopic, setFilterTopic] = useState("all");
+  const [filterStance, setFilterStance] = useState("");
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const filtered = comments.filter(c => (filterTopic==="all" || c.topic===filterTopic) && (filterStance==="" || c.stance===filterStance));
   const topicLabels = { str:"Short-term rentals", general:"General covenants", process:"Process & voting" };
   const stanceColors = { restrict:{ c:C.danger, bg:C.dangerLight, label:"Supports restriction" }, permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports permitting" }, neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" } };
   const submit = (e) => {
@@ -466,8 +643,17 @@ function CommentsPage({ user, comments, onAdd }) {
     if (text.trim().length < 20) return;
     setSubmitting(true);
     setTimeout(() => {
-      onAdd({ id:Date.now(), lot:user.lot, name:user.name, ts:"Aug 25, 2026", topic, stance: stance || "neutral", text:text.trim() });
-      setText(""); setStance(""); setDone(true); setSubmitting(false);
+      onAdd({
+        id:Date.now(),
+        lot:user.lot,
+        name:user.name,
+        ts:todayLabel(),
+        topic:formTopic,
+        stance: formStance || "neutral",
+        concern: formConcern,
+        text:text.trim(),
+      });
+      setText(""); setFormStance(""); setDone(true); setSubmitting(false);
       setTimeout(() => setDone(false), 4000);
     }, 600);
   };
@@ -482,7 +668,7 @@ function CommentsPage({ user, comments, onAdd }) {
             <form onSubmit={submit}>
               <div style={{ marginBottom:12 }}>
                 <label style={S.label}>Topic</label>
-                <select style={S.select} value={topic} onChange={e=>setTopic(e.target.value)}>
+                <select style={S.select} value={formTopic} onChange={e=>setFormTopic(e.target.value)}>
                   <option value="str">Short-term rentals</option>
                   <option value="general">General covenants</option>
                   <option value="process">Process & voting</option>
@@ -490,11 +676,17 @@ function CommentsPage({ user, comments, onAdd }) {
               </div>
               <div style={{ marginBottom:12 }}>
                 <label style={S.label}>My position</label>
-                <select style={S.select} value={stance} onChange={e=>setStance(e.target.value)}>
+                <select style={S.select} value={formStance} onChange={e=>setFormStance(e.target.value)}>
                   <option value="">— Select —</option>
                   <option value="restrict">I support restricting STRs</option>
                   <option value="permit">I support permitting STRs</option>
                   <option value="neutral">Neutral / I have a question</option>
+                </select>
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <label style={S.label}>Primary concern</label>
+                <select style={S.select} value={formConcern} onChange={e=>setFormConcern(e.target.value)}>
+                  {STR_CONCERN_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
               </div>
               <div style={{ marginBottom:14 }}>
@@ -512,7 +704,7 @@ function CommentsPage({ user, comments, onAdd }) {
             <div style={S.cardTitle}>Filter comments</div>
             <div style={{ marginBottom:10 }}>
               <label style={S.label}>Topic</label>
-              <select style={S.select} value={topic} onChange={e=>setTopic(e.target.value)}>
+              <select style={S.select} value={filterTopic} onChange={e=>setFilterTopic(e.target.value)}>
                 <option value="all">All topics</option>
                 <option value="str">Short-term rentals</option>
                 <option value="general">General covenants</option>
@@ -521,7 +713,7 @@ function CommentsPage({ user, comments, onAdd }) {
             </div>
             <div>
               <label style={S.label}>Position</label>
-              <select style={S.select} value={stance} onChange={e=>setStance(e.target.value)}>
+              <select style={S.select} value={filterStance} onChange={e=>setFilterStance(e.target.value)}>
                 <option value="">All positions</option>
                 <option value="restrict">Supports restriction</option>
                 <option value="permit">Supports permitting</option>
@@ -546,6 +738,7 @@ function CommentsPage({ user, comments, onAdd }) {
                   <div style={{ display:"flex", gap:6, flexShrink:0 }}>
                     <span style={S.badge(sc.c, sc.bg)}>{sc.label}</span>
                     <span style={S.badge(C.muted, C.parchmentDark)}>{topicLabels[c.topic] || c.topic}</span>
+                    {c.concern && <span style={S.badge("#4338CA", "#E0E7FF")}>{c.concern}</span>}
                   </div>
                 </div>
                 <div style={{ fontSize:13, color:C.ink, lineHeight:1.7 }}>{c.text}</div>
@@ -559,9 +752,9 @@ function CommentsPage({ user, comments, onAdd }) {
 }
 
 // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
-function DashboardPage({ votes, comments }) {
-  const engaged = votes.eliminate + votes.permit;
-  const notVoted = TOTAL_LOTS - votes.eliminate - votes.permit - votes.undecided;
+function DashboardPage({ votes, comments, stats }) {
+  const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
+  const notEngaged = Math.max(0, TOTAL_LOTS - surveyEngaged);
   const strComments = comments.filter(c => c.topic === "str");
   const restrictCount = comments.filter(c => c.stance === "restrict").length;
   const permitCount = comments.filter(c => c.stance === "permit").length;
@@ -571,16 +764,32 @@ function DashboardPage({ votes, comments }) {
     { num:3, label:"Draft & deliberate", status:"pending", detail:"Working group drafts unified CC&R · Two 30-day comment periods · Community meetings" },
     { num:4, label:"Formal vote", status:"pending", detail:"Certified mail ballots to all 200 lots · Attorney-supervised count · Record in Gilmer County" },
   ];
-  const statusColors = { active:C.stone, pending:C.border, done:C.success };
   return (
     <div>
       <div style={S.statGrid}>
         {[
           { num:TOTAL_LOTS, label:"Total lots", accent:C.forest },
-          { num:engaged, label:"Owners engaged", accent:"#2563EB" },
-          { num:`${Math.round((engaged/TOTAL_LOTS)*100)}%`, label:"Engagement rate", accent:C.stone },
+          { num:surveyEngaged, label:"Survey engaged", accent:"#2563EB" },
+          { num:`${Math.round((surveyEngaged/TOTAL_LOTS)*100)}%`, label:"Engagement rate", accent:C.stone },
           { num:comments.length, label:"Comments posted", accent:"#7C3AED" },
         ].map((s,i) => <div key={i} style={S.statCard(s.accent)}><div style={S.statNum}>{s.num}</div><div style={S.statLabel}>{s.label}</div></div>)}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Owner engagement funnel (portal tracked)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginTop: 10 }}>
+          {[
+            { label: "Logged in", value: stats.loggedInLots, color: C.forest },
+            { label: "Commented", value: stats.commentedLots, color: "#7C3AED" },
+            { label: "Voted", value: stats.votedLots, color: C.danger },
+            { label: "Need outreach", value: Math.max(TOTAL_LOTS - stats.loggedInLots, 0), color: C.border },
+          ].map((m, i) => (
+            <div key={i} style={{ border: `1px solid ${C.border}`, borderTop: `3px solid ${m.color}`, borderRadius: 8, padding: "12px 14px", background: C.white }}>
+              <div style={{ fontSize: 24, fontWeight: 700, color: C.forest, fontFamily: "Georgia,serif" }}>{m.value}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{m.label}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
@@ -591,7 +800,7 @@ function DashboardPage({ votes, comments }) {
             { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
             { label:"Permit with regulation", val:votes.permit, color:C.stone },
             { label:"Undecided — engaged", val:votes.undecided, color:"#3B82F6" },
-            { label:"Not yet reached", val:notVoted, color:C.border },
+              { label:"Not yet reached", val:notEngaged, color:C.border },
           ].map((r,i) => (
             <div key={i} style={{ marginBottom:10 }}>
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
@@ -695,24 +904,65 @@ export default function App() {
   const [page, setPage] = useState("home");
   const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
   const [comments, setComments] = useState(() => store.get("fw_comments") || SEED_COMMENTS);
+  const [ownerActivity, setOwnerActivity] = useState(() => store.get("fw_owner_activity") || {});
+  const [voteLedger, setVoteLedger] = useState(() => store.get("fw_vote_ledger") || {});
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+  useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
+  useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
 
-  const handleLogin = (u) => { store.set("fw_user", u); setUser(u); };
+  const trackOwner = (lot, patch = {}) => {
+    if (!lot) return;
+    setOwnerActivity((prev) => ({
+      ...prev,
+      [lot]: {
+        hasLoggedIn: true,
+        lastActive: todayLabel(),
+        ...prev[lot],
+        ...patch,
+      },
+    }));
+  };
+
+  const handleLogin = (u) => {
+    store.set("fw_user", u);
+    setUser(u);
+    trackOwner(u.lot, { name: u.name });
+  };
   const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
 
   const handleVote = (choice) => {
-    const prev = store.get(`vote_${user.lot}`);
-    const newVotes = { ...votes };
-    if (prev) { newVotes[prev] = Math.max(0, newVotes[prev] - 1); newVotes.undecided = Math.min(TOTAL_LOTS - newVotes.eliminate - newVotes.permit, newVotes.undecided + (prev === "undecided" ? 0 : 0)); }
-    else { newVotes.undecided = Math.max(0, newVotes.undecided - 1); }
-    newVotes[choice] = (newVotes[choice] || 0) + 1;
-    setVotes(newVotes);
+    const prev = voteLedger[user.lot] || store.get(`vote_${user.lot}`);
+    if (prev === choice) return;
+
+    setVotes((priorVotes) => {
+      const nextVotes = { ...priorVotes };
+      if (prev) {
+        nextVotes[prev] = Math.max(0, (nextVotes[prev] || 0) - 1);
+      } else {
+        nextVotes.undecided = Math.max(0, (nextVotes.undecided || 0) - 1);
+      }
+      nextVotes[choice] = (nextVotes[choice] || 0) + 1;
+      return nextVotes;
+    });
+
+    setVoteLedger((prevLedger) => ({ ...prevLedger, [user.lot]: choice }));
     store.set(`vote_${user.lot}`, choice);
+    trackOwner(user.lot, { voteChoice: choice, votedAt: todayLabel(), name: user.name });
   };
 
-  const handleAddComment = (c) => setComments(prev => [c, ...prev]);
+  const handleAddComment = (c) => {
+    setComments(prev => [c, ...prev]);
+    trackOwner(c.lot, { commented: true, name: c.name });
+  };
+
+  const activityRows = Object.values(ownerActivity);
+  const stats = {
+    loggedInLots: activityRows.length,
+    commentedLots: activityRows.filter((row) => row.commented).length,
+    votedLots: activityRows.filter((row) => row.voteChoice).length,
+  };
 
   if (!user) return <LoginScreen onLogin={handleLogin}/>;
 
@@ -720,13 +970,23 @@ export default function App() {
     { id:"home", label:"Overview", icon:<Icon.home/> },
     { id:"documents", label:"CC&R Documents", icon:<Icon.doc/> },
     { id:"comparison", label:"Side-by-side compare", icon:<Icon.compare/> },
+    { id:"proposed", label:"Proposed One CC&R", icon:<Icon.star/> },
     { id:"risks", label:"Risks of inaction", icon:<Icon.home2/> },
     { id:"str", label:"STR — key issue", icon:<Icon.vote/> },
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
   ];
 
-  const pageTitles = { home:"Overview", documents:"CC&R Documents", comparison:"Side-by-side comparison", risks:"Risks of inaction", str:"Short-term rentals", comments:"Community comments", dashboard:"Campaign dashboard" };
+  const pageTitles = {
+    home:"Overview",
+    documents:"CC&R Documents",
+    comparison:"Side-by-side comparison",
+    proposed:"Proposed One Community CC&R",
+    risks:"Risks of inaction",
+    str:"Short-term rentals",
+    comments:"Community comments",
+    dashboard:"Campaign dashboard",
+  };
 
   return (
     <div style={S.app}>
@@ -763,13 +1023,14 @@ export default function App() {
           </div>
         </div>
         <div style={S.content}>
-          {page === "home" && <HomePage user={user} votes={votes}/>}
+          {page === "home" && <HomePage votes={votes} stats={stats}/>}
           {page === "documents" && <DocumentsPage/>}
           {page === "comparison" && <ComparisonPage/>}
+          {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
           {page === "str" && <STRPage user={user} votes={votes} onVote={handleVote}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
-          {page === "dashboard" && <DashboardPage votes={votes} comments={comments}/>}
+          {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
         </div>
       </div>
     </div>
