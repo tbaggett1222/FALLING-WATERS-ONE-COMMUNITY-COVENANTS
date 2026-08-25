@@ -1,0 +1,27 @@
+{
+  "name": "workspace",
+  "version": "1.0.0",
+  "description": "Falling Waters One Community Covenants",
+  "main": "index.js",
+  "scripts": {
+    "build": "esbuild site-entry.jsx --bundle --format=iife --global-name=FallingWatersPortal --outfile=app.js",
+    "build:min": "esbuild site-entry.jsx --bundle --minify --format=iife --global-name=FallingWatersPortal --outfile=app.js",
+    "test": "echo \"No automated tests configured\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tbaggett1222/FALLING-WATERS-ONE-COMMUNITY-COVENANTS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tbaggett1222/FALLING-WATERS-ONE-COMMUNITY-COVENANTS/issues"
+  },
+  "homepage": "https://github.com/tbaggett1222/FALLING-WATERS-ONE-COMMUNITY-COVENANTS#readme",
+  "dependencies": {
+    "esbuild": "^0.28.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  }
+}
