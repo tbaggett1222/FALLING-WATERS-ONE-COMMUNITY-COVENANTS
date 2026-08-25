@@ -1,0 +1,777 @@
+import { useState, useEffect, useRef } from "react";
+
+// ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
+const C = {
+  forest: "#1C3A2E",
+  forestLight: "#2A5240",
+  stone: "#C4A882",
+  stoneDark: "#A08060",
+  parchment: "#F7F4EF",
+  parchmentDark: "#EDE9E0",
+  ink: "#1A1A1A",
+  muted: "#6B7280",
+  danger: "#8B1A1A",
+  dangerLight: "#FEE2E2",
+  success: "#14532D",
+  successLight: "#DCFCE7",
+  amber: "#78350F",
+  amberLight: "#FEF3C7",
+  border: "#D4CFC6",
+  white: "#FFFFFF",
+};
+
+// ── SEED DATA ────────────────────────────────────────────────────────────────
+const SEED_COMMENTS = [
+  { id: 1, lot: "Lot 12", name: "J. Harmon", ts: "Aug 18, 2026", topic: "str", stance: "restrict", text: "We moved here for the peace and quiet of a mountain community — not to live next door to a revolving-door rental. Last summer our neighbors hosted 14 different groups in 3 months. The noise, trash, and parking on the road made life miserable. We need a clear restriction." },
+  { id: 2, lot: "Lot 47", name: "M. Delgado", ts: "Aug 19, 2026", topic: "str", stance: "permit", text: "I purchased my lot specifically because there was no STR restriction in the 2014 covenants. My lot is my retirement income. I support reasonable regulation — 7-night minimum, registration — but an outright ban would be a significant financial hardship." },
+  { id: 3, lot: "Lot 88", name: "R. Patel", ts: "Aug 20, 2026", topic: "general", stance: "neutral", text: "The key issue for me is the covenant legitimacy problem. I tried to sell my lot last year and two title companies flagged the conflicting covenant situation. It cost me a deal. I'll support whatever unified covenant gets us clean title." },
+  { id: 4, lot: "Lot 23", name: "C. Whitfield", ts: "Aug 21, 2026", topic: "str", stance: "restrict", text: "Short-term rentals bring strangers into a community that has no gate, no security, and backs up to bear habitat. We just had a bear incident because someone was feeding wildlife. STR guests don't know the rules, don't care about the rules, and the owner isn't here to enforce them." },
+  { id: 5, lot: "Lot 156", name: "T. Nguyen", ts: "Aug 22, 2026", topic: "process", stance: "neutral", text: "I'm supportive of the unification effort but want to make sure vacant lot owners like me have a real voice. Can the working group confirm that proxy voting will be available? I live in Atlanta and can't attend meetings." },
+  { id: 6, lot: "Lot 34", name: "S. Burke", ts: "Aug 23, 2026", topic: "str", stance: "restrict", text: "The 2008 declaration required a 1-year minimum lease. STRs were never legally permitted in the original covenants. Our attorney confirmed this. I don't understand why we're treating this as a new restriction — it isn't. We're just making explicit what was always the rule." },
+];
+
+const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
+const TOTAL_LOTS = 200;
+const VOTES_NEEDED = 134;
+
+// ── STORAGE HELPERS ──────────────────────────────────────────────────────────
+const store = {
+  get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+// ── ICONS ────────────────────────────────────────────────────────────────────
+const Icon = {
+  home: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>,
+  doc: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>,
+  compare: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></svg>,
+  warn: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><triangle points="12,2 2,22 22,22"/><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+  home2: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+  vote: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20,6 9,17 4,12"/></svg>,
+  chat: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>,
+  dash: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
+  user: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+  logout: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+  lock: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
+  star: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>,
+  mountain: () => (
+    <svg width="32" height="20" viewBox="0 0 120 40" fill="none">
+      <polyline points="0,40 30,8 50,22 75,2 100,20 120,12 120,40" fill={C.forest} opacity="0.15" stroke={C.stone} strokeWidth="1.5"/>
+    </svg>
+  ),
+};
+
+// ── STYLES ───────────────────────────────────────────────────────────────────
+const S = {
+  app: { display:"flex", minHeight:"100vh", background:C.parchment, fontFamily:"system-ui,-apple-system,sans-serif", color:C.ink },
+  sidebar: { width:240, background:C.forest, display:"flex", flexDirection:"column", position:"sticky", top:0, height:"100vh", flexShrink:0 },
+  sidebarTop: { padding:"24px 20px 16px", borderBottom:`1px solid rgba(255,255,255,0.1)` },
+  sidebarLogo: { fontFamily:"Georgia,serif", fontSize:18, fontWeight:"bold", color:C.white, lineHeight:1.2, marginBottom:4 },
+  sidebarSub: { fontSize:11, color:C.stone, textTransform:"uppercase", letterSpacing:"0.08em" },
+  sidebarUser: { padding:"12px 20px", borderBottom:`1px solid rgba(255,255,255,0.1)`, fontSize:12, color:C.stone },
+  sidebarNav: { flex:1, padding:"12px 0", overflowY:"auto" },
+  navItem: (active) => ({ display:"flex", alignItems:"center", gap:10, padding:"10px 20px", cursor:"pointer", fontSize:13, fontWeight: active ? 600 : 400, color: active ? C.white : "rgba(255,255,255,0.65)", background: active ? "rgba(196,168,130,0.2)" : "transparent", borderLeft: active ? `3px solid ${C.stone}` : "3px solid transparent", transition:"all .15s" }),
+  sidebarBottom: { padding:"16px 20px", borderTop:`1px solid rgba(255,255,255,0.1)` },
+  main: { flex:1, overflowY:"auto" },
+  topbar: { background:C.white, borderBottom:`1px solid ${C.border}`, padding:"14px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:10 },
+  topbarTitle: { fontFamily:"Georgia,serif", fontSize:20, fontWeight:"bold", color:C.forest },
+  content: { padding:"28px 32px", maxWidth:1100 },
+  card: { background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:"20px 24px", marginBottom:16 },
+  cardTitle: { fontFamily:"Georgia,serif", fontSize:17, fontWeight:"bold", color:C.forest, marginBottom:8 },
+  badge: (color, bg) => ({ display:"inline-flex", alignItems:"center", gap:4, fontSize:11, padding:"3px 10px", borderRadius:20, background:bg, color:color, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em" }),
+  btn: (variant="primary") => ({
+    display:"inline-flex", alignItems:"center", gap:6, padding:"9px 20px", borderRadius:6, fontSize:13, fontWeight:600, cursor:"pointer", border:"none", transition:"all .15s",
+    ...(variant === "primary" ? { background:C.forest, color:C.white } :
+       variant === "stone" ? { background:C.stone, color:C.forest } :
+       variant === "danger" ? { background:C.danger, color:C.white } :
+       variant === "outline" ? { background:"transparent", color:C.forest, border:`1px solid ${C.forest}` } :
+       { background:C.parchmentDark, color:C.ink, border:`1px solid ${C.border}` })
+  }),
+  input: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none", boxSizing:"border-box" },
+  textarea: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none", resize:"vertical", minHeight:90, boxSizing:"border-box" },
+  label: { display:"block", fontSize:12, fontWeight:600, color:C.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.05em" },
+  select: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none" },
+  alert: (type) => ({ padding:"12px 16px", borderRadius:6, fontSize:13, lineHeight:1.6, marginBottom:12, border:`1px solid`, ...(type==="warn" ? { background:C.amberLight, color:C.amber, borderColor:"#D97706" } : type==="danger" ? { background:C.dangerLight, color:C.danger, borderColor:C.danger } : type==="success" ? { background:C.successLight, color:C.success, borderColor:"#16A34A" } : { background:"#EFF6FF", color:"#1E40AF", borderColor:"#3B82F6" }) }),
+  table: { width:"100%", borderCollapse:"collapse", fontSize:13 },
+  th: { textAlign:"left", padding:"8px 12px", fontWeight:600, background:C.forest, color:C.white, fontSize:12, textTransform:"uppercase", letterSpacing:"0.05em" },
+  td: { padding:"9px 12px", borderBottom:`1px solid ${C.border}`, verticalAlign:"top", lineHeight:1.5 },
+  meter: { height:20, borderRadius:10, background:C.parchmentDark, overflow:"hidden", position:"relative", margin:"8px 0" },
+  meterFill: (pct, color) => ({ height:"100%", width:`${pct}%`, background:color, borderRadius:10, transition:"width 1s ease" }),
+  pill: (c, bg) => ({ display:"inline-block", padding:"2px 10px", borderRadius:20, fontSize:11, fontWeight:600, color:c, background:bg }),
+  statGrid: { display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:20 },
+  statCard: (accent) => ({ background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:"16px 20px", borderTop:`3px solid ${accent}` }),
+  statNum: { fontSize:28, fontWeight:700, color:C.forest, fontFamily:"Georgia,serif" },
+  statLabel: { fontSize:12, color:C.muted, marginTop:2 },
+};
+
+// ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin }) {
+  const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [err, setErr] = useState("");
+  const handle = (e) => {
+    e.preventDefault();
+    if (!lot.trim() || !name.trim() || pw.length < 4) { setErr("Please enter your lot number, name, and a password (min 4 characters)."); return; }
+    const user = { lot: lot.trim(), name: name.trim(), isAdmin: lot.trim().toLowerCase() === "admin" };
+    onLogin(user);
+  };
+  return (
+    <div style={{ minHeight:"100vh", background:C.forest, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <div style={{ background:C.white, borderRadius:12, padding:40, width:"100%", maxWidth:420, boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ textAlign:"center", marginBottom:28 }}>
+          <div style={{ display:"flex", justifyContent:"center", marginBottom:8 }}><Icon.mountain/></div>
+          <div style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest, lineHeight:1.2 }}>Falling Waters</div>
+          <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Community Covenant Portal</div>
+        </div>
+        <div style={S.alert("info")}>Enter your lot number and name to access the portal. Your identity will be associated with your comments and vote.</div>
+        {err && <div style={S.alert("danger")}>{err}</div>}
+        <form onSubmit={handle}>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Lot number or "ADMIN"</label>
+            <input style={S.input} placeholder="e.g. Lot 42 or 123" value={lot} onChange={e=>setLot(e.target.value)}/>
+          </div>
+          <div style={{ marginBottom:14 }}>
+            <label style={S.label}>Your name</label>
+            <input style={S.input} placeholder="First and last name" value={name} onChange={e=>setName(e.target.value)}/>
+          </div>
+          <div style={{ marginBottom:20 }}>
+            <label style={S.label}>Create / enter a password</label>
+            <input style={S.input} type="password" placeholder="Min 4 characters" value={pw} onChange={e=>setPw(e.target.value)}/>
+          </div>
+          <button type="submit" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", padding:"11px 20px", fontSize:14 }}>
+            <Icon.lock/> Enter the portal
+          </button>
+        </form>
+        <div style={{ fontSize:11, color:C.muted, marginTop:16, textAlign:"center", lineHeight:1.6 }}>
+          This portal is for Falling Waters lot owners only.<br/>Your participation is voluntary and your vote is confidential.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── HOME PAGE ────────────────────────────────────────────────────────────────
+function HomePage({ user, votes }) {
+  const total = votes.eliminate + votes.permit + votes.undecided;
+  const engaged = votes.eliminate + votes.permit;
+  const engPct = Math.round((engaged / TOTAL_LOTS) * 100);
+  const yesPct = Math.round((votes.eliminate / TOTAL_LOTS) * 100);
+  return (
+    <div>
+      <div style={{ background:`linear-gradient(135deg, ${C.forest} 0%, ${C.forestLight} 100%)`, borderRadius:10, padding:"28px 32px", marginBottom:20, color:C.white, position:"relative", overflow:"hidden" }}>
+        <div style={{ position:"absolute", right:0, bottom:0, opacity:0.12 }}>
+          <svg width="300" height="100" viewBox="0 0 300 100"><polyline points="0,100 60,20 100,55 160,5 220,40 280,15 300,25 300,100" fill={C.white}/></svg>
+        </div>
+        <div style={{ fontFamily:"Georgia,serif", fontSize:13, color:C.stone, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:6 }}>Falling Waters Residential Association</div>
+        <h1 style={{ fontFamily:"Georgia,serif", fontSize:28, margin:"0 0 8px", lineHeight:1.2 }}>One Community, One Covenant</h1>
+        <p style={{ fontSize:14, color:"rgba(255,255,255,0.8)", maxWidth:560, margin:"0 0 20px", lineHeight:1.6 }}>A community-led effort to adopt a single, legally valid set of CC&Rs binding all 200 lots — transparently, fairly, and permanently.</p>
+        <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
+          <span style={{ background:"rgba(196,168,130,0.25)", border:`1px solid ${C.stone}`, color:C.stone, padding:"4px 14px", borderRadius:20, fontSize:12, fontWeight:600 }}>⚖ Phase 1 — Legal review in progress</span>
+          <span style={{ background:"rgba(255,255,255,0.1)", color:"rgba(255,255,255,0.8)", padding:"4px 14px", borderRadius:20, fontSize:12 }}>Attorney engaged · Aug 2026</span>
+        </div>
+      </div>
+
+      <div style={S.statGrid}>
+        {[
+          { num:TOTAL_LOTS, label:"Total lots", accent:C.forest },
+          { num:VOTES_NEEDED, label:"Votes needed (2/3)", accent:C.stone },
+          { num:engaged, label:"Owners engaged", accent:"#2563EB" },
+          { num:`${yesPct}%`, label:"Supporting STR elimination", accent:C.danger },
+        ].map((s,i) => (
+          <div key={i} style={S.statCard(s.accent)}>
+            <div style={S.statNum}>{s.num}</div>
+            <div style={S.statLabel}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+        <div style={S.card}>
+          <div style={S.cardTitle}>Overall engagement</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have logged in and participated</div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{engaged} of {TOTAL_LOTS} lots engaged</span><span>{engPct}%</span></div>
+          <div style={S.meter}><div style={S.meterFill(engPct, C.forest)}/></div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {TOTAL_LOTS - engaged} owners not yet reached</div>
+        </div>
+        <div style={S.card}>
+          <div style={S.cardTitle}>STR vote progress</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current sentiment toward eliminating short-term rentals</div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} not voted</span><span>{yesPct}% support elimination</span></div>
+          <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
+            <div style={{ width:`${(votes.eliminate/TOTAL_LOTS)*100}%`, background:C.danger, transition:"width 1s" }}/>
+            <div style={{ width:`${(votes.permit/TOTAL_LOTS)*100}%`, background:C.stone, transition:"width 1s" }}/>
+            <div style={{ flex:1, background:C.parchmentDark }}/>
+          </div>
+          <div style={{ display:"flex", gap:14, fontSize:11, color:C.muted }}>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate STRs ({votes.eliminate})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit STRs ({votes.permit})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({votes.undecided})</span>
+          </div>
+          <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {VOTES_NEEDED} votes to eliminate STRs. Currently {VOTES_NEEDED - votes.eliminate} votes short.</div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Why this matters — the urgent case for a unified CC&R</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginTop:12 }}>
+          {[
+            { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
+            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
+            { icon:"🐻", title:"Safety and community character", text:"STR guests don't know our community rules — bear feeding, noise, parking, fire safety. We've already had a bear attack. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts all residents at risk." },
+          ].map((item,i) => (
+            <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
+              <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
+              <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.forest }}>{item.title}</div>
+              <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{item.text}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DOCUMENTS PAGE ───────────────────────────────────────────────────────────
+function DocumentsPage() {
+  const [open, setOpen] = useState(null);
+  const docs = [
+    { id:"2008", year:2008, title:"Master Declaration of CC&Rs", preparer:"Clear Creek Properties LLC · Balch & Bingham LLP", filed:"May 28, 2008", ref:"Deed Book 1479, Page 194 — Gilmer County", status:"original", statusLabel:"Original", sections:[
+      { heading:"Amendment threshold", text:"Section 14.2(c): 67% of total Class A votes in the Association. By-Laws set a quorum of 10% for meetings. This is the foundational threshold against which all subsequent amendment attempts must be measured." },
+      { heading:"Leasing (Section 10.4)", text:"Lots may be leased for residential purposes only. All leases shall be in writing and for a term of at least one (1) year. No hardship system — leasing was broadly permitted with a 1-year minimum. This is the original standard the working group proposes to restore." },
+      { heading:"Short-term rentals", text:"Silent on STRs by name — Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
+      { heading:"Georgia POA Act", text:"Explicitly opted OUT of O.C.G.A. §44-3-220. The 2008 document states it was not intended to create a property owners' development within the meaning of that Act. This is a developer protection, not an owner protection." },
+      { heading:"Minimum home size", text:"Not specified in the declaration — deferred entirely to the Architectural Review Board (ARB) and design guidelines. No square footage minimums are set in the 2008 document itself." },
+      { heading:"Assessment cap", text:"No annual increase cap. Budget may be disapproved by 67% of Class A votes. The Board sets amounts at its discretion." },
+      { heading:"Dispute resolution (Section 14.5)", text:"Strongly encourages mediation and arbitration before litigation. Litigation requires 80% of Class A votes — a high bar designed to prevent the Association from becoming litigious." },
+      { heading:"Duration", text:"Perpetual. Auto-renews every 20 years. Termination within first 20 years requires 90% owner consent — very high bar for dissolution." },
+    ]},
+    { id:"2014", year:2014, title:"Declaration of Covenants, Reservations and Restrictions", preparer:"Highland Falls LLC (post-bankruptcy declarant)", filed:"April 14, 2014", ref:"Deed Book 1860, Pages 188-202 — Gilmer/Pickens Counties", status:"active2014", statusLabel:"Active — Phase II lots", sections:[
+      { heading:"Amendment threshold", text:"67% of members voting at a duly noticed meeting, with a 50% quorum required. This is meaningfully different from the 2008 document — with 50% quorum (100 lots present), only 67 votes could pass an amendment. The lower turnout required makes this easier to satisfy." },
+      { heading:"Short-term rentals — THE CRITICAL GAP", text:"Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable STR restriction. This is the gap the unified CC&R must close." },
+      { heading:"Long-term leasing", text:"Also not addressed. The 2014 document contains no leasing section whatsoever, creating uncertainty for tenants, lenders, and title companies on Phase II lots." },
+      { heading:"Minimum home size", text:"1,400 sf for single-level residences; 1,800 sf for two-level residences; minimum 1,400 sf on first floor. The only document of the three to specify minimums. The working group proposes restoring this standard in the unified CC&R." },
+      { heading:"Assessment cap", text:"Maximum 10% annual increase without a member vote. The only document with a cap. This provision protects owners from unchecked dues increases and was quietly removed in the 2021 document." },
+      { heading:"Georgia POA Act", text:"Not addressed — neither opts in nor opts out. This creates further ambiguity about which statutory protections apply to Phase II lot owners." },
+      { heading:"Duration", text:"Runs until January 1, 2040, then auto-renews in 10-year increments. A future expiration date — unlike the 2008 and 2021 documents, which are perpetual." },
+    ]},
+    { id:"2021", year:2021, title:"Consolidated, Amended and Restated Declaration", preparer:"Falling Waters Residential Association, Inc. · Dorough & Dorough LLC", filed:"December 3, 2021", ref:"Deed Book 02453 — Gilmer County", status:"disputed", statusLabel:"Disputed — consent form only", sections:[
+      { heading:"Adoption method — the legitimacy issue", text:"The 2021 document was adopted through individual owner consent forms, not a community-wide vote meeting the 67% threshold required by the 2008 and 2014 documents. Only lots whose owners signed consent forms are bound by it. Non-signers remain under their prior declaration. This patchwork is the core legal problem." },
+      { heading:"Amendment threshold", text:"2/3 of ALL 200 lot owners (134 votes), regardless of meeting attendance. The most rigorous standard of the three — and the standard the working group proposes to adopt for the unified CC&R, because it prevents a low-turnout meeting from permanently changing everyone's property rights." },
+      { heading:"Short-term rentals (Section 8.6)", text:"Absolute prohibition. 'Under no circumstances shall a Unit be leased, rented or used for short-term transient or hotel purposes or rented through short-term internet rental services, including, without limitation, VRBO, Airbnb, HomeAway, or such other similar rental services.' However, this ban only binds consent-form signers." },
+      { heading:"Long-term leasing (Section 8.5)", text:"Near-total prohibition — a hardship permit system requiring board approval for any leasing. Hardship defined narrowly as death, involuntary relocation, or temporary absence. Attorney has flagged this as legally risky given recent Georgia POAA changes protecting leasing rights. The working group proposes replacing this with the 2008 standard." },
+      { heading:"Georgia POA Act", text:"Explicitly submits the community to O.C.G.A. §44-3-220. The working group endorses retaining this — POA Act submission gives the HOA clearer enforcement tools and lender-friendly governance." },
+      { heading:"Minimum home size", text:"Not specified — deferred to ACC and Community-Wide Standard. Reverts to the ambiguity of the 2008 document, losing the clarity that the 2014 document established." },
+      { heading:"Assessment cap", text:"No cap. Board has full discretion to set annual assessments at any amount. The removal of the 2014 document's 10% cap was not highlighted during the consent form process and is a significant change most owners may not be aware of." },
+      { heading:"Dispute resolution", text:"2/3 vote required to authorize litigation. No mandatory mediation. The working group proposes restoring the 2008 document's mediation-first requirement." },
+    ]},
+  ];
+  const statusColors = { original:{ bg:"#DBEAFE", c:"#1E40AF" }, active2014:{ bg:C.amberLight, c:C.amber }, disputed:{ bg:C.dangerLight, c:C.danger } };
+  return (
+    <div>
+      <div style={S.alert("info")}><strong>These are the three recorded declarations currently in effect in Falling Waters.</strong> Depending on your lot number and whether you signed the 2021 consent form, one of these documents governs your property. Click any document to read its key provisions.</div>
+      {docs.map(doc => {
+        const sc = statusColors[doc.status];
+        return (
+          <div key={doc.id} style={{ ...S.card, borderLeft:`4px solid ${sc.c}` }}>
+            <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:16 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
+                  <span style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest }}>{doc.year}</span>
+                  <span style={S.badge(sc.c, sc.bg)}>{doc.statusLabel}</span>
+                </div>
+                <div style={{ fontFamily:"Georgia,serif", fontSize:16, fontWeight:"bold", color:C.ink, marginBottom:4 }}>{doc.title}</div>
+                <div style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{doc.preparer}</div>
+                <div style={{ fontSize:12, color:C.muted }}>Filed: {doc.filed} · {doc.ref}</div>
+              </div>
+              <button style={S.btn("outline")} onClick={() => setOpen(open === doc.id ? null : doc.id)}>
+                {open === doc.id ? "Collapse ▲" : "Read provisions ▼"}
+              </button>
+            </div>
+            {open === doc.id && (
+              <div style={{ marginTop:16, borderTop:`1px solid ${C.border}`, paddingTop:16 }}>
+                {doc.sections.map((s,i) => (
+                  <div key={i} style={{ marginBottom:14 }}>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.forest, marginBottom:4 }}>{s.heading}</div>
+                    <div style={{ fontSize:13, color:C.muted, lineHeight:1.7 }}>{s.text}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── COMPARISON PAGE ──────────────────────────────────────────────────────────
+function ComparisonPage() {
+  const rows = [
+    { topic:"Amendment vote", c2008:"67% of all Class A votes; 10% quorum", c2014:"67% of members voting; 50% quorum required", c2021:"2/3 of ALL 200 lots regardless of attendance", risk:"high", proposed:"Adopt 2021 standard — 2/3 of all 200 lots — with certified mail notice, proxy voting, and attorney-supervised count" },
+    { topic:"Short-term rentals", c2008:"Silent — but 1-yr lease minimum effectively prohibits", c2014:"⚠ Completely silent — NO restriction confirmed by attorney", c2021:"Absolute ban — VRBO, Airbnb, HomeAway named (consent-form signers only)", risk:"critical", proposed:"Regulated permission: 7-night minimum stay, HOA registration, $1M liability insurance, occupancy limits, nuisance enforcement OR outright prohibition — community vote decides" },
+    { topic:"Long-term leasing", c2014:"Not addressed", c2008:"Permitted; 1-year minimum; written lease required", c2021:"Near-total ban — hardship permit system only", risk:"high", proposed:"Restore 2008 standard: permitted, 1-year minimum, written lease, tenant gets docs, HOA notified within 30 days" },
+    { topic:"Georgia POA Act", c2008:"Explicitly opted OUT", c2014:"Not addressed", c2021:"Explicitly opted IN", risk:"medium", proposed:"Adopt 2021 standard — submit to O.C.G.A. §44-3-220 for stronger enforcement authority and lender-friendly governance" },
+    { topic:"Minimum home size", c2008:"Not specified — deferred to ARB", c2014:"1,400 sf (1-level); 1,800 sf (2-level)", c2021:"Not specified — deferred to ACC", risk:"medium", proposed:"Restore 2014 standard with ACC variance process for unusual lots" },
+    { topic:"Annual assessment cap", c2008:"No cap — 67% vote to disapprove budget", c2014:"Max 10% increase without member vote", c2021:"No cap — Board full discretion", risk:"medium", proposed:"Restore a 15% cap without member vote; increases above 15% require simple majority vote" },
+    { topic:"Dispute resolution", c2008:"Mediation/arbitration encouraged; 80% to sue", c2014:"Not addressed", c2021:"2/3 vote to sue; no mediation requirement", risk:"medium", proposed:"Restore 2008 mediation-first requirement; keep 2021 litigation threshold (2/3 vote)" },
+    { topic:"Lake & wetlands", c2008:"Comprehensive — 5 detailed sections", c2014:"Not addressed", c2021:"Comprehensive — mirrors 2008 with updates", risk:"low", proposed:"Retain 2021 lake/wetlands provisions verbatim" },
+    { topic:"Duration", c2008:"Perpetual; 90% to terminate in first 20 yrs", c2014:"Expires Jan 1 2040; auto-renews 10 yrs", c2021:"Perpetual; auto-renews 20 yrs; 2/3 to change", risk:"low", proposed:"Adopt 2021 perpetual model for stability" },
+    { topic:"ACC / ARB authority", c2008:"ARB — Declarant appoints until all lots sold", c2014:"ACC appointed by Executive Board; detailed standards", c2021:"ACC 3–5 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk:"medium", proposed:"Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
+    { topic:"Wildlife & bear rules", c2008:"Not addressed", c2014:"Not addressed", c2021:"Not addressed", risk:"new", proposed:"Add new Section 8.33 — bear feeding prohibition, secure storage rules, fines up to $1,000, consistent with Board Resolution BR-2026-01" },
+  ];
+  const risk = { critical:{ label:"Critical", c:C.danger, bg:C.dangerLight }, high:{ label:"High", c:"#9A3412", bg:"#FFEDD5" }, medium:{ label:"Medium", c:C.amber, bg:C.amberLight }, low:{ label:"Low", c:C.success, bg:C.successLight }, new:{ label:"New provision", c:"#6B21A8", bg:"#F3E8FF" } };
+  return (
+    <div>
+      <div style={S.alert("warn")}><strong>Attorney-confirmed:</strong> Georgia will not impose a restriction not in an owner's chain of title. Owners whose title only includes the 2014 declaration have no short-term rental restriction today. The unified CC&R is the only way to establish consistent, enforceable rules for all 200 lots.</div>
+      <div style={{ ...S.card, padding:0, overflow:"hidden" }}>
+        <div style={{ overflowX:"auto" }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={{ ...S.th, minWidth:130 }}>Provision</th>
+                <th style={{ ...S.th, minWidth:150 }}>2008 Original</th>
+                <th style={{ ...S.th, minWidth:150 }}>2014 Highland Falls</th>
+                <th style={{ ...S.th, minWidth:160 }}>2021 Consolidated</th>
+                <th style={{ ...S.th, minWidth:80 }}>Risk</th>
+                <th style={{ ...S.th, minWidth:200 }}>Proposed unified standard</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r,i) => {
+                const ri = risk[r.risk];
+                return (
+                  <tr key={i} style={{ background: i%2===0 ? C.white : C.parchment }}>
+                    <td style={{ ...S.td, fontWeight:700, fontSize:12, color:C.forest }}>{r.topic}</td>
+                    <td style={S.td}>{r.c2008}</td>
+                    <td style={{ ...S.td, background: r.risk==="critical" ? "#FFF7ED" : "inherit" }}>{r.c2014}</td>
+                    <td style={S.td}>{r.c2021}</td>
+                    <td style={S.td}><span style={S.badge(ri.c, ri.bg)}>{ri.label}</span></td>
+                    <td style={{ ...S.td, fontSize:12, color:C.forest, fontWeight:500, borderLeft:`2px solid ${C.stone}` }}>{r.proposed}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── STR PAGE ─────────────────────────────────────────────────────────────────
+function STRPage({ user, votes, onVote }) {
+  const userVoted = store.get(`vote_${user.lot}`);
+  const reasons = [
+    { icon:"🚗", title:"Increased traffic and parking", text:"Short-term rental guests unfamiliar with private mountain roads park on roadways, block shared driveways, and generate traffic volumes the infrastructure was not designed for. Our private roads — maintained at owner expense — experience accelerated wear." },
+    { icon:"🔊", title:"Noise, parties, and disturbances", text:"Vacation renters operate on a different code of conduct than permanent residents and long-term tenants. Late-night parties, amplified music, and large gatherings that violate our nuisance provisions are consistently reported near STR properties. Enforcement is difficult when the owner isn't present." },
+    { icon:"🐻", title:"Wildlife and safety incidents", text:"STR guests don't know our bear safety protocols. They leave food out, leave garbage unsecured, and have been documented feeding wildlife. Our community recently had a bear attack directly linked to human feeding behavior. Rotating guests who don't know the rules amplify this risk continuously." },
+    { icon:"🏘", title:"Community character and property values", text:"Falling Waters was designed as a residential community — not a resort destination. When neighboring lots operate as hotels with rotating occupants, the character of the surrounding properties changes. Long-term studies consistently show mixed residential/STR neighborhoods experience higher property value volatility." },
+    { icon:"⚖", title:"Enforcement and liability", text:"The HOA has limited enforcement capacity. Every STR guest who violates a rule requires the Association to identify them, trace them to an owner, and pursue enforcement — while the owner may be hundreds of miles away. The Association's liability exposure from guest incidents is also heightened when the lot is functioning commercially." },
+    { icon:"🏛", title:"Legal history — STRs were never permitted", text:"The original 2008 declaration required all leases to be for at least one year, effectively prohibiting short-term rentals before Airbnb existed. No owner has ever had a legally clear right to operate an STR in Falling Waters. The unified CC&R makes explicit what the community intended from the beginning." },
+  ];
+  return (
+    <div>
+      <div style={{ ...S.card, background:`linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border:`1px solid ${C.danger}` }}>
+        <div style={{ fontFamily:"Georgia,serif", fontSize:18, fontWeight:"bold", color:C.danger, marginBottom:8 }}>Short-Term Rentals — The Central Issue</div>
+        <p style={{ fontSize:13, color:C.ink, lineHeight:1.7, margin:"0 0 12px" }}>Our attorney has confirmed: <strong>owners whose chain of title only includes the 2014 declaration have no enforceable short-term rental restriction today.</strong> Georgia courts will not imply a restriction that is not in an owner's title. Without a unified CC&R, Falling Waters cannot establish a consistent, community-wide STR rule — whether permissive or restrictive.</p>
+        <p style={{ fontSize:13, color:C.ink, lineHeight:1.7, margin:0 }}>This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. <strong>Every lot owner's voice matters — this is why we need 100% engagement.</strong></p>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
+        {[
+          { label:"Eliminate STRs", count:votes.eliminate, pct:Math.round((votes.eliminate/TOTAL_LOTS)*100), color:C.danger, desc:"No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
+          { label:"Permit with regulation", count:votes.permit, pct:Math.round((votes.permit/TOTAL_LOTS)*100), color:C.stone, desc:"7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
+          { label:"Not yet voted", count:votes.undecided, pct:Math.round((votes.undecided/TOTAL_LOTS)*100), color:C.parchmentDark, desc:"Owners who have not yet indicated a preference. Your voice is needed." },
+        ].map((v,i) => (
+          <div key={i} style={{ background:C.white, border:`2px solid ${v.color}`, borderRadius:8, padding:"16px 20px" }}>
+            <div style={{ fontSize:28, fontWeight:700, fontFamily:"Georgia,serif", color:v.color }}>{v.count}</div>
+            <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.ink }}>{v.label}</div>
+            <div style={{ fontSize:12, color:C.muted, lineHeight:1.5, marginBottom:8 }}>{v.desc}</div>
+            <div style={S.meter}><div style={S.meterFill(v.pct, v.color)}/></div>
+            <div style={{ fontSize:11, color:C.muted }}>{v.pct}% of 200 lots</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Six reasons Falling Waters needs a clear STR restriction</div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginTop:12 }}>
+          {reasons.map((r,i) => (
+            <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px", borderLeft:`3px solid ${C.stone}` }}>
+              <div style={{ fontSize:18, marginBottom:4 }}>{r.icon}</div>
+              <div style={{ fontWeight:700, fontSize:13, color:C.forest, marginBottom:4 }}>{r.title}</div>
+              <div style={{ fontSize:12, color:C.muted, lineHeight:1.65 }}>{r.text}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Cast your vote on short-term rentals</div>
+        {userVoted ? (
+          <div style={S.alert("success")}><strong>Your vote has been recorded: "{userVoted === "eliminate" ? "Eliminate STRs" : userVoted === "permit" ? "Permit with regulation" : "Undecided"}".</strong> You can change your vote at any time before the formal ballot closes. Thank you for participating.</div>
+        ) : (
+          <div style={S.alert("info")}>This is a preliminary preference survey — not the formal legal vote. Results inform the working group's drafting process. The formal certified-mail ballot will follow attorney review and draft completion.</div>
+        )}
+        <div style={{ display:"flex", gap:12, marginTop:16, flexWrap:"wrap" }}>
+          <button style={{ ...S.btn(userVoted==="eliminate" ? "danger" : "outline"), borderColor: userVoted==="eliminate" ? C.danger : C.forest, color: userVoted==="eliminate" ? C.white : C.forest, background: userVoted==="eliminate" ? C.danger : "transparent" }} onClick={() => onVote("eliminate")}>
+            🚫 Eliminate STRs — prohibit rentals under 12 months
+          </button>
+          <button style={{ ...S.btn("outline"), borderColor: userVoted==="permit" ? C.stoneDark : C.border, background: userVoted==="permit" ? C.stone : "transparent", color: userVoted==="permit" ? C.white : C.ink }} onClick={() => onVote("permit")}>
+            📋 Permit with regulation — 7-night minimum + rules
+          </button>
+          <button style={{ ...S.btn("ghost"), background: userVoted==="undecided" ? C.parchmentDark : "transparent", border:`1px solid ${C.border}` }} onClick={() => onVote("undecided")}>
+            ❓ Undecided — need more information
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── RISKS PAGE ───────────────────────────────────────────────────────────────
+function RisksPage() {
+  const risks = [
+    { sev:"Critical", title:"Title insurance and property sales", detail:"Title companies must identify the governing covenants before issuing a policy. When three versions compete with incomplete consent-form records, title companies flag the issue, slow closings, or require additional legal opinions at the seller's expense. One owner reported losing a deal in 2025 because of this problem. Every lot in Falling Waters is harder to sell today than it would be under a unified CC&R.", color:C.danger, bg:C.dangerLight },
+    { sev:"Critical", title:"Mortgage financing risk", detail:"Lenders — especially secondary market lenders like Fannie Mae and Freddie Mac — require clear, enforceable HOA governance documents. Multiple conflicting declarations, a disputed 2021 adoption, and a community operating under three different covenant regimes create underwriting red flags that can result in loan denial or higher interest rates for buyers.", color:C.danger, bg:C.dangerLight },
+    { sev:"Critical", title:"STR enforcement gap — unequal standards", detail:"Our attorney confirmed that 2014-lot owners have no enforceable STR restriction today. This means some lots can legally operate Airbnb/VRBO while neighboring lots cannot. This inequality breeds exactly the kind of neighbor conflict and resentment that makes governance impossible and erodes community trust.", color:C.danger, bg:C.dangerLight },
+    { sev:"High", title:"2021 enforcement challenges", detail:"Any HOA enforcement action taken under the 2021 declaration could be challenged by a non-signer arguing the document doesn't bind them. Fines, liens, and enforcement letters issued under the 2021 covenant may be legally unenforceable against 2008 and 2014 lot owners who didn't sign the consent form. The HOA's enforcement authority is fundamentally compromised.", color:"#9A3412", bg:"#FFEDD5" },
+    { sev:"High", title:"Uncapped assessment increases", detail:"The 2021 document removed the 2014 declaration's 10% annual assessment cap without highlighting the change during the consent-form process. Under the 2021 document, the Board has unlimited discretion to raise annual assessments. Owners who signed the 2021 consent form may have unknowingly waived the cap that existed in the 2014 document.", color:"#9A3412", bg:"#FFEDD5" },
+    { sev:"High", title:"Covenant expiration in 2040", detail:"The 2014 declaration expires January 1, 2040 — only 14 years away. Lots governed by the 2014 document will have no governing CC&R after that date unless renewed. A community without CC&Rs loses all restrictions on use, construction standards, and HOA authority. Any buyer purchasing a 2014-lot lot should be aware of this expiration.", color:"#9A3412", bg:"#FFEDD5" },
+    { sev:"Medium", title:"Wildlife and safety liability", detail:"Without a unified, enforceable covenant covering all 200 lots, the Association's ability to enforce bear safety rules, noise prohibitions, and nuisance provisions is inconsistent. If a STR guest causes a bear incident or community safety event, the Association's legal exposure depends on which covenant governs the lot — and the answer may be that the Association had no enforceable authority to prevent the harm.", color:C.amber, bg:C.amberLight },
+    { sev:"Medium", title:"Community governance legitimacy", detail:"An HOA board that enforces rules selectively — because it can only clearly enforce them on some lots — loses the trust and respect of the broader community. Governance works when rules are fair, consistent, and known. The current three-covenant situation makes genuine community governance nearly impossible.", color:C.amber, bg:C.amberLight },
+  ];
+  return (
+    <div>
+      <div style={S.alert("danger")}><strong>The status quo is not neutral.</strong> Failing to adopt a unified CC&R has real, documented financial and legal consequences for every lot owner in Falling Waters — whether or not you are personally affected by any disputed covenant provision today.</div>
+      {risks.map((r,i) => (
+        <div key={i} style={{ ...S.card, borderLeft:`4px solid ${r.color}`, background:r.bg }}>
+          <div style={{ display:"flex", gap:12, alignItems:"flex-start" }}>
+            <span style={S.badge(r.color, "transparent")}>{r.sev} risk</span>
+          </div>
+          <div style={{ fontFamily:"Georgia,serif", fontSize:16, fontWeight:"bold", color:r.color, margin:"8px 0 6px" }}>{r.title}</div>
+          <div style={{ fontSize:13, color:C.ink, lineHeight:1.7 }}>{r.detail}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── COMMENTS PAGE ────────────────────────────────────────────────────────────
+function CommentsPage({ user, comments, onAdd }) {
+  const [topic, setTopic] = useState("all"); const [stance, setStance] = useState(""); const [text, setText] = useState(""); const [submitting, setSubmitting] = useState(false); const [done, setDone] = useState(false);
+  const filtered = comments.filter(c => (topic==="all" || c.topic===topic) && (stance==="" || c.stance===stance));
+  const topicLabels = { str:"Short-term rentals", general:"General covenants", process:"Process & voting" };
+  const stanceColors = { restrict:{ c:C.danger, bg:C.dangerLight, label:"Supports restriction" }, permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports permitting" }, neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" } };
+  const submit = (e) => {
+    e.preventDefault();
+    if (text.trim().length < 20) return;
+    setSubmitting(true);
+    setTimeout(() => {
+      onAdd({ id:Date.now(), lot:user.lot, name:user.name, ts:"Aug 25, 2026", topic, stance: stance || "neutral", text:text.trim() });
+      setText(""); setStance(""); setDone(true); setSubmitting(false);
+      setTimeout(() => setDone(false), 4000);
+    }, 600);
+  };
+  return (
+    <div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 2fr", gap:20 }}>
+        <div>
+          <div style={S.card}>
+            <div style={S.cardTitle}>Add your comment</div>
+            <p style={{ fontSize:13, color:C.muted, marginBottom:14, lineHeight:1.6 }}>Comments are attributed to your lot number. Be specific — detailed input helps the working group draft a covenant that reflects real community concerns.</p>
+            {done && <div style={S.alert("success")}>Comment posted. Thank you.</div>}
+            <form onSubmit={submit}>
+              <div style={{ marginBottom:12 }}>
+                <label style={S.label}>Topic</label>
+                <select style={S.select} value={topic} onChange={e=>setTopic(e.target.value)}>
+                  <option value="str">Short-term rentals</option>
+                  <option value="general">General covenants</option>
+                  <option value="process">Process & voting</option>
+                </select>
+              </div>
+              <div style={{ marginBottom:12 }}>
+                <label style={S.label}>My position</label>
+                <select style={S.select} value={stance} onChange={e=>setStance(e.target.value)}>
+                  <option value="">— Select —</option>
+                  <option value="restrict">I support restricting STRs</option>
+                  <option value="permit">I support permitting STRs</option>
+                  <option value="neutral">Neutral / I have a question</option>
+                </select>
+              </div>
+              <div style={{ marginBottom:14 }}>
+                <label style={S.label}>Your comment</label>
+                <textarea style={S.textarea} placeholder="Share your perspective, concerns, or questions. Min 20 characters." value={text} onChange={e=>setText(e.target.value)}/>
+                <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>Commenting as {user.name} · {user.lot}</div>
+              </div>
+              <button type="submit" style={S.btn("primary")} disabled={submitting || text.trim().length < 20}>
+                {submitting ? "Posting…" : "Post comment →"}
+              </button>
+            </form>
+          </div>
+
+          <div style={S.card}>
+            <div style={S.cardTitle}>Filter comments</div>
+            <div style={{ marginBottom:10 }}>
+              <label style={S.label}>Topic</label>
+              <select style={S.select} value={topic} onChange={e=>setTopic(e.target.value)}>
+                <option value="all">All topics</option>
+                <option value="str">Short-term rentals</option>
+                <option value="general">General covenants</option>
+                <option value="process">Process & voting</option>
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Position</label>
+              <select style={S.select} value={stance} onChange={e=>setStance(e.target.value)}>
+                <option value="">All positions</option>
+                <option value="restrict">Supports restriction</option>
+                <option value="permit">Supports permitting</option>
+                <option value="neutral">Neutral / question</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{filtered.length} comment{filtered.length !== 1 ? "s" : ""} shown</div>
+          {filtered.length === 0 && <div style={{ ...S.card, textAlign:"center", color:C.muted, fontSize:13, padding:32 }}>No comments match your filter. Be the first to comment on this topic.</div>}
+          {filtered.map(c => {
+            const sc = stanceColors[c.stance] || stanceColors.neutral;
+            return (
+              <div key={c.id} style={{ ...S.card, marginBottom:12 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8, alignItems:"flex-start", gap:8 }}>
+                  <div>
+                    <span style={{ fontWeight:700, fontSize:13, color:C.forest }}>{c.name}</span>
+                    <span style={{ fontSize:12, color:C.muted, marginLeft:8 }}>{c.lot} · {c.ts}</span>
+                  </div>
+                  <div style={{ display:"flex", gap:6, flexShrink:0 }}>
+                    <span style={S.badge(sc.c, sc.bg)}>{sc.label}</span>
+                    <span style={S.badge(C.muted, C.parchmentDark)}>{topicLabels[c.topic] || c.topic}</span>
+                  </div>
+                </div>
+                <div style={{ fontSize:13, color:C.ink, lineHeight:1.7 }}>{c.text}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
+function DashboardPage({ votes, comments }) {
+  const engaged = votes.eliminate + votes.permit;
+  const notVoted = TOTAL_LOTS - votes.eliminate - votes.permit - votes.undecided;
+  const strComments = comments.filter(c => c.topic === "str");
+  const restrictCount = comments.filter(c => c.stance === "restrict").length;
+  const permitCount = comments.filter(c => c.stance === "permit").length;
+  const phases = [
+    { num:1, label:"Legal foundation", status:"active", detail:"Attorney engaged, STR analysis complete, written opinion on adoption process in progress" },
+    { num:2, label:"Listening tour", status:"pending", detail:"Door-to-door with all 50 homeowners · Certified mail to 150 vacant lot owners" },
+    { num:3, label:"Draft & deliberate", status:"pending", detail:"Working group drafts unified CC&R · Two 30-day comment periods · Community meetings" },
+    { num:4, label:"Formal vote", status:"pending", detail:"Certified mail ballots to all 200 lots · Attorney-supervised count · Record in Gilmer County" },
+  ];
+  const statusColors = { active:C.stone, pending:C.border, done:C.success };
+  return (
+    <div>
+      <div style={S.statGrid}>
+        {[
+          { num:TOTAL_LOTS, label:"Total lots", accent:C.forest },
+          { num:engaged, label:"Owners engaged", accent:"#2563EB" },
+          { num:`${Math.round((engaged/TOTAL_LOTS)*100)}%`, label:"Engagement rate", accent:C.stone },
+          { num:comments.length, label:"Comments posted", accent:"#7C3AED" },
+        ].map((s,i) => <div key={i} style={S.statCard(s.accent)}><div style={S.statNum}>{s.num}</div><div style={S.statLabel}>{s.label}</div></div>)}
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+        <div style={S.card}>
+          <div style={S.cardTitle}>Vote progress toward 134</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {VOTES_NEEDED} of {TOTAL_LOTS} lots to vote yes on unified covenant</div>
+          {[
+            { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
+            { label:"Permit with regulation", val:votes.permit, color:C.stone },
+            { label:"Undecided — engaged", val:votes.undecided, color:"#3B82F6" },
+            { label:"Not yet reached", val:notVoted, color:C.border },
+          ].map((r,i) => (
+            <div key={i} style={{ marginBottom:10 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+                <span style={{ color:C.ink }}>{r.label}</span>
+                <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/TOTAL_LOTS)*100)}%)</span>
+              </div>
+              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/TOTAL_LOTS)*100), r.color)}/></div>
+            </div>
+          ))}
+          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
+              <span style={{ fontWeight:600, color:C.forest }}>Votes needed to pass</span>
+              <span style={{ fontWeight:700, color:C.danger }}>{VOTES_NEEDED - votes.eliminate} more needed</span>
+            </div>
+            <div style={{ height:8, borderRadius:4, overflow:"hidden", background:C.parchmentDark, marginTop:6, position:"relative" }}>
+              <div style={{ height:"100%", width:`${(votes.eliminate/VOTES_NEEDED)*100}%`, background:C.danger, transition:"width 1s" }}/>
+              <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${((VOTES_NEEDED-votes.eliminate)/TOTAL_LOTS)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
+            </div>
+            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {VOTES_NEEDED} votes needed to eliminate STRs</div>
+          </div>
+        </div>
+
+        <div style={S.card}>
+          <div style={S.cardTitle}>Comment sentiment analysis</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{comments.length} total comments · {strComments.length} on STR topic</div>
+          {[
+            { label:"Supporting STR restriction", val:restrictCount, color:C.danger, total:comments.length },
+            { label:"Supporting STR permission", val:permitCount, color:C.stone, total:comments.length },
+            { label:"Neutral / questions", val:comments.filter(c=>c.stance==="neutral").length, color:"#3B82F6", total:comments.length },
+          ].map((r,i) => (
+            <div key={i} style={{ marginBottom:10 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+                <span style={{ color:C.ink }}>{r.label}</span>
+                <span style={{ color:C.muted }}>{r.val} comments</span>
+              </div>
+              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/Math.max(r.total,1))*100), r.color)}/></div>
+            </div>
+          ))}
+          <div style={{ marginTop:12 }}>
+            <div style={S.cardTitle}>Recent activity</div>
+            {comments.slice(-3).reverse().map((c,i) => (
+              <div key={i} style={{ fontSize:12, color:C.muted, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
+                <span style={{ fontWeight:600, color:C.ink }}>{c.name}</span> ({c.lot}) commented on <span style={{ color:C.forest }}>{c.topic === "str" ? "STRs" : c.topic}</span> · {c.ts}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Campaign roadmap — live status</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginTop:12 }}>
+          {phases.map((p,i) => (
+            <div key={i} style={{ border:`2px solid ${p.status==="active" ? C.stone : p.status==="done" ? C.success : C.border}`, borderRadius:8, padding:"14px 16px", background: p.status==="active" ? "#FFFBF5" : C.white }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                <span style={{ fontFamily:"Georgia,serif", fontSize:20, fontWeight:"bold", color:C.forest }}>0{p.num}</span>
+                {p.status==="active" && <span style={S.badge(C.amber, C.amberLight)}>Active</span>}
+                {p.status==="done" && <span style={S.badge(C.success, C.successLight)}>Done</span>}
+                {p.status==="pending" && <span style={S.badge(C.muted, C.parchmentDark)}>Pending</span>}
+              </div>
+              <div style={{ fontWeight:700, fontSize:13, color:C.forest, marginBottom:4 }}>{p.label}</div>
+              <div style={{ fontSize:11, color:C.muted, lineHeight:1.5 }}>{p.detail}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Outreach targets</div>
+        <div style={{ overflowX:"auto" }}>
+          <table style={S.table}>
+            <thead><tr>
+              <th style={S.th}>Owner group</th><th style={S.th}>Est. lots</th><th style={S.th}>Engagement status</th><th style={S.th}>STR posture</th><th style={S.th}>Priority action</th>
+            </tr></thead>
+            <tbody>
+              {[
+                { group:"Resident homeowners", lots:50, status:"In progress", posture:"Mixed", action:"Door-to-door personal outreach" },
+                { group:"Vacant lots — future builders", lots:40, status:"Not started", posture:"Flexible", action:"Certified mail + one-page summary" },
+                { group:"Vacant lots — absentee investors", lots:90, status:"Not started", posture:"Watch STR rules closely", action:"Certified mail + proxy ballot info" },
+                { group:"Active STR operators", lots:20, status:"Not started", posture:"Oppose outright ban", action:"Personal call — Option 2 conversation" },
+              ].map((r,i) => (
+                <tr key={i} style={{ background: i%2===0 ? C.white : C.parchment }}>
+                  <td style={{ ...S.td, fontWeight:600 }}>{r.group}</td>
+                  <td style={S.td}>{r.lots}</td>
+                  <td style={S.td}><span style={S.pill(r.status==="In progress" ? C.amber : C.muted, r.status==="In progress" ? C.amberLight : C.parchmentDark)}>{r.status}</span></td>
+                  <td style={{ ...S.td, fontSize:12, color:C.muted }}>{r.posture}</td>
+                  <td style={{ ...S.td, fontSize:12, color:C.forest, fontWeight:500 }}>{r.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MAIN APP ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [user, setUser] = useState(() => store.get("fw_user"));
+  const [page, setPage] = useState("home");
+  const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
+  const [comments, setComments] = useState(() => store.get("fw_comments") || SEED_COMMENTS);
+
+  useEffect(() => { store.set("fw_votes", votes); }, [votes]);
+  useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+
+  const handleLogin = (u) => { store.set("fw_user", u); setUser(u); };
+  const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
+
+  const handleVote = (choice) => {
+    const prev = store.get(`vote_${user.lot}`);
+    const newVotes = { ...votes };
+    if (prev) { newVotes[prev] = Math.max(0, newVotes[prev] - 1); newVotes.undecided = Math.min(TOTAL_LOTS - newVotes.eliminate - newVotes.permit, newVotes.undecided + (prev === "undecided" ? 0 : 0)); }
+    else { newVotes.undecided = Math.max(0, newVotes.undecided - 1); }
+    newVotes[choice] = (newVotes[choice] || 0) + 1;
+    setVotes(newVotes);
+    store.set(`vote_${user.lot}`, choice);
+  };
+
+  const handleAddComment = (c) => setComments(prev => [c, ...prev]);
+
+  if (!user) return <LoginScreen onLogin={handleLogin}/>;
+
+  const navItems = [
+    { id:"home", label:"Overview", icon:<Icon.home/> },
+    { id:"documents", label:"CC&R Documents", icon:<Icon.doc/> },
+    { id:"comparison", label:"Side-by-side compare", icon:<Icon.compare/> },
+    { id:"risks", label:"Risks of inaction", icon:<Icon.home2/> },
+    { id:"str", label:"STR — key issue", icon:<Icon.vote/> },
+    { id:"comments", label:"Community comments", icon:<Icon.chat/> },
+    { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
+  ];
+
+  const pageTitles = { home:"Overview", documents:"CC&R Documents", comparison:"Side-by-side comparison", risks:"Risks of inaction", str:"Short-term rentals", comments:"Community comments", dashboard:"Campaign dashboard" };
+
+  return (
+    <div style={S.app}>
+      <div style={S.sidebar}>
+        <div style={S.sidebarTop}>
+          <div style={S.sidebarLogo}>Falling Waters</div>
+          <div style={S.sidebarSub}>Covenant Unification</div>
+        </div>
+        <div style={S.sidebarUser}>
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}><Icon.user/><span>{user.name}</span></div>
+          <div style={{ marginTop:2, opacity:.7 }}>{user.lot}{user.isAdmin ? " · Admin" : ""}</div>
+        </div>
+        <nav style={S.sidebarNav}>
+          {navItems.map(item => (
+            <div key={item.id} style={S.navItem(page===item.id)} onClick={() => setPage(item.id)}>
+              {item.icon}{item.label}
+            </div>
+          ))}
+        </nav>
+        <div style={S.sidebarBottom}>
+          <div style={{ cursor:"pointer", display:"flex", alignItems:"center", gap:8, fontSize:13, color:"rgba(255,255,255,0.5)" }} onClick={handleLogout}>
+            <Icon.logout/> Sign out
+          </div>
+        </div>
+      </div>
+
+      <div style={S.main}>
+        <div style={S.topbar}>
+          <div style={S.topbarTitle}>{pageTitles[page]}</div>
+          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+            <span style={{ fontSize:12, color:C.muted }}>Need 134 votes ·</span>
+            <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
+            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>Vote now →</button>}
+          </div>
+        </div>
+        <div style={S.content}>
+          {page === "home" && <HomePage user={user} votes={votes}/>}
+          {page === "documents" && <DocumentsPage/>}
+          {page === "comparison" && <ComparisonPage/>}
+          {page === "risks" && <RisksPage/>}
+          {page === "str" && <STRPage user={user} votes={votes} onVote={handleVote}/>}
+          {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
+          {page === "dashboard" && <DashboardPage votes={votes} comments={comments}/>}
+        </div>
+      </div>
+    </div>
+  );
+}
