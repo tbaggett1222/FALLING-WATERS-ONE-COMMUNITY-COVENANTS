@@ -41,6 +41,12 @@ const STR_CONCERN_OPTIONS = [
   "Property value and neighborhood character",
   "Legal clarity and enforceability",
 ];
+const DOC_STATUS_OPTIONS = [
+  { value: "original", label: "Original" },
+  { value: "active2014", label: "Active — Phase II lots" },
+  { value: "disputed", label: "Disputed — consent form only" },
+  { value: "uploaded", label: "Uploaded for review" },
+];
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -50,6 +56,82 @@ const store = {
 
 const todayLabel = () =>
   new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Could not read uploaded file."));
+    reader.readAsDataURL(file);
+  });
+
+const readFileAsText = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read text from uploaded file."));
+    reader.readAsText(file);
+  });
+
+const summarizeUploadedCovenant = (rawText, existingDocsCount) => {
+  const text = (rawText || "").toLowerCase();
+  if (!text.trim()) {
+    return [
+      "Automatic comparison summary unavailable: file text could not be extracted. Upload a text-based copy for richer analysis.",
+      `Document stored successfully and compared at metadata level against ${existingDocsCount} existing covenant record(s).`,
+    ];
+  }
+
+  const points = [];
+  const mentionsStr = /short[\s-]?term|airbnb|vrbo|homeaway|transient/.test(text);
+  const mentionsLeaseYear = /(12\s*month|one\s*year|min(imum)?\s+lease)/.test(text);
+  const mentionsSevenNight = /7[\s-]?night|min(imum)?\s+stay/.test(text);
+  const mentionsAmendSuperMajority = /(2\/3|two-thirds|67%|sixty-seven)/.test(text);
+  const mentionsQuorum = /quorum/.test(text);
+  const mentionsPoaAct = /(o\.?c\.?g\.?a\.?\s*§?\s*44-3-220|poa act|property owners.? association act)/.test(text);
+  const mentionsAssessmentCap = /(10%|15%|assessment cap|dues cap|max(imum)? annual increase)/.test(text);
+  const mentionsMediation = /(mediation|arbitration|dispute resolution)/.test(text);
+
+  if (mentionsStr) {
+    if (mentionsLeaseYear) {
+      points.push("STR/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
+    } else if (mentionsSevenNight) {
+      points.push("STR/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
+    } else {
+      points.push("STR/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
+    }
+  } else {
+    points.push("STR/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
+  }
+
+  points.push(
+    mentionsAmendSuperMajority
+      ? "Governance signal: supermajority amendment language detected (2/3 or 67%)."
+      : "Governance signal: no clear supermajority amendment threshold found in extracted text."
+  );
+  points.push(
+    mentionsQuorum
+      ? "Governance signal: quorum language detected; check whether outcomes can be decided by low attendance."
+      : "Governance signal: no quorum language detected in extracted text."
+  );
+  points.push(
+    mentionsPoaAct
+      ? "Enforcement signal: POA Act language detected (or likely referenced)."
+      : "Enforcement signal: POA Act reference not detected in extracted text."
+  );
+  points.push(
+    mentionsAssessmentCap
+      ? "Financial signal: assessment-cap language appears present."
+      : "Financial signal: no annual assessment-cap language detected."
+  );
+  points.push(
+    mentionsMediation
+      ? "Dispute signal: mediation/arbitration language appears present."
+      : "Dispute signal: no clear mediation-first language detected."
+  );
+  points.push(`Comparison scope: automatic scan evaluated this upload against ${existingDocsCount} covenant record(s) currently stored in the portal.`);
+  return points;
+};
 
 // ── ICONS ────────────────────────────────────────────────────────────────────
 const Icon = {
@@ -243,9 +325,7 @@ function HomePage({ votes, stats }) {
 }
 
 // ── DOCUMENTS PAGE ───────────────────────────────────────────────────────────
-function DocumentsPage() {
-  const [open, setOpen] = useState(null);
-  const docs = [
+const DEFAULT_COVENANT_DOCS = [
     { id:"2008", year:2008, title:"Master Declaration of CC&Rs", preparer:"Clear Creek Properties LLC · Balch & Bingham LLP", filed:"May 28, 2008", ref:"Deed Book 1479, Page 194 — Gilmer County", status:"original", statusLabel:"Original", sections:[
       { heading:"Amendment threshold", text:"Section 14.2(c): 67% of total Class A votes in the Association. By-Laws set a quorum of 10% for meetings. This is the foundational threshold against which all subsequent amendment attempts must be measured." },
       { heading:"Leasing (Section 10.4)", text:"Lots may be leased for residential purposes only. All leases shall be in writing and for a term of at least one (1) year. No hardship system — leasing was broadly permitted with a 1-year minimum. This is the original standard the working group proposes to restore." },
@@ -275,13 +355,22 @@ function DocumentsPage() {
       { heading:"Assessment cap", text:"No cap. Board has full discretion to set annual assessments at any amount. The removal of the 2014 document's 10% cap was not highlighted during the consent form process and is a significant change most owners may not be aware of." },
       { heading:"Dispute resolution", text:"2/3 vote required to authorize litigation. No mandatory mediation. The working group proposes restoring the 2008 document's mediation-first requirement." },
     ]},
-  ];
-  const statusColors = { original:{ bg:"#DBEAFE", c:"#1E40AF" }, active2014:{ bg:C.amberLight, c:C.amber }, disputed:{ bg:C.dangerLight, c:C.danger } };
+];
+
+function DocumentsPage({ docs }) {
+  const [open, setOpen] = useState(null);
+  const safeDocs = Array.isArray(docs) ? docs : [];
+  const statusColors = {
+    original:{ bg:"#DBEAFE", c:"#1E40AF" },
+    active2014:{ bg:C.amberLight, c:C.amber },
+    disputed:{ bg:C.dangerLight, c:C.danger },
+    uploaded:{ bg:"#E0E7FF", c:"#4338CA" },
+  };
   return (
     <div>
-      <div style={S.alert("info")}><strong>These are the three recorded declarations currently in effect in Falling Waters.</strong> Depending on your lot number and whether you signed the 2021 consent form, one of these documents governs your property. Click any document to read its key provisions.</div>
-      {docs.map(doc => {
-        const sc = statusColors[doc.status];
+      <div style={S.alert("info")}><strong>These are the covenant records currently in Falling Waters.</strong> Depending on your lot number and whether you signed the 2021 consent form, one of these documents governs your property. Click any document to read key provisions and uploaded comparison notes.</div>
+      {safeDocs.map(doc => {
+        const sc = statusColors[doc.status] || statusColors.uploaded;
         return (
           <div key={doc.id} style={{ ...S.card, borderLeft:`4px solid ${sc.c}` }}>
             <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:16 }}>
@@ -293,24 +382,237 @@ function DocumentsPage() {
                 <div style={{ fontFamily:"Georgia,serif", fontSize:16, fontWeight:"bold", color:C.ink, marginBottom:4 }}>{doc.title}</div>
                 <div style={{ fontSize:12, color:C.muted, marginBottom:2 }}>{doc.preparer}</div>
                 <div style={{ fontSize:12, color:C.muted }}>Filed: {doc.filed} · {doc.ref}</div>
+                {doc.source === "uploaded" && (
+                  <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>
+                    Uploaded by {doc.uploadedBy || "Admin"} on {doc.uploadedAt || "Unknown date"}
+                  </div>
+                )}
               </div>
               <button style={S.btn("outline")} onClick={() => setOpen(open === doc.id ? null : doc.id)}>
-                {open === doc.id ? "Collapse ▲" : "Read provisions ▼"}
+                {open === doc.id ? "Collapse ▲" : "Read details ▼"}
               </button>
             </div>
             {open === doc.id && (
               <div style={{ marginTop:16, borderTop:`1px solid ${C.border}`, paddingTop:16 }}>
-                {doc.sections.map((s,i) => (
+                {Array.isArray(doc.sections) && doc.sections.length > 0 && doc.sections.map((s,i) => (
                   <div key={i} style={{ marginBottom:14 }}>
                     <div style={{ fontWeight:700, fontSize:13, color:C.forest, marginBottom:4 }}>{s.heading}</div>
                     <div style={{ fontSize:13, color:C.muted, lineHeight:1.7 }}>{s.text}</div>
                   </div>
                 ))}
+                {doc.notes && (
+                  <div style={{ marginBottom:14 }}>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.forest, marginBottom:4 }}>Admin notes</div>
+                    <div style={{ fontSize:13, color:C.muted, lineHeight:1.7 }}>{doc.notes}</div>
+                  </div>
+                )}
+                {doc.autoCompareSummary?.length > 0 && (
+                  <div style={{ marginBottom:14 }}>
+                    <div style={{ fontWeight:700, fontSize:13, color:C.forest, marginBottom:6 }}>Auto-compare summary</div>
+                    <ul style={{ margin:"0 0 0 18px", color:C.muted, fontSize:12, lineHeight:1.7 }}>
+                      {doc.autoCompareSummary.map((item, idx) => <li key={idx}>{item}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {doc.fileDataUrl && (
+                  <a href={doc.fileDataUrl} download={doc.fileName || `${doc.title}.pdf`} style={{ fontSize:12, color:"#1D4ED8", fontWeight:600, textDecoration:"none" }}>
+                    Download uploaded covenant file ({doc.fileName || "attachment"})
+                  </a>
+                )}
               </div>
             )}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── ADMIN DOCUMENTS PAGE ─────────────────────────────────────────────────────
+function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
+  const [year, setYear] = useState("");
+  const [title, setTitle] = useState("");
+  const [preparer, setPreparer] = useState("");
+  const [filed, setFiled] = useState("");
+  const [ref, setRef] = useState("");
+  const [status, setStatus] = useState("uploaded");
+  const [notes, setNotes] = useState("");
+  const [file, setFile] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const uploadedDocs = docs.filter((d) => d.source === "uploaded");
+
+  const resetForm = () => {
+    setYear("");
+    setTitle("");
+    setPreparer("");
+    setFiled("");
+    setRef("");
+    setStatus("uploaded");
+    setNotes("");
+    setFile(null);
+  };
+
+  const saveDocument = async (e) => {
+    e.preventDefault();
+    setError("");
+    setSuccess("");
+
+    if (!title.trim()) {
+      setError("Title is required.");
+      return;
+    }
+    if (!file) {
+      setError("Please select a covenant file to upload.");
+      return;
+    }
+    if (file.size > 1024 * 1024 * 1.5) {
+      setError("File is too large for portal storage. Please keep uploads under 1.5MB.");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const fileDataUrl = await readFileAsDataUrl(file);
+      let extractedText = "";
+      try {
+        extractedText = await readFileAsText(file);
+      } catch {
+        extractedText = "";
+      }
+
+      const autoCompareSummary = summarizeUploadedCovenant(extractedText, docs.length);
+      const statusLabel =
+        DOC_STATUS_OPTIONS.find((opt) => opt.value === status)?.label || "Uploaded for review";
+
+      onAddDocument({
+        id: `upload_${Date.now()}`,
+        year: year.trim() || "N/A",
+        title: title.trim(),
+        preparer: preparer.trim() || "Uploaded by HOA admin",
+        filed: filed.trim() || todayLabel(),
+        ref: ref.trim() || "Owner portal upload",
+        status,
+        statusLabel,
+        source: "uploaded",
+        uploadedBy: user.name,
+        uploadedAt: todayLabel(),
+        fileName: file.name,
+        fileType: file.type || "application/octet-stream",
+        fileDataUrl,
+        notes: notes.trim(),
+        sections: notes.trim() ? [{ heading: "Admin summary", text: notes.trim() }] : [],
+        autoCompareSummary,
+      });
+
+      setSuccess("Covenant uploaded and added to CC&R Documents with automatic comparison summary.");
+      resetForm();
+    } catch (err) {
+      setError(err?.message || "Upload failed. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={S.alert("info")}>
+        <strong>Admin tools:</strong> upload existing covenants here. New uploads appear in the CC&R Documents page with metadata and auto-generated comparison notes.
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+        <div style={S.card}>
+          <div style={S.cardTitle}>Upload covenant document</div>
+          {error && <div style={S.alert("danger")}>{error}</div>}
+          {success && <div style={S.alert("success")}>{success}</div>}
+          <form onSubmit={saveDocument}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div>
+                <label style={S.label}>Document year</label>
+                <input style={S.input} value={year} onChange={(e) => setYear(e.target.value)} placeholder="e.g. 2026" />
+              </div>
+              <div>
+                <label style={S.label}>Status tag</label>
+                <select style={S.select} value={status} onChange={(e) => setStatus(e.target.value)}>
+                  {DOC_STATUS_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={S.label}>Title</label>
+              <input style={S.input} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Declaration title" />
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={S.label}>Preparer / source</label>
+              <input style={S.input} value={preparer} onChange={(e) => setPreparer(e.target.value)} placeholder="Law firm, board, owner group, etc." />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+              <div>
+                <label style={S.label}>Filed date</label>
+                <input style={S.input} value={filed} onChange={(e) => setFiled(e.target.value)} placeholder="e.g. Aug 25, 2026" />
+              </div>
+              <div>
+                <label style={S.label}>Reference</label>
+                <input style={S.input} value={ref} onChange={(e) => setRef(e.target.value)} placeholder="Deed book / page / county" />
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={S.label}>Upload covenant file (PDF, DOCX, TXT)</label>
+              <input
+                style={{ ...S.input, padding: "7px 10px" }}
+                type="file"
+                accept=".pdf,.doc,.docx,.txt,.rtf,.md"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                File must be under 1.5MB for browser storage.
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={S.label}>Admin notes (optional)</label>
+              <textarea
+                style={S.textarea}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Context, legal notes, or committee summary to display with the upload."
+              />
+            </div>
+            <button type="submit" style={{ ...S.btn("primary"), marginTop: 12 }} disabled={isSaving}>
+              {isSaving ? "Uploading..." : "Upload and publish to Documents"}
+            </button>
+          </form>
+        </div>
+
+        <div style={S.card}>
+          <div style={S.cardTitle}>Uploaded documents</div>
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+            {uploadedDocs.length} uploaded by admins
+          </div>
+          {uploadedDocs.length === 0 && (
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
+              No uploads yet. Use the form to add existing covenants and make them available to owners.
+            </div>
+          )}
+          {uploadedDocs.map((doc) => (
+            <div key={doc.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: C.forest }}>{doc.title}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                {doc.year} · {doc.fileName || "No attachment"} · {doc.uploadedAt || "Unknown"}
+              </div>
+              <button
+                style={{ ...S.btn("outline"), marginTop: 8, padding: "6px 10px", fontSize: 12 }}
+                onClick={() => onDeleteDocument(doc.id)}
+              >
+                Remove upload
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -904,11 +1206,16 @@ export default function App() {
   const [page, setPage] = useState("home");
   const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
   const [comments, setComments] = useState(() => store.get("fw_comments") || SEED_COMMENTS);
+  const [covenantDocs, setCovenantDocs] = useState(() => {
+    const saved = store.get("fw_covenant_docs");
+    return Array.isArray(saved) && saved.length ? saved : DEFAULT_COVENANT_DOCS;
+  });
   const [ownerActivity, setOwnerActivity] = useState(() => store.get("fw_owner_activity") || {});
   const [voteLedger, setVoteLedger] = useState(() => store.get("fw_vote_ledger") || {});
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+  useEffect(() => { store.set("fw_covenant_docs", covenantDocs); }, [covenantDocs]);
   useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
 
@@ -956,6 +1263,8 @@ export default function App() {
     setComments(prev => [c, ...prev]);
     trackOwner(c.lot, { commented: true, name: c.name });
   };
+  const handleAddDocument = (doc) => setCovenantDocs((prev) => [doc, ...prev]);
+  const handleDeleteDocument = (docId) => setCovenantDocs((prev) => prev.filter((doc) => doc.id !== docId));
 
   const activityRows = Object.values(ownerActivity);
   const stats = {
@@ -975,6 +1284,7 @@ export default function App() {
     { id:"str", label:"STR — key issue", icon:<Icon.vote/> },
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
+    ...(user.isAdmin ? [{ id:"admin-docs", label:"Admin document tools", icon:<Icon.doc/> }] : []),
   ];
 
   const pageTitles = {
@@ -986,6 +1296,7 @@ export default function App() {
     str:"Short-term rentals",
     comments:"Community comments",
     dashboard:"Campaign dashboard",
+    "admin-docs":"Admin document upload",
   };
 
   return (
@@ -1024,13 +1335,21 @@ export default function App() {
         </div>
         <div style={S.content}>
           {page === "home" && <HomePage votes={votes} stats={stats}/>}
-          {page === "documents" && <DocumentsPage/>}
+          {page === "documents" && <DocumentsPage docs={covenantDocs}/>}
           {page === "comparison" && <ComparisonPage/>}
           {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
           {page === "str" && <STRPage user={user} votes={votes} onVote={handleVote}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
+          {page === "admin-docs" && user.isAdmin && (
+            <AdminDocumentsPage
+              user={user}
+              docs={covenantDocs}
+              onAddDocument={handleAddDocument}
+              onDeleteDocument={handleDeleteDocument}
+            />
+          )}
         </div>
       </div>
     </div>
