@@ -40,6 +40,7 @@ const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
 const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
 const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
+const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
@@ -2213,11 +2214,18 @@ function AdminVotingPage({
   votesNeeded,
   lastBackupExportAt,
   backupHealthThresholdDays,
+  dbApiBaseUrl,
   onImportCsv,
   onExportBackup,
   onRestoreBackup,
   onRecordBackupExport,
   onUpdateBackupHealthThresholdDays,
+  onUpdateDbApiBaseUrl,
+  onTestDbConnection,
+  onSyncToDb,
+  onRestoreFromDb,
+  onFetchDbSummary,
+  onFetchDbRecords,
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
@@ -2243,6 +2251,13 @@ function AdminVotingPage({
   const [backupThresholdInput, setBackupThresholdInput] = useState(String(backupHealthThresholdDays));
   const [backupThresholdMsg, setBackupThresholdMsg] = useState("");
   const [backupThresholdErr, setBackupThresholdErr] = useState("");
+  const [dbApiInput, setDbApiInput] = useState(String(dbApiBaseUrl || ""));
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbMsg, setDbMsg] = useState("");
+  const [dbErr, setDbErr] = useState("");
+  const [dbSummary, setDbSummary] = useState(null);
+  const [dbRecordsTable, setDbRecordsTable] = useState("state_values");
+  const [dbRecords, setDbRecords] = useState([]);
   const effectiveBackupHealthThresholdDays =
     Number.isInteger(Number(backupHealthThresholdDays)) &&
     Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
@@ -2288,6 +2303,9 @@ function AdminVotingPage({
   useEffect(() => {
     setBackupThresholdInput(String(effectiveBackupHealthThresholdDays));
   }, [effectiveBackupHealthThresholdDays]);
+  useEffect(() => {
+    setDbApiInput(String(dbApiBaseUrl || ""));
+  }, [dbApiBaseUrl]);
 
   const lotRows = lotLabels.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
@@ -2796,6 +2814,105 @@ function AdminVotingPage({
     setTimeout(() => setBackupThresholdMsg(""), 3500);
   };
 
+  const saveDbApiUrl = () => {
+    const safeUrl = String(dbApiInput || "").trim();
+    onUpdateDbApiBaseUrl?.(safeUrl);
+    setDbMsg(safeUrl ? `Database API URL saved: ${safeUrl}` : "Database API URL cleared (will use same-origin /api routes).");
+    setTimeout(() => setDbMsg(""), 3500);
+  };
+
+  const testDbConnection = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const result = await onTestDbConnection?.();
+      if (result?.error) {
+        setDbErr(result.error);
+      } else {
+        setDbMsg(result?.message || "PostgreSQL API connection is healthy.");
+      }
+    } catch (err) {
+      setDbErr(err?.message || "Could not reach PostgreSQL API.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const syncPortalToDb = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+      const result = await onSyncToDb?.({ mode: restoreMode, scopes: normalizedScopes });
+      if (result?.error) {
+        setDbErr(result.error);
+      } else {
+        setDbMsg(result?.message || "Portal data synced to PostgreSQL.");
+      }
+    } catch (err) {
+      setDbErr(err?.message || "Could not sync portal data to PostgreSQL.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const restoreFromDb = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+      const result = await onRestoreFromDb?.({ mode: restoreMode, scopes: normalizedScopes });
+      if (result?.error) {
+        setDbErr(result.error);
+      } else {
+        setDbMsg(result?.message || "Portal restored from PostgreSQL.");
+      }
+    } catch (err) {
+      setDbErr(err?.message || "Could not restore data from PostgreSQL.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const loadDbSummary = async () => {
+    setDbErr("");
+    setDbBusy(true);
+    try {
+      const result = await onFetchDbSummary?.();
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      setDbSummary(result?.summary || null);
+      setDbMsg("Database summary loaded.");
+    } catch (err) {
+      setDbErr(err?.message || "Could not load database summary.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const loadDbRecords = async () => {
+    setDbErr("");
+    setDbBusy(true);
+    try {
+      const result = await onFetchDbRecords?.(dbRecordsTable, 200, 0);
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      setDbRecords(Array.isArray(result?.records) ? result.records : []);
+      setDbMsg(`Loaded ${Array.isArray(result?.records) ? result.records.length : 0} record(s) from "${dbRecordsTable}".`);
+    } catch (err) {
+      setDbErr(err?.message || "Could not load database records.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
@@ -3035,23 +3152,27 @@ function AdminVotingPage({
             <select
               style={{ ...S.select, minWidth: 180, padding: "6px 8px" }}
               value={restoreMode}
-              onChange={(event) => setRestoreMode(event.target.value === "merge" ? "merge" : "replace")}
-              disabled={backupBusy}
+              onChange={(event) => {
+                const nextMode = event.target.value;
+                setRestoreMode(nextMode === "merge" || nextMode === "missing" ? nextMode : "replace");
+              }}
+              disabled={backupBusy || dbBusy}
             >
               <option value="replace">Replace selected sections</option>
               <option value="merge">Merge selected sections</option>
+              <option value="missing">Restore missing values only</option>
             </select>
             <button
               style={{ ...S.btn("outline"), padding: "6px 10px", fontSize: 11 }}
               onClick={() => setAllRestoreScopes(true)}
-              disabled={backupBusy}
+              disabled={backupBusy || dbBusy}
             >
               Select all
             </button>
             <button
               style={{ ...S.btn("outline"), padding: "6px 10px", fontSize: 11 }}
               onClick={() => setAllRestoreScopes(false)}
-              disabled={backupBusy}
+              disabled={backupBusy || dbBusy}
             >
               Clear all
             </button>
@@ -3077,7 +3198,7 @@ function AdminVotingPage({
                   type="checkbox"
                   checked={normalizeRestoreScopes(restoreScopes)[scope.key] !== false}
                   onChange={() => toggleRestoreScope(scope.key)}
-                  disabled={backupBusy}
+                  disabled={backupBusy || dbBusy}
                 />
                 <span>{scope.label}</span>
               </label>
@@ -3085,7 +3206,97 @@ function AdminVotingPage({
           </div>
         </div>
         <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
-          Restore applies only selected sections. Replace mode overwrites those sections; merge mode keeps existing data and overlays backup values.
+          Restore applies only selected sections. Replace mode overwrites those sections; merge mode overlays backup values; missing-only mode fills blanks without replacing existing records.
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>PostgreSQL sync, restore, and record viewer</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Connect to your PostgreSQL API server, push current portal state, restore from database using selected scopes/mode, and inspect records.
+        </div>
+        {dbErr && <div style={S.alert("danger")}>{dbErr}</div>}
+        {dbMsg && <div style={S.alert("success")}>{dbMsg}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr auto auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>Database API base URL</label>
+            <input
+              style={S.input}
+              value={dbApiInput}
+              onChange={(event) => setDbApiInput(event.target.value)}
+              placeholder="http://localhost:8787 (leave blank for same-origin /api)"
+            />
+          </div>
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={saveDbApiUrl} disabled={dbBusy}>
+            Save URL
+          </button>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={testDbConnection} disabled={dbBusy}>
+            Test connection
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={syncPortalToDb} disabled={dbBusy}>
+            Sync current portal to PostgreSQL
+          </button>
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={restoreFromDb} disabled={dbBusy}>
+            Restore from PostgreSQL ({restoreMode})
+          </button>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={loadDbSummary} disabled={dbBusy}>
+            Load DB summary
+          </button>
+        </div>
+        {dbSummary && (
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+            state_values: <strong>{dbSummary.state_values || 0}</strong> · covenant_assets: <strong>{dbSummary.covenant_assets || 0}</strong> · snapshots: <strong>{dbSummary.backup_snapshots || 0}</strong>
+          </div>
+        )}
+        {dbSummary?.scope_records?.length > 0 && (
+          <div style={{ overflowX: "auto", marginBottom: 12 }}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Scope</th>
+                  <th style={S.th}>Record count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dbSummary.scope_records.map((row) => (
+                  <tr key={row.scope}>
+                    <td style={S.td}>{row.scope}</td>
+                    <td style={S.td}>{row.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          <select style={{ ...S.select, maxWidth: 260 }} value={dbRecordsTable} onChange={(event) => setDbRecordsTable(event.target.value)} disabled={dbBusy}>
+            {[
+              "state_values",
+              "comments",
+              "covenantDocs",
+              "ownerActivity",
+              "voteLedger",
+              "primaryVoters",
+              "outreach",
+              "userDirectory",
+              "adminAccess",
+              "adminAccessGrades",
+              "voteEligibility",
+              "legacyVoteEntries",
+              "covenant_assets",
+              "backup_snapshots",
+            ].map((tableName) => (
+              <option key={tableName} value={tableName}>{tableName}</option>
+            ))}
+          </select>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={loadDbRecords} disabled={dbBusy}>
+            Load records
+          </button>
+        </div>
+        <div style={{ maxHeight: 260, overflow: "auto", background: C.parchment, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10 }}>
+          <pre style={{ margin: 0, fontSize: 11, lineHeight: 1.45, color: C.ink }}>{JSON.stringify(dbRecords, null, 2)}</pre>
         </div>
       </div>
 
@@ -3503,6 +3714,10 @@ export default function App() {
     }
     return DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
   });
+  const [dbApiBaseUrl, setDbApiBaseUrl] = useState(() => {
+    const saved = store.get(DB_API_BASE_URL_KEY);
+    return typeof saved === "string" ? saved.trim() : "";
+  });
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
@@ -3520,6 +3735,7 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
+  useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
     const result = consolidateCovenantDocs(covenantDocs);
     if (result.removedCount > 0) {
@@ -3976,9 +4192,9 @@ export default function App() {
     };
   };
 
-  const handleExportBackup = async () => {
+  const buildPortalBackupPayload = async () => {
     const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
-    const backup = {
+    return {
       backupType: PORTAL_BACKUP_TYPE,
       version: PORTAL_BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
@@ -3997,10 +4213,16 @@ export default function App() {
         fw_admin_access_grades: adminAccessGrades,
         fw_total_lots: totalLots,
         fw_vote_eligibility: eligibilityState,
+        fw_last_backup_export_at: lastBackupExportAt || null,
+        fw_backup_health_threshold_days: backupHealthThresholdDays,
         legacy_vote_entries: collectLegacyVoteEntries(),
         covenant_asset_records: covenantAssetRecords,
       },
     };
+  };
+
+  const handleExportBackup = async () => {
+    const backup = await buildPortalBackupPayload();
 
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -4027,21 +4249,41 @@ export default function App() {
     if (rawBackup?.version && Number(rawBackup.version) > PORTAL_BACKUP_VERSION) {
       return { error: `Backup version ${rawBackup.version} is newer than this portal supports.` };
     }
-    const restoreMode = restoreOptions?.mode === "merge" ? "merge" : "replace";
+    const restoreMode =
+      restoreOptions?.mode === "merge" || restoreOptions?.mode === "missing"
+        ? restoreOptions.mode
+        : "replace";
     const scopeFlags = normalizeRestoreScopes(restoreOptions?.scopes);
     if (!hasSelectedRestoreScope(scopeFlags)) {
       return { error: "Select at least one section to restore." };
     }
 
     const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
-    const mergeObjectState = (currentState, incomingState) =>
-      restoreMode === "merge" ? { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) } : sanitizeObj(incomingState);
+    const mergeObjectState = (currentState, incomingState) => {
+      if (restoreMode === "replace") return sanitizeObj(incomingState);
+      if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+      const current = { ...sanitizeObj(currentState) };
+      const incoming = sanitizeObj(incomingState);
+      Object.entries(incoming).forEach(([key, value]) => {
+        const existing = current[key];
+        const isMissing = existing === undefined || existing === null || existing === "";
+        if (isMissing) current[key] = value;
+      });
+      return current;
+    };
 
     const parsedTotalLots = Number(candidate.fw_total_lots);
     const restoredTotalLots =
       Number.isInteger(parsedTotalLots) && parsedTotalLots >= MIN_TOTAL_LOTS && parsedTotalLots <= MAX_TOTAL_LOTS
         ? parsedTotalLots
         : totalLots;
+    const parsedThreshold = Number(candidate.fw_backup_health_threshold_days);
+    const restoredThreshold =
+      Number.isInteger(parsedThreshold)
+      && parsedThreshold >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      && parsedThreshold <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+        ? parsedThreshold
+        : backupHealthThresholdDays;
     const nextTotalLots = scopeFlags.lotSettings ? restoredTotalLots : totalLots;
     const nextLotLabels = buildLotLabels(nextTotalLots);
     const nextLotSet = new Set(nextLotLabels);
@@ -4063,9 +4305,15 @@ export default function App() {
     });
     const nextVoteLedger =
       scopeFlags.votes
-        ? (restoreMode === "merge"
-            ? { ...currentVoteLedgerForScope, ...importedVoteLedger }
-            : importedVoteLedger)
+        ? (() => {
+            if (restoreMode === "replace") return importedVoteLedger;
+            if (restoreMode === "merge") return { ...currentVoteLedgerForScope, ...importedVoteLedger };
+            const merged = { ...currentVoteLedgerForScope };
+            Object.entries(importedVoteLedger).forEach(([lotLabel, choice]) => {
+              if (!merged[lotLabel]) merged[lotLabel] = choice;
+            });
+            return merged;
+          })()
         : currentVoteLedgerForScope;
 
     if (scopeFlags.votes) {
@@ -4076,6 +4324,7 @@ export default function App() {
       Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
         if (!String(key).startsWith("vote_")) return;
         if (!VALID_VOTE_CHOICES.has(choice)) return;
+        if (restoreMode === "missing" && store.get(key)) return;
         store.set(key, choice);
       });
       Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
@@ -4086,13 +4335,13 @@ export default function App() {
     const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
     const nextComments =
       scopeFlags.comments
-        ? (restoreMode === "merge" ? mergeCommentsBySignature(comments, importedComments) : importedComments)
+        ? (restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments))
         : comments;
 
     const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
     const nextCovenantDocsRaw =
       scopeFlags.covenantDocs
-        ? (restoreMode === "merge" ? mergeCovenantDocsById(covenantDocs, importedCovenantDocs) : importedCovenantDocs)
+        ? (restoreMode === "replace" ? importedCovenantDocs : mergeCovenantDocsById(covenantDocs, importedCovenantDocs))
         : covenantDocs;
     const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
 
@@ -4114,7 +4363,7 @@ export default function App() {
     const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
     const effectiveAdminEntries = scopeFlags.adminAccess
       ? (() => {
-          if (restoreMode === "merge") {
+          if (restoreMode === "merge" || restoreMode === "missing") {
             const mergedEntries = normalizeAdminAccessEntries([...adminAccessEntries, ...nextAdminEntries]);
             return mergedEntries.length > 0 ? mergedEntries : adminAccessEntries;
           }
@@ -4126,13 +4375,15 @@ export default function App() {
       : adminAccessGrades;
     const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
     if (scopeFlags.covenantFiles) {
-      if (restoreMode === "merge") {
+      if (restoreMode === "merge" || restoreMode === "missing") {
         const existingAssets = await listCovenantAssetRecords().catch(() => []);
         const assetMap = new Map();
         existingAssets.forEach((record) => assetMap.set(record.id, record));
         restoredAssets.forEach((record) => {
           const id = String(record?.id || "").trim();
-          if (id) assetMap.set(id, record);
+          if (!id) return;
+          if (restoreMode === "missing" && assetMap.has(id)) return;
+          assetMap.set(id, record);
         });
         await replaceCovenantAssetRecords(Array.from(assetMap.values()));
       } else {
@@ -4140,7 +4391,10 @@ export default function App() {
       }
     }
 
-    if (scopeFlags.lotSettings) setTotalLots(nextTotalLots);
+    if (scopeFlags.lotSettings) {
+      setTotalLots(nextTotalLots);
+      setBackupHealthThresholdDays(restoredThreshold);
+    }
     if (scopeFlags.votes) setVoteLedger(nextVoteLedger);
     setVotes(computeVoteTotalsFromLedger(nextVoteLedger, nextLotLabels));
     if (scopeFlags.comments) {
@@ -4183,6 +4437,9 @@ export default function App() {
       store.set("fw_user", restoredUser);
       setUser(restoredUser);
       setPage(restoredUser?.isAdmin ? "admin-votes" : "home");
+      if (candidate.fw_last_backup_export_at && !Number.isNaN(Date.parse(String(candidate.fw_last_backup_export_at)))) {
+        setLastBackupExportAt(new Date(String(candidate.fw_last_backup_export_at)).toISOString());
+      }
     }
     const appliedScopeLabels = BACKUP_RESTORE_SCOPE_OPTIONS
       .filter((scope) => scopeFlags[scope.key] !== false)
@@ -4213,6 +4470,82 @@ export default function App() {
     }
     setBackupHealthThresholdDays(parsed);
     return { message: `Backup health threshold set to ${parsed} days.` };
+  };
+
+  const handleUpdateDbApiBaseUrl = (nextUrl = "") => {
+    setDbApiBaseUrl(String(nextUrl || "").trim());
+    return { message: "Database API URL updated." };
+  };
+
+  const resolveDbApiUrl = (path) => {
+    const safePath = String(path || "");
+    const base = String(dbApiBaseUrl || "").trim();
+    if (!base) return safePath;
+    return `${base.replace(/\/+$/, "")}${safePath}`;
+  };
+
+  const callDbApi = async (path, options = {}) => {
+    const response = await fetch(resolveDbApiUrl(path), {
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+    const text = await response.text();
+    let parsed = {};
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = {};
+    }
+    if (!response.ok || parsed?.ok === false) {
+      throw new Error(parsed?.error || `Database API request failed (${response.status}).`);
+    }
+    return parsed;
+  };
+
+  const handleTestDbConnection = async () => {
+    const result = await callDbApi("/api/db/health", { method: "GET" });
+    return {
+      message: `Connected to PostgreSQL API. Server time: ${result?.now || "unknown"}`,
+    };
+  };
+
+  const handleSyncToDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
+    const backup = await buildPortalBackupPayload();
+    const result = await callDbApi("/api/db/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        backup,
+        mode,
+        scopes,
+      }),
+    });
+    return {
+      message: result?.message || "PostgreSQL sync completed.",
+    };
+  };
+
+  const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
+    const result = await callDbApi("/api/db/export", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return handleRestoreBackup(result?.backup || {}, { mode, scopes });
+  };
+
+  const handleFetchDbSummary = async () => {
+    const result = await callDbApi("/api/db/summary", { method: "GET" });
+    return { summary: result?.summary || null };
+  };
+
+  const handleFetchDbRecords = async (table, limit = 200, offset = 0) => {
+    const safeTable = encodeURIComponent(String(table || "state_values"));
+    const result = await callDbApi(`/api/db/records/${safeTable}?limit=${Number(limit) || 200}&offset=${Number(offset) || 0}`, {
+      method: "GET",
+    });
+    return { records: Array.isArray(result?.records) ? result.records : [] };
   };
 
   const activityRows = Object.values(ownerActivity);
@@ -4350,11 +4683,18 @@ export default function App() {
               votesNeeded={votesNeeded}
               lastBackupExportAt={lastBackupExportAt}
               backupHealthThresholdDays={backupHealthThresholdDays}
+              dbApiBaseUrl={dbApiBaseUrl}
               onImportCsv={handleImportCsv}
               onExportBackup={handleExportBackup}
               onRestoreBackup={handleRestoreBackup}
               onRecordBackupExport={handleRecordBackupExport}
               onUpdateBackupHealthThresholdDays={handleUpdateBackupHealthThresholdDays}
+              onUpdateDbApiBaseUrl={handleUpdateDbApiBaseUrl}
+              onTestDbConnection={handleTestDbConnection}
+              onSyncToDb={handleSyncToDb}
+              onRestoreFromDb={handleRestoreFromDb}
+              onFetchDbSummary={handleFetchDbSummary}
+              onFetchDbRecords={handleFetchDbRecords}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
