@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -33,9 +33,9 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
 ]);
 
 const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
-const TOTAL_LOTS = 200;
-const VOTES_NEEDED = 134;
-const ALL_LOT_LABELS = Array.from({ length: TOTAL_LOTS }, (_, idx) => `Lot ${idx + 1}`);
+const DEFAULT_TOTAL_LOTS = 200;
+const MAX_TOTAL_LOTS = 500;
+const MIN_TOTAL_LOTS = 1;
 const STR_CONCERN_OPTIONS = [
   "Traffic & parking pressure",
   "Parties, loud noise, and disturbances",
@@ -75,6 +75,12 @@ const normalizeLotLabel = (value) => {
   if (!stripped) return null;
   return `Lot ${stripped}`;
 };
+
+const buildLotLabels = (totalLots) =>
+  Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
+
+const votesNeededForLots = (totalLots) =>
+  Math.ceil((Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2) / 3);
 
 const parseLotsInput = (value) => {
   const raw = String(value || "").trim();
@@ -428,10 +434,10 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── HOME PAGE ────────────────────────────────────────────────────────────────
-function HomePage({ votes, stats }) {
-  const communityEngaged = Math.min(TOTAL_LOTS, votes.eliminate + votes.permit + votes.undecided);
-  const engPct = Math.round((communityEngaged / TOTAL_LOTS) * 100);
-  const yesPct = Math.round((votes.eliminate / TOTAL_LOTS) * 100);
+function HomePage({ votes, stats, totalLots, votesNeeded }) {
+  const communityEngaged = Math.min(totalLots, votes.eliminate + votes.permit + votes.undecided);
+  const engPct = Math.round((communityEngaged / totalLots) * 100);
+  const yesPct = Math.round((votes.eliminate / totalLots) * 100);
   return (
     <div>
       <div style={{ background:`linear-gradient(135deg, ${C.forest} 0%, ${C.forestLight} 100%)`, borderRadius:10, padding:"28px 32px", marginBottom:20, color:C.white, position:"relative", overflow:"hidden" }}>
@@ -440,7 +446,7 @@ function HomePage({ votes, stats }) {
         </div>
         <div style={{ fontFamily:"Georgia,serif", fontSize:13, color:C.stone, textTransform:"uppercase", letterSpacing:"0.1em", marginBottom:6 }}>Falling Waters Residential Association</div>
         <h1 style={{ fontFamily:"Georgia,serif", fontSize:28, margin:"0 0 8px", lineHeight:1.2 }}>One Community, One Covenant</h1>
-        <p style={{ fontSize:14, color:"rgba(255,255,255,0.8)", maxWidth:560, margin:"0 0 20px", lineHeight:1.6 }}>A community-led effort to adopt a single, legally valid set of CC&Rs binding all 200 lots — transparently, fairly, and permanently.</p>
+        <p style={{ fontSize:14, color:"rgba(255,255,255,0.8)", maxWidth:560, margin:"0 0 20px", lineHeight:1.6 }}>A community-led effort to adopt a single, legally valid set of CC&Rs binding all {totalLots} lots — transparently, fairly, and permanently.</p>
         <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
           <span style={{ background:"rgba(196,168,130,0.25)", border:`1px solid ${C.stone}`, color:C.stone, padding:"4px 14px", borderRadius:20, fontSize:12, fontWeight:600 }}>⚖ Phase 1 — Legal review in progress</span>
           <span style={{ background:"rgba(255,255,255,0.1)", color:"rgba(255,255,255,0.8)", padding:"4px 14px", borderRadius:20, fontSize:12 }}>Attorney engaged · Aug 2026</span>
@@ -449,8 +455,8 @@ function HomePage({ votes, stats }) {
 
       <div style={S.statGrid}>
         {[
-          { num:TOTAL_LOTS, label:"Total lots", accent:C.forest },
-          { num:VOTES_NEEDED, label:"Votes needed (2/3)", accent:C.stone },
+          { num:totalLots, label:"Total lots", accent:C.forest },
+          { num:votesNeeded, label:"Votes needed (2/3)", accent:C.stone },
           { num:communityEngaged, label:"Owners engaged", accent:"#2563EB" },
           { num:`${yesPct}%`, label:"Supporting STR elimination", accent:C.danger },
         ].map((s,i) => (
@@ -465,9 +471,9 @@ function HomePage({ votes, stats }) {
         <div style={S.card}>
           <div style={S.cardTitle}>Overall engagement</div>
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have participated in the survey process</div>
-          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{communityEngaged} of {TOTAL_LOTS} lots engaged</span><span>{engPct}%</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{communityEngaged} of {totalLots} lots engaged</span><span>{engPct}%</span></div>
           <div style={S.meter}><div style={S.meterFill(engPct, C.forest)}/></div>
-          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {TOTAL_LOTS - communityEngaged} owners not yet reached</div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {totalLots - communityEngaged} owners not yet reached</div>
           <div style={{ marginTop:10, fontSize:12, color:C.muted, lineHeight:1.55 }}>
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
           </div>
@@ -477,8 +483,8 @@ function HomePage({ votes, stats }) {
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current sentiment toward eliminating short-term rentals</div>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} not voted</span><span>{yesPct}% support elimination</span></div>
           <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
-            <div style={{ width:`${(votes.eliminate/TOTAL_LOTS)*100}%`, background:C.danger, transition:"width 1s" }}/>
-            <div style={{ width:`${(votes.permit/TOTAL_LOTS)*100}%`, background:C.stone, transition:"width 1s" }}/>
+            <div style={{ width:`${(votes.eliminate/totalLots)*100}%`, background:C.danger, transition:"width 1s" }}/>
+            <div style={{ width:`${(votes.permit/totalLots)*100}%`, background:C.stone, transition:"width 1s" }}/>
             <div style={{ flex:1, background:C.parchmentDark }}/>
           </div>
           <div style={{ display:"flex", gap:14, fontSize:11, color:C.muted }}>
@@ -486,7 +492,7 @@ function HomePage({ votes, stats }) {
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit STRs ({votes.permit})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({votes.undecided})</span>
           </div>
-          <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {VOTES_NEEDED} votes to eliminate STRs. Currently {VOTES_NEEDED - votes.eliminate} votes short.</div>
+          <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {votesNeeded} votes to eliminate STRs. Currently {Math.max(votesNeeded - votes.eliminate, 0)} votes short.</div>
         </div>
       </div>
 
@@ -1015,7 +1021,7 @@ function ProposedCovenantPage() {
 }
 
 // ── STR PAGE ─────────────────────────────────────────────────────────────────
-function STRPage({ user, votes, voteLedger, onVote }) {
+function STRPage({ user, votes, voteLedger, onVote, totalLots }) {
   const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
   const canVote = isPrimaryVoter(user);
   const lotChoices = votingLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
@@ -1044,16 +1050,16 @@ function STRPage({ user, votes, voteLedger, onVote }) {
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
         {[
-          { label:"Eliminate STRs", count:votes.eliminate, pct:Math.round((votes.eliminate/TOTAL_LOTS)*100), color:C.danger, desc:"No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
-          { label:"Permit with regulation", count:votes.permit, pct:Math.round((votes.permit/TOTAL_LOTS)*100), color:C.stone, desc:"7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
-          { label:"Not yet voted", count:votes.undecided, pct:Math.round((votes.undecided/TOTAL_LOTS)*100), color:C.parchmentDark, desc:"Owners who have not yet indicated a preference. Your voice is needed." },
+          { label:"Eliminate STRs", count:votes.eliminate, pct:Math.round((votes.eliminate/totalLots)*100), color:C.danger, desc:"No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
+          { label:"Permit with regulation", count:votes.permit, pct:Math.round((votes.permit/totalLots)*100), color:C.stone, desc:"7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
+          { label:"Not yet voted", count:votes.undecided, pct:Math.round((votes.undecided/totalLots)*100), color:C.parchmentDark, desc:"Owners who have not yet indicated a preference. Your voice is needed." },
         ].map((v,i) => (
           <div key={i} style={{ background:C.white, border:`2px solid ${v.color}`, borderRadius:8, padding:"16px 20px" }}>
             <div style={{ fontSize:28, fontWeight:700, fontFamily:"Georgia,serif", color:v.color }}>{v.count}</div>
             <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.ink }}>{v.label}</div>
             <div style={{ fontSize:12, color:C.muted, lineHeight:1.5, marginBottom:8 }}>{v.desc}</div>
             <div style={S.meter}><div style={S.meterFill(v.pct, v.color)}/></div>
-            <div style={{ fontSize:11, color:C.muted }}>{v.pct}% of 200 lots</div>
+            <div style={{ fontSize:11, color:C.muted }}>{v.pct}% of {totalLots} lots</div>
           </div>
         ))}
       </div>
@@ -1399,13 +1405,31 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 }
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
-function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outreachState, eligibilityState, onImportCsv, onUpdateEligibility }) {
+function AdminVotingPage({
+  ownerActivity,
+  voteLedger,
+  primaryVoterRegistry,
+  outreachState,
+  eligibilityState,
+  totalLots,
+  votesNeeded,
+  onImportCsv,
+  onUpdateEligibility,
+  onUpdateTotalLots,
+}) {
   const [filter, setFilter] = useState("all");
+  const [lotQuery, setLotQuery] = useState("");
+  const [lotCountInput, setLotCountInput] = useState(String(totalLots));
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importErr, setImportErr] = useState("");
+  const lotLabels = buildLotLabels(totalLots);
 
-  const lotRows = ALL_LOT_LABELS.map((lotLabel) => {
+  useEffect(() => {
+    setLotCountInput(String(totalLots));
+  }, [totalLots]);
+
+  const lotRows = lotLabels.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
     const outreach = outreachState?.[lotLabel] || null;
     const eligibility = eligibilityState?.[lotLabel] || null;
@@ -1439,7 +1463,7 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
   const eligiblePermitVotes = eligibleVotedRows.filter((row) => row.choice === "permit").length;
   const eligibleUndecidedVotes = lotRows.filter((row) => row.voteEligible && !row.hasVoted).length;
   const notVotedRows = lotRows.filter((row) => !row.hasVoted);
-  const filteredRows =
+  const filteredByStatus =
     filter === "voted"
       ? votedRows
       : filter === "not-voted"
@@ -1447,6 +1471,14 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
         : filter === "ineligible"
           ? ineligibleRows
         : lotRows;
+  const normalizedLotQuery = String(lotQuery || "").trim().toLowerCase();
+  const filteredRows = normalizedLotQuery
+    ? filteredByStatus.filter((row) => {
+      const lotLabel = String(row.lot || "").toLowerCase();
+      const lotNum = String(row.lotNum || "");
+      return lotLabel.includes(normalizedLotQuery) || lotNum.includes(normalizedLotQuery);
+    })
+    : filteredByStatus;
 
   const exportCsv = () => {
     const headers = [
@@ -1505,6 +1537,17 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
     }
   };
 
+  const saveLotCount = () => {
+    const parsed = Number.parseInt(String(lotCountInput || "").trim(), 10);
+    if (Number.isNaN(parsed) || parsed < MIN_TOTAL_LOTS || parsed > MAX_TOTAL_LOTS) {
+      setImportErr(`Total lots must be a number between ${MIN_TOTAL_LOTS} and ${MAX_TOTAL_LOTS}.`);
+      return;
+    }
+    setImportErr("");
+    setImportMsg("");
+    onUpdateTotalLots(parsed);
+  };
+
   const handleImport = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1539,6 +1582,27 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
       </div>
 
       <div style={S.card}>
+        <div style={S.cardTitle}>Lot-owner universe settings</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Set how many lots are included in official participation and vote math. The 2/3 threshold updates automatically.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            style={{ ...S.input, maxWidth: 180 }}
+            type="number"
+            min={MIN_TOTAL_LOTS}
+            max={MAX_TOTAL_LOTS}
+            value={lotCountInput}
+            onChange={(event) => setLotCountInput(event.target.value)}
+          />
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={saveLotCount}>Save lot count</button>
+          <span style={{ fontSize: 12, color: C.muted }}>
+            Current threshold: <strong>{votesNeeded}</strong> yes votes needed
+          </span>
+        </div>
+      </div>
+
+      <div style={S.card}>
         <div style={S.cardTitle}>Import master spreadsheet (CSV)</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
           Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date.
@@ -1550,7 +1614,7 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
 
       <div style={S.statGrid}>
         {[
-          { num: TOTAL_LOTS, label: "Total lots", accent: C.forest },
+          { num: totalLots, label: "Total lots", accent: C.forest },
           { num: eligibleVotedRows.length, label: "Eligible votes counted", accent: C.success },
           { num: ineligibleVotedRows.length, label: "Non-eligible votes flagged", accent: C.danger },
           { num: ineligibleRows.length, label: "Lots marked non-eligible", accent: C.amber },
@@ -1572,6 +1636,12 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
             <div style={S.cardTitle}>Lot-level voting roster</div>
             <div style={{ fontSize: 12, color: C.muted }}>{filteredRows.length} lot records shown</div>
           </div>
+          <input
+            style={{ ...S.input, width: 180, padding: "7px 10px" }}
+            placeholder="Find lot # (e.g. 37)"
+            value={lotQuery}
+            onChange={(event) => setLotQuery(event.target.value)}
+          />
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button style={{ ...S.btn(filter === "all" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("all")}>All lots</button>
             <button style={{ ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("voted")}>Voted only</button>
@@ -1652,9 +1722,9 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
 }
 
 // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
-function DashboardPage({ votes, comments, stats }) {
+function DashboardPage({ votes, comments, stats, totalLots, votesNeeded }) {
   const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
-  const notEngaged = Math.max(0, TOTAL_LOTS - surveyEngaged);
+  const notEngaged = Math.max(0, totalLots - surveyEngaged);
   const strComments = comments.filter(c => c.topic === "str");
   const restrictCount = comments.filter(c => c.stance === "restrict").length;
   const permitCount = comments.filter(c => c.stance === "permit").length;
@@ -1668,9 +1738,9 @@ function DashboardPage({ votes, comments, stats }) {
     <div>
       <div style={S.statGrid}>
         {[
-          { num:TOTAL_LOTS, label:"Total lots", accent:C.forest },
+          { num:totalLots, label:"Total lots", accent:C.forest },
           { num:surveyEngaged, label:"Survey engaged", accent:"#2563EB" },
-          { num:`${Math.round((surveyEngaged/TOTAL_LOTS)*100)}%`, label:"Engagement rate", accent:C.stone },
+          { num:`${Math.round((surveyEngaged/totalLots)*100)}%`, label:"Engagement rate", accent:C.stone },
           { num:comments.length, label:"Comments posted", accent:"#7C3AED" },
         ].map((s,i) => <div key={i} style={S.statCard(s.accent)}><div style={S.statNum}>{s.num}</div><div style={S.statLabel}>{s.label}</div></div>)}
       </div>
@@ -1682,7 +1752,7 @@ function DashboardPage({ votes, comments, stats }) {
             { label: "Logged in", value: stats.loggedInLots, color: C.forest },
             { label: "Commented", value: stats.commentedLots, color: "#7C3AED" },
             { label: "Voted", value: stats.votedLots, color: C.danger },
-            { label: "Need outreach", value: Math.max(TOTAL_LOTS - stats.loggedInLots, 0), color: C.border },
+            { label: "Need outreach", value: Math.max(totalLots - stats.loggedInLots, 0), color: C.border },
           ].map((m, i) => (
             <div key={i} style={{ border: `1px solid ${C.border}`, borderTop: `3px solid ${m.color}`, borderRadius: 8, padding: "12px 14px", background: C.white }}>
               <div style={{ fontSize: 24, fontWeight: 700, color: C.forest, fontFamily: "Georgia,serif" }}>{m.value}</div>
@@ -1694,8 +1764,8 @@ function DashboardPage({ votes, comments, stats }) {
 
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <div style={S.card}>
-          <div style={S.cardTitle}>Vote progress toward 134</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {VOTES_NEEDED} of {TOTAL_LOTS} lots to vote yes on unified covenant</div>
+          <div style={S.cardTitle}>Vote progress toward {votesNeeded}</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {votesNeeded} of {totalLots} lots to vote yes on unified covenant</div>
           {[
             { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
             { label:"Permit with regulation", val:votes.permit, color:C.stone },
@@ -1705,21 +1775,21 @@ function DashboardPage({ votes, comments, stats }) {
             <div key={i} style={{ marginBottom:10 }}>
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
                 <span style={{ color:C.ink }}>{r.label}</span>
-                <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/TOTAL_LOTS)*100)}%)</span>
+                <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/totalLots)*100)}%)</span>
               </div>
-              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/TOTAL_LOTS)*100), r.color)}/></div>
+              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/totalLots)*100), r.color)}/></div>
             </div>
           ))}
           <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
             <div style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
               <span style={{ fontWeight:600, color:C.forest }}>Votes needed to pass</span>
-              <span style={{ fontWeight:700, color:C.danger }}>{VOTES_NEEDED - votes.eliminate} more needed</span>
+              <span style={{ fontWeight:700, color:C.danger }}>{Math.max(votesNeeded - votes.eliminate, 0)} more needed</span>
             </div>
             <div style={{ height:8, borderRadius:4, overflow:"hidden", background:C.parchmentDark, marginTop:6, position:"relative" }}>
-              <div style={{ height:"100%", width:`${(votes.eliminate/VOTES_NEEDED)*100}%`, background:C.danger, transition:"width 1s" }}/>
-              <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${((VOTES_NEEDED-votes.eliminate)/TOTAL_LOTS)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
+              <div style={{ height:"100%", width:`${Math.min((votes.eliminate/Math.max(votesNeeded,1))*100, 100)}%`, background:C.danger, transition:"width 1s" }}/>
+              <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${(Math.max(votesNeeded-votes.eliminate,0)/totalLots)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
             </div>
-            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {VOTES_NEEDED} votes needed to eliminate STRs</div>
+            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {votesNeeded} votes needed to eliminate STRs</div>
           </div>
         </div>
 
@@ -1845,10 +1915,18 @@ export default function App() {
     const saved = store.get("fw_outreach_state");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [totalLots, setTotalLots] = useState(() => {
+    const saved = Number(store.get("fw_total_lots"));
+    if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
+    return DEFAULT_TOTAL_LOTS;
+  });
   const [eligibilityState, setEligibilityState] = useState(() => {
     const saved = store.get("fw_vote_eligibility");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const allLotLabels = buildLotLabels(totalLots);
+  const votesNeeded = votesNeededForLots(totalLots);
+  const previousTotalLotsRef = useRef(totalLots);
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
@@ -1857,6 +1935,7 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
   useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
+  useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
 
   const trackOwner = (lot, patch = {}) => {
@@ -1873,7 +1952,7 @@ export default function App() {
   };
 
   const handleUpdateEligibility = (lot, patch = {}) => {
-    if (!lot || !ALL_LOT_LABELS.includes(lot)) return;
+    if (!lot || !allLotLabels.includes(lot)) return;
     setEligibilityState((prev) => {
       const next = { ...prev };
       const existing = next[lot] || {};
@@ -1897,6 +1976,12 @@ export default function App() {
       };
       return next;
     });
+  };
+
+  const handleUpdateTotalLots = (nextTotalLots) => {
+    const parsed = Number(nextTotalLots);
+    if (!Number.isInteger(parsed) || parsed < MIN_TOTAL_LOTS || parsed > MAX_TOTAL_LOTS) return;
+    setTotalLots(parsed);
   };
 
   const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null) => {
@@ -1980,7 +2065,7 @@ export default function App() {
 
   const handleVote = (choice, lotOverride = null) => {
     if (!isPrimaryVoter(user)) return;
-    const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+    const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
     const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
     if (targetLots.length === 0) return;
     const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
@@ -2041,10 +2126,10 @@ export default function App() {
     return null;
   };
 
-  const recomputeVotesFromLedger = (ledger) => {
+  const recomputeVotesFromLedger = (ledger, lotLabels = allLotLabels) => {
     let eliminate = 0;
     let permit = 0;
-    ALL_LOT_LABELS.forEach((lot) => {
+    lotLabels.forEach((lot) => {
       const choice = ledger[lot];
       if (choice === "eliminate") eliminate += 1;
       if (choice === "permit") permit += 1;
@@ -2052,9 +2137,25 @@ export default function App() {
     return {
       eliminate,
       permit,
-      undecided: Math.max(0, TOTAL_LOTS - eliminate - permit),
+      undecided: Math.max(0, lotLabels.length - eliminate - permit),
     };
   };
+
+  useEffect(() => {
+    if (previousTotalLotsRef.current === totalLots) return;
+    previousTotalLotsRef.current = totalLots;
+    setVotes((prev) => {
+      const recomputed = recomputeVotesFromLedger(voteLedger, allLotLabels);
+      if (
+        prev.eliminate === recomputed.eliminate &&
+        prev.permit === recomputed.permit &&
+        prev.undecided === recomputed.undecided
+      ) {
+        return prev;
+      }
+      return recomputed;
+    });
+  }, [totalLots]);
 
   const handleImportCsv = (rows) => {
     if (!Array.isArray(rows) || rows.length === 0) {
@@ -2086,7 +2187,7 @@ export default function App() {
 
       const lotRaw = pick(["lot", "lot number", "lot #"]);
       const lot = normalizeLotLabel(lotRaw);
-      if (!lot || !ALL_LOT_LABELS.includes(lot)) return;
+      if (!lot || !allLotLabels.includes(lot)) return;
       recognizedLots += 1;
 
       const voteAliases = ["vote choice", "vote", "vote_choice", "choice"];
@@ -2258,21 +2359,21 @@ export default function App() {
         <div style={S.topbar}>
           <div style={S.topbarTitle}>{pageTitles[page]}</div>
           <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-            <span style={{ fontSize:12, color:C.muted }}>Need 134 votes ·</span>
+            <span style={{ fontSize:12, color:C.muted }}>Need {votesNeeded} votes ·</span>
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
             {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>Vote now →</button>}
           </div>
         </div>
         <div style={S.content}>
-          {page === "home" && <HomePage votes={votes} stats={stats}/>}
+          {page === "home" && <HomePage votes={votes} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "documents" && <DocumentsPage docs={covenantDocs}/>}
           {page === "comparison" && <ComparisonPage/>}
           {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
-          {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote}/>}
+          {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots}/>}
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
-          {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
+          {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "admin-votes" && user.isAdmin && (
             <AdminVotingPage
               ownerActivity={ownerActivity}
@@ -2280,8 +2381,11 @@ export default function App() {
               primaryVoterRegistry={primaryVoterRegistry}
               outreachState={outreachState}
               eligibilityState={eligibilityState}
+              totalLots={totalLots}
+              votesNeeded={votesNeeded}
               onImportCsv={handleImportCsv}
               onUpdateEligibility={handleUpdateEligibility}
+              onUpdateTotalLots={handleUpdateTotalLots}
             />
           )}
           {page === "admin-docs" && user.isAdmin && (
