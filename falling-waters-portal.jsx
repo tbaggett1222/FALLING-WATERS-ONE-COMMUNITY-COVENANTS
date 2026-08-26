@@ -46,6 +46,26 @@ const STR_CONCERN_OPTIONS = [
   "Property value and neighborhood character",
   "Legal clarity and enforceability",
 ];
+const ACC_CONCERN_OPTIONS = [
+  "Minimum home size and design consistency",
+  "Exterior materials, colors, and aesthetics",
+  "Setbacks, grading, and site planning",
+  "Construction timelines and compliance",
+  "ACC review transparency and appeals",
+];
+const GENERAL_CONCERN_OPTIONS = [
+  "Legal clarity and enforceability",
+  "Fairness across all lots",
+  "Governance and decision transparency",
+  "Assessment and budget impact",
+  "Question or other",
+];
+const COMMENT_TOPIC_OPTIONS = [
+  { value: "str", label: "Short-term rentals" },
+  { value: "acc", label: "ACC building guidelines" },
+  { value: "general", label: "General covenants" },
+  { value: "process", label: "Process & voting" },
+];
 const DOC_STATUS_OPTIONS = [
   { value: "original", label: "Original" },
   { value: "active2014", label: "Active — Phase II lots" },
@@ -712,7 +732,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         </div>
         <div style={S.card}>
           <div style={S.cardTitle}>STR vote progress</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current sentiment toward eliminating short-term rentals</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current STR policy preference within the one-community CC&R campaign</div>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} not voted</span><span>{yesPct}% support elimination</span></div>
           <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
             <div style={{ width:`${(votes.eliminate/totalLots)*100}%`, background:C.danger, transition:"width 1s" }}/>
@@ -1423,7 +1443,7 @@ function ProposedCovenantPage() {
 }
 
 // ── STR PAGE ─────────────────────────────────────────────────────────────────
-function STRPage({ user, votes, voteLedger, onVote, totalLots }) {
+function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
   const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
   const canVote = isPrimaryVoter(user);
   const lotChoices = votingLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
@@ -1480,7 +1500,10 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots }) {
       </div>
 
       <div style={S.card}>
-        <div style={S.cardTitle}>Cast your vote on short-term rentals</div>
+        <div style={S.cardTitle}>Cast your STR policy vote for the unified CC&R package</div>
+        <div style={S.alert("info")}>
+          <strong>Vote context:</strong> this ballot records each lot's preference on STR policy as part of the one-community CC&R effort. Final adoption of one unified declaration still requires the community-wide 2/3 threshold ({votesNeeded} lots).
+        </div>
         {!canVote && (
           <div style={S.alert("warn")}>
             This login is set as <strong>{accessRoleLabel(user.accessRole)}</strong>. Voting is restricted to the designated primary voter for each lot, but you can still add community comments.
@@ -1598,8 +1621,20 @@ function CommentsPage({ user, comments, onAdd }) {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const filtered = comments.filter(c => (filterTopic==="all" || c.topic===filterTopic) && (filterStance==="" || c.stance===filterStance));
-  const topicLabels = { str:"Short-term rentals", general:"General covenants", process:"Process & voting" };
+  const topicLabels = COMMENT_TOPIC_OPTIONS.reduce((acc, topic) => {
+    acc[topic.value] = topic.label;
+    return acc;
+  }, {});
+  const concernOptions =
+    formTopic === "str"
+      ? STR_CONCERN_OPTIONS
+      : formTopic === "acc"
+        ? ACC_CONCERN_OPTIONS
+        : GENERAL_CONCERN_OPTIONS;
   const stanceColors = { restrict:{ c:C.danger, bg:C.dangerLight, label:"Supports restriction" }, permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports permitting" }, neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" } };
+  useEffect(() => {
+    setFormConcern((current) => (concernOptions.includes(current) ? current : concernOptions[0]));
+  }, [formTopic]);
   const submit = (e) => {
     e.preventDefault();
     if (text.trim().length < 20) return;
@@ -1632,9 +1667,9 @@ function CommentsPage({ user, comments, onAdd }) {
               <div style={{ marginBottom:12 }}>
                 <label style={S.label}>Topic</label>
                 <select style={S.select} value={formTopic} onChange={e=>setFormTopic(e.target.value)}>
-                  <option value="str">Short-term rentals</option>
-                  <option value="general">General covenants</option>
-                  <option value="process">Process & voting</option>
+                  {COMMENT_TOPIC_OPTIONS.map((topic) => (
+                    <option key={topic.value} value={topic.value}>{topic.label}</option>
+                  ))}
                 </select>
               </div>
               <div style={{ marginBottom:12 }}>
@@ -1649,7 +1684,7 @@ function CommentsPage({ user, comments, onAdd }) {
               <div style={{ marginBottom:12 }}>
                 <label style={S.label}>Primary concern</label>
                 <select style={S.select} value={formConcern} onChange={e=>setFormConcern(e.target.value)}>
-                  {STR_CONCERN_OPTIONS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  {concernOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
                 </select>
               </div>
               <div style={{ marginBottom:14 }}>
@@ -1669,9 +1704,9 @@ function CommentsPage({ user, comments, onAdd }) {
               <label style={S.label}>Topic</label>
               <select style={S.select} value={filterTopic} onChange={e=>setFilterTopic(e.target.value)}>
                 <option value="all">All topics</option>
-                <option value="str">Short-term rentals</option>
-                <option value="general">General covenants</option>
-                <option value="process">Process & voting</option>
+                {COMMENT_TOPIC_OPTIONS.map((topic) => (
+                  <option key={topic.value} value={topic.value}>{topic.label}</option>
+                ))}
               </select>
             </div>
             <div>
@@ -2916,7 +2951,7 @@ export default function App() {
           {page === "comparison" && <ComparisonPage/>}
           {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
-          {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots}/>}
+          {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
