@@ -505,6 +505,26 @@ const cleanupRemovedCovenantAssets = (removedDocs, keptDocs) => {
   });
 };
 
+const covenantDisplayRank = (doc) => {
+  const year = normalizedDocYear(doc);
+  if (String(doc?.id || "") === "2008" || year === "2008") return 0;
+  if (String(doc?.id || "") === "2014" || year === "2014") return 1;
+  if (String(doc?.id || "") === "2021" || year === "2021") return 2;
+  return 3;
+};
+
+const sortCovenantDocsForDisplay = (docs) =>
+  (Array.isArray(docs) ? docs : [])
+    .map((doc, idx) => ({ doc, idx }))
+    .sort((a, b) => {
+      const rankDiff = covenantDisplayRank(a.doc) - covenantDisplayRank(b.doc);
+      if (rankDiff !== 0) return rankDiff;
+      const recencyDiff = docRecencyScore(b.doc) - docRecencyScore(a.doc);
+      if (recencyDiff !== 0) return recencyDiff;
+      return a.idx - b.idx;
+    })
+    .map((entry) => entry.doc);
+
 // ── ICONS ────────────────────────────────────────────────────────────────────
 const Icon = {
   home: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>,
@@ -766,7 +786,7 @@ function DocumentsPage({ docs }) {
   const [viewerDocId, setViewerDocId] = useState(null);
   const [viewerAssetUrl, setViewerAssetUrl] = useState("");
   const [viewerAssetError, setViewerAssetError] = useState("");
-  const safeDocs = Array.isArray(docs) ? docs : [];
+  const safeDocs = sortCovenantDocsForDisplay(docs);
   const viewerDoc = safeDocs.find((doc) => doc.id === viewerDocId) || null;
   const viewerSrc = viewerDoc?.fileDataUrl || viewerAssetUrl || viewerDoc?.externalUrl || "";
   const statusColors = {
