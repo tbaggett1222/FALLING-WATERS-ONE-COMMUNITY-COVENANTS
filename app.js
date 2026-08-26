@@ -22995,6 +22995,9 @@ var FallingWatersPortal = (() => {
       try {
         const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
         const lotRowsSorted = [...lotRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+        const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+        const storedCovenantDocs = store.get("fw_covenant_docs");
+        const covenantDocCount = Array.isArray(storedCovenantDocs) ? storedCovenantDocs.length : 0;
         downloadCsvFile(
           `fw-bundle-votes-${stamp}.csv`,
           ["Lot", "Vote Choice", "Has Voted", "Status"],
@@ -23059,7 +23062,68 @@ var FallingWatersPortal = (() => {
             row.lastSeen || ""
           ])
         );
-        setBackupMsg("CSV bundle exported (multiple files downloaded).");
+        const storageKeys = [];
+        if (typeof localStorage !== "undefined") {
+          for (let idx = 0; idx < localStorage.length; idx += 1) {
+            const key = localStorage.key(idx);
+            if (key && (key.startsWith("fw_") || key.startsWith("vote_"))) {
+              storageKeys.push(key);
+            }
+          }
+        }
+        storageKeys.sort((a, b) => a.localeCompare(b));
+        downloadCsvFile(
+          `fw-bundle-raw-storage-${stamp}.csv`,
+          ["Key", "Type", "Parsed JSON Value", "Raw Storage Value"],
+          storageKeys.map((key) => {
+            const rawValue = typeof localStorage !== "undefined" ? String(localStorage.getItem(key) ?? "") : "";
+            let parsedValue = "";
+            try {
+              parsedValue = JSON.stringify(JSON.parse(rawValue));
+            } catch {
+              parsedValue = "";
+            }
+            return [
+              key,
+              key.startsWith("fw_") ? "portal" : "lot-vote",
+              parsedValue,
+              rawValue
+            ];
+          })
+        );
+        const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+        downloadCsvFile(
+          `fw-bundle-covenant-file-blobs-${stamp}.csv`,
+          ["Asset Id", "File Name", "File Type", "Updated At (ms)", "Blob Data URL"],
+          covenantAssetRecords.map((record) => [
+            record.id || "",
+            record.fileName || "",
+            record.fileType || "",
+            String(record.updatedAt || ""),
+            record.blobDataUrl || ""
+          ])
+        );
+        downloadCsvFile(
+          `fw-bundle-manifest-${stamp}.csv`,
+          ["Field", "Value"],
+          [
+            ["exported_at", nowIso],
+            ["total_lots", String(totalLots)],
+            ["votes_needed", String(votesNeeded)],
+            ["vote_records", String(Object.keys(voteLedger || {}).length)],
+            ["comments_count", String((Array.isArray(comments) ? comments : []).length)],
+            ["owner_activity_records", String(Object.keys(ownerActivity || {}).length)],
+            ["outreach_records", String(Object.keys(outreachState || {}).length)],
+            ["eligibility_records", String(Object.keys(eligibilityState || {}).length)],
+            ["primary_voter_records", String(Object.keys(primaryVoterRegistry || {}).length)],
+            ["admin_access_entries", String((Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length)],
+            ["user_directory_records", String(Object.keys(userDirectory || {}).length)],
+            ["covenant_docs", String(covenantDocCount)],
+            ["raw_storage_keys_exported", String(storageKeys.length)],
+            ["covenant_blob_records_exported", String(covenantAssetRecords.length)]
+          ]
+        );
+        setBackupMsg("Full CSV bundle exported (reporting files + raw storage + covenant blob records).");
       } catch (err) {
         setBackupErr(err?.message || "Could not export CSV bundle.");
       } finally {
@@ -23240,7 +23304,7 @@ var FallingWatersPortal = (() => {
         onClick: () => revokeAdminAccess(row.name)
       },
       "Revoke"
-    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Exports all portal records (lots, voting ledger, comments, outreach, admin access, and uploaded covenant files) into one backup file."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
+    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Export options: JSON for full-fidelity restore, plus CSV bundle for spreadsheet workflows. CSV bundle now includes both reporting tables and raw stored portal records."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         style: { ...S.btn("primary"), padding: "7px 12px" },
@@ -23255,7 +23319,7 @@ var FallingWatersPortal = (() => {
         onClick: exportCsvBundle,
         disabled: backupBusy || bundleBusy
       },
-      "Export CSV bundle"
+      "Export full CSV bundle (all data)"
     ), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {

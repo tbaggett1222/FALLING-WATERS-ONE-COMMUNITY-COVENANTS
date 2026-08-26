@@ -2381,6 +2381,9 @@ function AdminVotingPage({
     try {
       const stamp = new Date().toISOString().slice(0, 10);
       const lotRowsSorted = [...lotRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+      const nowIso = new Date().toISOString();
+      const storedCovenantDocs = store.get("fw_covenant_docs");
+      const covenantDocCount = Array.isArray(storedCovenantDocs) ? storedCovenantDocs.length : 0;
 
       downloadCsvFile(
         `fw-bundle-votes-${stamp}.csv`,
@@ -2452,7 +2455,71 @@ function AdminVotingPage({
         ])
       );
 
-      setBackupMsg("CSV bundle exported (multiple files downloaded).");
+      const storageKeys = [];
+      if (typeof localStorage !== "undefined") {
+        for (let idx = 0; idx < localStorage.length; idx += 1) {
+          const key = localStorage.key(idx);
+          if (key && (key.startsWith("fw_") || key.startsWith("vote_"))) {
+            storageKeys.push(key);
+          }
+        }
+      }
+      storageKeys.sort((a, b) => a.localeCompare(b));
+      downloadCsvFile(
+        `fw-bundle-raw-storage-${stamp}.csv`,
+        ["Key", "Type", "Parsed JSON Value", "Raw Storage Value"],
+        storageKeys.map((key) => {
+          const rawValue = typeof localStorage !== "undefined" ? String(localStorage.getItem(key) ?? "") : "";
+          let parsedValue = "";
+          try {
+            parsedValue = JSON.stringify(JSON.parse(rawValue));
+          } catch {
+            parsedValue = "";
+          }
+          return [
+            key,
+            key.startsWith("fw_") ? "portal" : "lot-vote",
+            parsedValue,
+            rawValue,
+          ];
+        })
+      );
+
+      const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+      downloadCsvFile(
+        `fw-bundle-covenant-file-blobs-${stamp}.csv`,
+        ["Asset Id", "File Name", "File Type", "Updated At (ms)", "Blob Data URL"],
+        covenantAssetRecords.map((record) => [
+          record.id || "",
+          record.fileName || "",
+          record.fileType || "",
+          String(record.updatedAt || ""),
+          record.blobDataUrl || "",
+        ])
+      );
+
+      downloadCsvFile(
+        `fw-bundle-manifest-${stamp}.csv`,
+        ["Field", "Value"],
+        [
+          ["exported_at", nowIso],
+          ["total_lots", String(totalLots)],
+          ["votes_needed", String(votesNeeded)],
+          ["vote_records", String(Object.keys(voteLedger || {}).length)],
+          ["comments_count", String((Array.isArray(comments) ? comments : []).length)],
+          ["owner_activity_records", String(Object.keys(ownerActivity || {}).length)],
+          ["outreach_records", String(Object.keys(outreachState || {}).length)],
+          ["eligibility_records", String(Object.keys(eligibilityState || {}).length)],
+          ["primary_voter_records", String(Object.keys(primaryVoterRegistry || {}).length)],
+          ["admin_access_entries", String((Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length)],
+          ["user_directory_records", String(Object.keys(userDirectory || {}).length)],
+          ["covenant_docs", String(covenantDocCount)],
+          ["raw_storage_keys_exported", String(storageKeys.length)],
+          ["covenant_blob_records_exported", String(covenantAssetRecords.length)],
+        ]
+      );
+
+      setBackupMsg("Full CSV bundle exported (reporting files + raw storage + covenant blob records).");
     } catch (err) {
       setBackupErr(err?.message || "Could not export CSV bundle.");
     } finally {
@@ -2772,7 +2839,7 @@ function AdminVotingPage({
       <div style={S.card}>
         <div style={S.cardTitle}>Backup / Restore full portal data (JSON)</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
-          Exports all portal records (lots, voting ledger, comments, outreach, admin access, and uploaded covenant files) into one backup file.
+          Export options: JSON for full-fidelity restore, plus CSV bundle for spreadsheet workflows. CSV bundle now includes both reporting tables and raw stored portal records.
         </div>
         {backupErr && <div style={S.alert("danger")}>{backupErr}</div>}
         {backupMsg && <div style={S.alert("success")}>{backupMsg}</div>}
@@ -2789,7 +2856,7 @@ function AdminVotingPage({
             onClick={exportCsvBundle}
             disabled={backupBusy || bundleBusy}
           >
-            Export CSV bundle
+            Export full CSV bundle (all data)
           </button>
           <input
             style={{ ...S.input, padding: "7px 10px", maxWidth: 320 }}
