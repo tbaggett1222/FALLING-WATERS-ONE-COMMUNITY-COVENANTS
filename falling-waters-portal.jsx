@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -32,7 +32,6 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
   "Lot 34|S. Burke|Aug 23, 2026",
 ]);
 
-const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
@@ -135,6 +134,21 @@ const buildLotLabels = (totalLots) =>
 
 const votesNeededForLots = (totalLots) =>
   Math.ceil((Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2) / 3);
+
+const computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
+  let eliminate = 0;
+  let permit = 0;
+  lotLabels.forEach((lot) => {
+    const choice = ledger?.[lot];
+    if (choice === "eliminate") eliminate += 1;
+    if (choice === "permit") permit += 1;
+  });
+  return {
+    eliminate,
+    permit,
+    undecided: Math.max(0, lotLabels.length - eliminate - permit),
+  };
+};
 
 const formatMegabytes = (bytes) => `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MB`;
 
@@ -2657,7 +2671,33 @@ export default function App() {
     };
   });
   const [page, setPage] = useState("home");
-  const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
+  const [votes, setVotes] = useState(() => {
+    const savedTotalLots = Number(store.get("fw_total_lots"));
+    const effectiveTotalLots =
+      Number.isInteger(savedTotalLots) && savedTotalLots >= MIN_TOTAL_LOTS && savedTotalLots <= MAX_TOTAL_LOTS
+        ? savedTotalLots
+        : DEFAULT_TOTAL_LOTS;
+    const initialLotLabels = buildLotLabels(effectiveTotalLots);
+    const savedLedger = store.get("fw_vote_ledger");
+    if (savedLedger && typeof savedLedger === "object") {
+      return computeVoteTotalsFromLedger(savedLedger, initialLotLabels);
+    }
+    const savedVotes = store.get("fw_votes");
+    if (savedVotes && typeof savedVotes === "object") {
+      const eliminate = Math.max(0, Number(savedVotes.eliminate) || 0);
+      const permit = Math.max(0, Number(savedVotes.permit) || 0);
+      return {
+        eliminate,
+        permit,
+        undecided: Math.max(0, initialLotLabels.length - eliminate - permit),
+      };
+    }
+    return {
+      eliminate: 0,
+      permit: 0,
+      undecided: initialLotLabels.length,
+    };
+  });
   const [comments, setComments] = useState(() => {
     const savedComments = store.get("fw_comments");
     const safeSavedComments = Array.isArray(savedComments) ? savedComments : [];
@@ -2703,7 +2743,6 @@ export default function App() {
   });
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
-  const previousTotalLotsRef = useRef(totalLots);
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
@@ -3024,23 +3063,10 @@ export default function App() {
   };
 
   const recomputeVotesFromLedger = (ledger, lotLabels = allLotLabels) => {
-    let eliminate = 0;
-    let permit = 0;
-    lotLabels.forEach((lot) => {
-      const choice = ledger[lot];
-      if (choice === "eliminate") eliminate += 1;
-      if (choice === "permit") permit += 1;
-    });
-    return {
-      eliminate,
-      permit,
-      undecided: Math.max(0, lotLabels.length - eliminate - permit),
-    };
+    return computeVoteTotalsFromLedger(ledger, lotLabels);
   };
 
   useEffect(() => {
-    if (previousTotalLotsRef.current === totalLots) return;
-    previousTotalLotsRef.current = totalLots;
     setVotes((prev) => {
       const recomputed = recomputeVotesFromLedger(voteLedger, allLotLabels);
       if (
@@ -3052,7 +3078,7 @@ export default function App() {
       }
       return recomputed;
     });
-  }, [totalLots]);
+  }, [totalLots, voteLedger]);
 
   const handleImportCsv = (rows) => {
     if (!Array.isArray(rows) || rows.length === 0) {
