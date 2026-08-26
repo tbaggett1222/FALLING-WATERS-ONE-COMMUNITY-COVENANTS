@@ -387,6 +387,118 @@ const summarizeUploadedCovenant = (rawText, existingDocsCount) => {
   return points;
 };
 
+const CANONICAL_DOC_IDS = new Set(["2008", "2014", "2021"]);
+
+const normalizedDocYear = (doc) => {
+  const match = String(doc?.year || "").match(/\d{4}/);
+  return match ? match[0] : "";
+};
+
+const normalizedDocTitleKey = (title) =>
+  String(title || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const isDeclarationStyleDoc = (doc) => {
+  const titleKey = normalizedDocTitleKey(doc?.title);
+  return titleKey.includes("declaration") && (titleKey.includes("covenant") || titleKey.includes("restriction"));
+};
+
+const docRecencyScore = (doc) => {
+  const idMatch = String(doc?.id || "").match(/^upload_(\d+)$/);
+  if (idMatch) return Number(idMatch[1]);
+  const uploadedAtMs = Date.parse(String(doc?.uploadedAt || ""));
+  if (Number.isFinite(uploadedAtMs)) return uploadedAtMs;
+  return 0;
+};
+
+const covenantDocDedupKey = (doc) => {
+  const year = normalizedDocYear(doc);
+  if (year && isDeclarationStyleDoc(doc)) return `declaration-year:${year}`;
+  const titleKey = normalizedDocTitleKey(doc?.title);
+  return `${year || "na"}|${titleKey || String(doc?.id || "")}`;
+};
+
+const consolidateCovenantDocs = (docs) => {
+  const sourceDocs = Array.isArray(docs) ? docs : [];
+  const buckets = {};
+  const order = [];
+  sourceDocs.forEach((doc) => {
+    const key = covenantDocDedupKey(doc);
+    if (!buckets[key]) {
+      buckets[key] = [];
+      order.push(key);
+    }
+    buckets[key].push(doc);
+  });
+
+  const nextDocs = [];
+  const removedDocs = [];
+  let consolidatedGroups = 0;
+
+  order.forEach((key) => {
+    const group = buckets[key];
+    if (group.length <= 1) {
+      nextDocs.push(group[0]);
+      return;
+    }
+    consolidatedGroups += 1;
+    const canonicalDoc = group.find((doc) => CANONICAL_DOC_IDS.has(String(doc?.id || "")));
+    const richestDoc = [...group].sort(
+      (a, b) => (Array.isArray(b?.sections) ? b.sections.length : 0) - (Array.isArray(a?.sections) ? a.sections.length : 0)
+    )[0];
+    const keepDoc = canonicalDoc || richestDoc || group[0];
+    const uploadLikeDocs = group.filter(
+      (doc) => doc?.source === "uploaded" || doc?.uploadedBy || doc?.fileDataUrl || doc?.fileAssetKey || doc?.externalUrl
+    );
+    const latestUploadLike = [...uploadLikeDocs].sort((a, b) => docRecencyScore(b) - docRecencyScore(a))[0] || null;
+    let mergedDoc = { ...keepDoc };
+
+    if (latestUploadLike) {
+      mergedDoc = {
+        ...mergedDoc,
+        uploadedBy: latestUploadLike.uploadedBy || mergedDoc.uploadedBy,
+        uploadedAt: latestUploadLike.uploadedAt || mergedDoc.uploadedAt,
+        fileName: latestUploadLike.fileName || mergedDoc.fileName || "",
+        fileType: latestUploadLike.fileType || mergedDoc.fileType || "",
+        fileSizeBytes: latestUploadLike.fileSizeBytes || mergedDoc.fileSizeBytes || 0,
+        fileDataUrl: latestUploadLike.fileDataUrl || mergedDoc.fileDataUrl || null,
+        fileAssetKey: latestUploadLike.fileAssetKey || mergedDoc.fileAssetKey || "",
+        externalUrl: latestUploadLike.externalUrl || mergedDoc.externalUrl || "",
+        attachmentNotice: latestUploadLike.attachmentNotice || mergedDoc.attachmentNotice || "",
+        notes: latestUploadLike.notes || mergedDoc.notes || "",
+        autoCompareSummary:
+          Array.isArray(latestUploadLike.autoCompareSummary) && latestUploadLike.autoCompareSummary.length > 0
+            ? latestUploadLike.autoCompareSummary
+            : mergedDoc.autoCompareSummary,
+      };
+    }
+
+    nextDocs.push(mergedDoc);
+    group.forEach((doc) => {
+      if (doc !== keepDoc) removedDocs.push(doc);
+    });
+  });
+
+  return {
+    docs: nextDocs,
+    removedDocs,
+    removedCount: removedDocs.length,
+    consolidatedGroups,
+  };
+};
+
+const cleanupRemovedCovenantAssets = (removedDocs, keptDocs) => {
+  const keepAssetKeys = new Set((Array.isArray(keptDocs) ? keptDocs : []).map((doc) => doc?.fileAssetKey).filter(Boolean));
+  (Array.isArray(removedDocs) ? removedDocs : []).forEach((doc) => {
+    const assetKey = doc?.fileAssetKey;
+    if (assetKey && !keepAssetKeys.has(assetKey)) {
+      deleteCovenantAssetBlob(assetKey).catch(() => {});
+    }
+  });
+};
+
 // ── ICONS ────────────────────────────────────────────────────────────────────
 const Icon = {
   home: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>,
@@ -819,7 +931,7 @@ function DocumentsPage({ docs }) {
 }
 
 // ── ADMIN DOCUMENTS PAGE ─────────────────────────────────────────────────────
-function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
+function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument, onConsolidateDocuments }) {
   const [year, setYear] = useState("");
   const [title, setTitle] = useState("");
   const [preparer, setPreparer] = useState("");
@@ -845,6 +957,17 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
     setNotes("");
     setExternalUrl("");
     setFile(null);
+  };
+
+  const runConsolidation = () => {
+    setError("");
+    setSuccess("");
+    const result = onConsolidateDocuments?.();
+    if (result?.error) {
+      setError(result.error);
+      return;
+    }
+    setSuccess(result?.message || "Duplicate entries consolidated.");
   };
 
   const saveDocument = async (e) => {
@@ -1028,6 +1151,12 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
             {uploadedDocs.length} uploaded by admins
           </div>
+          <button
+            style={{ ...S.btn("stone"), marginBottom: 10, padding: "7px 12px", fontSize: 12 }}
+            onClick={runConsolidation}
+          >
+            Consolidate duplicate entries
+          </button>
           {uploadedDocs.length === 0 && (
             <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
               No uploads yet. Use the form to add existing covenants and make them available to owners.
@@ -2259,6 +2388,13 @@ export default function App() {
   useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
+  useEffect(() => {
+    const result = consolidateCovenantDocs(covenantDocs);
+    if (result.removedCount > 0) {
+      cleanupRemovedCovenantAssets(result.removedDocs, result.docs);
+      setCovenantDocs(result.docs);
+    }
+  }, []);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -2446,7 +2582,12 @@ export default function App() {
     const commentLots = Array.isArray(c.lots) ? c.lots.filter((lot) => lot !== "ADMIN") : [c.lot];
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
   };
-  const handleAddDocument = (doc) => setCovenantDocs((prev) => [doc, ...prev]);
+  const handleAddDocument = (doc) =>
+    setCovenantDocs((prev) => {
+      const result = consolidateCovenantDocs([doc, ...prev]);
+      cleanupRemovedCovenantAssets(result.removedDocs, result.docs);
+      return result.docs;
+    });
   const handleDeleteDocument = (docId) =>
     setCovenantDocs((prev) => {
       const target = prev.find((doc) => doc.id === docId);
@@ -2455,6 +2596,17 @@ export default function App() {
       }
       return prev.filter((doc) => doc.id !== docId);
     });
+  const handleConsolidateDocuments = () => {
+    const result = consolidateCovenantDocs(covenantDocs);
+    if (result.removedCount === 0) {
+      return { message: "No duplicate covenant entries were found." };
+    }
+    cleanupRemovedCovenantAssets(result.removedDocs, result.docs);
+    setCovenantDocs(result.docs);
+    return {
+      message: `Consolidated ${result.removedCount} duplicate entr${result.removedCount === 1 ? "y" : "ies"} across ${result.consolidatedGroups} covenant group${result.consolidatedGroups === 1 ? "" : "s"}.`,
+    };
+  };
   const handleUpdateProfile = ({ name, lots, accessRole }) => {
     const isAdmin = user.isAdmin;
     const normalizedLots = isAdmin ? ["ADMIN"] : [...new Set((lots || []).map((lot) => normalizeLotLabel(lot)).filter(Boolean))];
@@ -2763,6 +2915,7 @@ export default function App() {
               docs={covenantDocs}
               onAddDocument={handleAddDocument}
               onDeleteDocument={handleDeleteDocument}
+              onConsolidateDocuments={handleConsolidateDocuments}
             />
           )}
         </div>
