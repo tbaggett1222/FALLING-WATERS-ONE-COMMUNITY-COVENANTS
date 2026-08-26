@@ -106,6 +106,26 @@ const ADMIN_GRADE_OPTIONS = [
   { value: "read_only_admin", label: "Read-only admin" },
 ];
 const DEFAULT_ADMIN_GRADE = "full_admin";
+const BACKUP_RESTORE_SCOPE_OPTIONS = [
+  { key: "lotSettings", label: "Lot count settings" },
+  { key: "votes", label: "Voting ledger + per-lot vote keys" },
+  { key: "comments", label: "Community comments" },
+  { key: "ownerActivity", label: "Owner activity records" },
+  { key: "outreach", label: "Outreach contact state" },
+  { key: "eligibility", label: "Vote eligibility flags" },
+  { key: "primaryVoters", label: "Primary voter assignments" },
+  { key: "adminAccess", label: "Admin access roster + grades" },
+  { key: "userDirectory", label: "User access directory" },
+  { key: "covenantDocs", label: "Covenant document metadata" },
+  { key: "covenantFiles", label: "Stored covenant file blobs" },
+  { key: "sessionUser", label: "Current signed-in session" },
+];
+
+const defaultBackupRestoreScopes = () =>
+  BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
+    acc[scope.key] = true;
+    return acc;
+  }, {});
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -470,6 +490,57 @@ const clearLegacyVoteEntries = () => {
     if (key && key.startsWith("vote_")) keys.push(key);
   }
   keys.forEach((key) => store.del(key));
+};
+
+const normalizeRestoreScopes = (scopes) => {
+  const defaults = defaultBackupRestoreScopes();
+  if (!scopes || typeof scopes !== "object") return defaults;
+  const normalized = { ...defaults };
+  Object.keys(defaults).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(scopes, key)) {
+      normalized[key] = scopes[key] !== false;
+    }
+  });
+  return normalized;
+};
+
+const hasSelectedRestoreScope = (scopes) =>
+  Object.values(normalizeRestoreScopes(scopes)).some(Boolean);
+
+const mergeCommentsBySignature = (existingComments, incomingComments) => {
+  const list = [];
+  const seen = new Set();
+  const add = (comment) => {
+    if (!comment || typeof comment !== "object") return;
+    const key = [
+      comment.id || "",
+      comment.name || "",
+      comment.lot || "",
+      comment.topic || "",
+      comment.stance || "",
+      comment.ts || "",
+      comment.text || "",
+    ].join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(comment);
+  };
+  (Array.isArray(existingComments) ? existingComments : []).forEach(add);
+  (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+  return list;
+};
+
+const mergeCovenantDocsById = (existingDocs, incomingDocs) => {
+  const map = new Map();
+  (Array.isArray(existingDocs) ? existingDocs : []).forEach((doc, idx) => {
+    const id = String(doc?.id || `existing-${idx}`);
+    map.set(id, doc);
+  });
+  (Array.isArray(incomingDocs) ? incomingDocs : []).forEach((doc, idx) => {
+    const id = String(doc?.id || `incoming-${idx}`);
+    map.set(id, doc);
+  });
+  return Array.from(map.values());
 };
 
 const openCovenantAssetDb = () =>
@@ -2152,6 +2223,8 @@ function AdminVotingPage({
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMsg, setBackupMsg] = useState("");
   const [backupErr, setBackupErr] = useState("");
+  const [restoreMode, setRestoreMode] = useState("replace");
+  const [restoreScopes, setRestoreScopes] = useState(() => defaultBackupRestoreScopes());
   const [gradeMsg, setGradeMsg] = useState("");
   const [newAdminName, setNewAdminName] = useState("");
   const [newAdminGrade, setNewAdminGrade] = useState(DEFAULT_ADMIN_GRADE);
@@ -2381,13 +2454,19 @@ function AdminVotingPage({
   const handleBackupRestore = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+    if (!hasSelectedRestoreScope(normalizedScopes)) {
+      setBackupErr("Select at least one data scope before restoring.");
+      event.target.value = "";
+      return;
+    }
     setBackupErr("");
     setBackupMsg("");
     setBackupBusy(true);
     try {
       const rawText = await readFileAsText(file);
       const parsed = JSON.parse(rawText);
-      const result = await onRestoreBackup?.(parsed);
+      const result = await onRestoreBackup?.(parsed, { mode: restoreMode, scopes: normalizedScopes });
       if (result?.error) {
         setBackupErr(result.error);
       } else {
@@ -2399,6 +2478,21 @@ function AdminVotingPage({
       setBackupBusy(false);
       event.target.value = "";
     }
+  };
+
+  const setAllRestoreScopes = (value) => {
+    const next = {};
+    BACKUP_RESTORE_SCOPE_OPTIONS.forEach((scope) => {
+      next[scope.key] = value;
+    });
+    setRestoreScopes(next);
+  };
+
+  const toggleRestoreScope = (scopeKey) => {
+    setRestoreScopes((prev) => ({
+      ...normalizeRestoreScopes(prev),
+      [scopeKey]: !(normalizeRestoreScopes(prev)[scopeKey] !== false),
+    }));
   };
 
   return (
@@ -2590,8 +2684,64 @@ function AdminVotingPage({
             disabled={backupBusy}
           />
         </div>
+        <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 12, color: C.forest, fontWeight: 700, marginBottom: 8 }}>Selective restore options</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: C.muted }}>Mode</label>
+            <select
+              style={{ ...S.select, minWidth: 180, padding: "6px 8px" }}
+              value={restoreMode}
+              onChange={(event) => setRestoreMode(event.target.value === "merge" ? "merge" : "replace")}
+              disabled={backupBusy}
+            >
+              <option value="replace">Replace selected sections</option>
+              <option value="merge">Merge selected sections</option>
+            </select>
+            <button
+              style={{ ...S.btn("outline"), padding: "6px 10px", fontSize: 11 }}
+              onClick={() => setAllRestoreScopes(true)}
+              disabled={backupBusy}
+            >
+              Select all
+            </button>
+            <button
+              style={{ ...S.btn("outline"), padding: "6px 10px", fontSize: 11 }}
+              onClick={() => setAllRestoreScopes(false)}
+              disabled={backupBusy}
+            >
+              Clear all
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+            {BACKUP_RESTORE_SCOPE_OPTIONS.map((scope) => (
+              <label
+                key={scope.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  background: C.white,
+                  fontSize: 12,
+                  color: C.ink,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={normalizeRestoreScopes(restoreScopes)[scope.key] !== false}
+                  onChange={() => toggleRestoreScope(scope.key)}
+                  disabled={backupBusy}
+                />
+                <span>{scope.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
         <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
-          Restoring a backup replaces current portal data in this browser with the selected snapshot.
+          Restore applies only selected sections. Replace mode overwrites those sections; merge mode keeps existing data and overlays backup values.
         </div>
       </div>
 
@@ -3505,7 +3655,7 @@ export default function App() {
     };
   };
 
-  const handleRestoreBackup = async (rawBackup) => {
+  const handleRestoreBackup = async (rawBackup, restoreOptions = {}) => {
     const candidate = rawBackup?.payload && typeof rawBackup.payload === "object" ? rawBackup.payload : rawBackup;
     if (!candidate || typeof candidate !== "object") {
       return { error: "Backup JSON format is invalid." };
@@ -3516,66 +3666,140 @@ export default function App() {
     if (rawBackup?.version && Number(rawBackup.version) > PORTAL_BACKUP_VERSION) {
       return { error: `Backup version ${rawBackup.version} is newer than this portal supports.` };
     }
+    const restoreMode = restoreOptions?.mode === "merge" ? "merge" : "replace";
+    const scopeFlags = normalizeRestoreScopes(restoreOptions?.scopes);
+    if (!hasSelectedRestoreScope(scopeFlags)) {
+      return { error: "Select at least one section to restore." };
+    }
+
+    const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+    const mergeObjectState = (currentState, incomingState) =>
+      restoreMode === "merge" ? { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) } : sanitizeObj(incomingState);
 
     const parsedTotalLots = Number(candidate.fw_total_lots);
-    const nextTotalLots =
+    const restoredTotalLots =
       Number.isInteger(parsedTotalLots) && parsedTotalLots >= MIN_TOTAL_LOTS && parsedTotalLots <= MAX_TOTAL_LOTS
         ? parsedTotalLots
-        : DEFAULT_TOTAL_LOTS;
+        : totalLots;
+    const nextTotalLots = scopeFlags.lotSettings ? restoredTotalLots : totalLots;
     const nextLotLabels = buildLotLabels(nextTotalLots);
     const nextLotSet = new Set(nextLotLabels);
-    const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
 
     const importedLedgerRaw = sanitizeObj(candidate.fw_vote_ledger);
-    const nextVoteLedger = {};
+    const importedVoteLedger = {};
     Object.entries(importedLedgerRaw).forEach(([lotLabel, choice]) => {
       const normalizedLot = normalizeLotLabel(lotLabel);
       if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
       if (!VALID_VOTE_CHOICES.has(choice)) return;
-      nextVoteLedger[normalizedLot] = choice;
+      importedVoteLedger[normalizedLot] = choice;
     });
-
-    const importedLegacyVotes = sanitizeObj(candidate.legacy_vote_entries);
-    clearLegacyVoteEntries();
-    Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
-      if (!String(key).startsWith("vote_")) return;
+    const currentVoteLedgerForScope = {};
+    Object.entries(sanitizeObj(voteLedger)).forEach(([lotLabel, choice]) => {
+      const normalizedLot = normalizeLotLabel(lotLabel);
+      if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
       if (!VALID_VOTE_CHOICES.has(choice)) return;
-      store.set(key, choice);
+      currentVoteLedgerForScope[normalizedLot] = choice;
     });
-    Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
-      store.set(`vote_${lotLabel}`, choice);
-    });
+    const nextVoteLedger =
+      scopeFlags.votes
+        ? (restoreMode === "merge"
+            ? { ...currentVoteLedgerForScope, ...importedVoteLedger }
+            : importedVoteLedger)
+        : currentVoteLedgerForScope;
 
-    const nextComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
-    const nextCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : DEFAULT_COVENANT_DOCS;
-    const nextOwnerActivity = sanitizeObj(candidate.fw_owner_activity);
-    const nextPrimaryRegistry = sanitizeObj(candidate.fw_primary_voter_registry);
-    const nextOutreach = sanitizeObj(candidate.fw_outreach_state);
-    const nextUserDirectory = sanitizeObj(candidate.fw_user_directory);
-    const nextEligibility = sanitizeObj(candidate.fw_vote_eligibility);
+    if (scopeFlags.votes) {
+      const importedLegacyVotes = sanitizeObj(candidate.legacy_vote_entries);
+      if (restoreMode === "replace") {
+        clearLegacyVoteEntries();
+      }
+      Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
+        if (!String(key).startsWith("vote_")) return;
+        if (!VALID_VOTE_CHOICES.has(choice)) return;
+        store.set(key, choice);
+      });
+      Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
+        store.set(`vote_${lotLabel}`, choice);
+      });
+    }
+
+    const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
+    const nextComments =
+      scopeFlags.comments
+        ? (restoreMode === "merge" ? mergeCommentsBySignature(comments, importedComments) : importedComments)
+        : comments;
+
+    const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
+    const nextCovenantDocsRaw =
+      scopeFlags.covenantDocs
+        ? (restoreMode === "merge" ? mergeCovenantDocsById(covenantDocs, importedCovenantDocs) : importedCovenantDocs)
+        : covenantDocs;
+    const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
+
+    const nextOwnerActivity = scopeFlags.ownerActivity
+      ? mergeObjectState(ownerActivity, candidate.fw_owner_activity)
+      : ownerActivity;
+    const nextPrimaryRegistry = scopeFlags.primaryVoters
+      ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)
+      : primaryVoterRegistry;
+    const nextOutreach = scopeFlags.outreach
+      ? mergeObjectState(outreachState, candidate.fw_outreach_state)
+      : outreachState;
+    const nextUserDirectory = scopeFlags.userDirectory
+      ? mergeObjectState(userDirectory, candidate.fw_user_directory)
+      : userDirectory;
+    const nextEligibility = scopeFlags.eligibility
+      ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)
+      : eligibilityState;
     const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
-    const effectiveAdminEntries = nextAdminEntries.length > 0 ? nextAdminEntries : getInitialAdminAccessEntries();
-    const nextAdminGrades = sanitizeObj(candidate.fw_admin_access_grades);
+    const effectiveAdminEntries = scopeFlags.adminAccess
+      ? (() => {
+          if (restoreMode === "merge") {
+            const mergedEntries = normalizeAdminAccessEntries([...adminAccessEntries, ...nextAdminEntries]);
+            return mergedEntries.length > 0 ? mergedEntries : adminAccessEntries;
+          }
+          return nextAdminEntries.length > 0 ? nextAdminEntries : adminAccessEntries;
+        })()
+      : adminAccessEntries;
+    const nextAdminGrades = scopeFlags.adminAccess
+      ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades)
+      : adminAccessGrades;
     const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
-    await replaceCovenantAssetRecords(restoredAssets);
+    if (scopeFlags.covenantFiles) {
+      if (restoreMode === "merge") {
+        const existingAssets = await listCovenantAssetRecords().catch(() => []);
+        const assetMap = new Map();
+        existingAssets.forEach((record) => assetMap.set(record.id, record));
+        restoredAssets.forEach((record) => {
+          const id = String(record?.id || "").trim();
+          if (id) assetMap.set(id, record);
+        });
+        await replaceCovenantAssetRecords(Array.from(assetMap.values()));
+      } else {
+        await replaceCovenantAssetRecords(restoredAssets);
+      }
+    }
 
-    setTotalLots(nextTotalLots);
-    setVoteLedger(nextVoteLedger);
+    if (scopeFlags.lotSettings) setTotalLots(nextTotalLots);
+    if (scopeFlags.votes) setVoteLedger(nextVoteLedger);
     setVotes(computeVoteTotalsFromLedger(nextVoteLedger, nextLotLabels));
-    setComments(nextComments);
-    setCovenantDocs(nextCovenantDocs);
-    setOwnerActivity(nextOwnerActivity);
-    setPrimaryVoterRegistry(nextPrimaryRegistry);
-    setOutreachState(nextOutreach);
-    setUserDirectory(nextUserDirectory);
-    setEligibilityState(nextEligibility);
-    setAdminAccessEntries(effectiveAdminEntries);
-    setAdminAccessGrades(nextAdminGrades);
-    store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
+    if (scopeFlags.comments) {
+      setComments(nextComments);
+      store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
+    }
+    if (scopeFlags.covenantDocs) setCovenantDocs(nextCovenantDocs);
+    if (scopeFlags.ownerActivity) setOwnerActivity(nextOwnerActivity);
+    if (scopeFlags.primaryVoters) setPrimaryVoterRegistry(nextPrimaryRegistry);
+    if (scopeFlags.outreach) setOutreachState(nextOutreach);
+    if (scopeFlags.userDirectory) setUserDirectory(nextUserDirectory);
+    if (scopeFlags.eligibility) setEligibilityState(nextEligibility);
+    if (scopeFlags.adminAccess) {
+      setAdminAccessEntries(effectiveAdminEntries);
+      setAdminAccessGrades(nextAdminGrades);
+    }
 
     const restoredUserRaw = candidate.fw_user;
     const restoredUser =
-      restoredUserRaw && typeof restoredUserRaw === "object"
+      scopeFlags.sessionUser && restoredUserRaw && typeof restoredUserRaw === "object"
         ? (() => {
             const lots = normalizeUserLots(restoredUserRaw);
             const hasAdminApproval = isAdminUserAllowed(restoredUserRaw.name, effectiveAdminEntries);
@@ -3593,13 +3817,18 @@ export default function App() {
               lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
             };
           })()
-        : null;
-    store.set("fw_user", restoredUser);
-    setUser(restoredUser);
-    setPage(restoredUser?.isAdmin ? "admin-votes" : "home");
+        : user;
+    if (scopeFlags.sessionUser) {
+      store.set("fw_user", restoredUser);
+      setUser(restoredUser);
+      setPage(restoredUser?.isAdmin ? "admin-votes" : "home");
+    }
+    const appliedScopeLabels = BACKUP_RESTORE_SCOPE_OPTIONS
+      .filter((scope) => scopeFlags[scope.key] !== false)
+      .map((scope) => scope.label);
 
     return {
-      message: `Backup restored: ${Object.keys(nextVoteLedger).length} vote records, ${nextComments.length} comments, ${restoredAssets.length} covenant attachment records.`,
+      message: `Backup restored (${restoreMode}): ${appliedScopeLabels.join(", ")}. Vote records now ${Object.keys(nextVoteLedger).length}; comments ${nextComments.length}.`,
     };
   };
 
