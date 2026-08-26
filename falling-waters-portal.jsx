@@ -56,6 +56,7 @@ const ADMIN_ALLOWED_USERS = [
 const ADMIN_ALLOWED_ALIASES = [
   // Add explicit admin name variants here when needed.
 ];
+const ADMIN_ACCESS_ENTRIES = [...ADMIN_ALLOWED_USERS, ...ADMIN_ALLOWED_ALIASES];
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -140,7 +141,7 @@ const normalizeNameKey = (name) =>
 const isAdminUserAllowed = (name) => {
   const candidate = normalizeNameKey(name);
   if (!candidate) return false;
-  const allowedNames = [...ADMIN_ALLOWED_USERS, ...ADMIN_ALLOWED_ALIASES].map((entry) => normalizeNameKey(entry));
+  const allowedNames = ADMIN_ACCESS_ENTRIES.map((entry) => normalizeNameKey(entry));
   return allowedNames.includes(candidate);
 };
 
@@ -1613,6 +1614,23 @@ function AdminVotingPage({
           <span style={{ fontSize: 12, color: C.muted }}>
             Current threshold: <strong>{votesNeeded}</strong> yes votes needed
           </span>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Admin access roster</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          These names are currently approved for admin access in this portal.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {ADMIN_ACCESS_ENTRIES.length === 0 && (
+            <span style={S.badge(C.danger, C.dangerLight)}>No admin names configured</span>
+          )}
+          {ADMIN_ACCESS_ENTRIES.map((entry) => (
+            <span key={entry} style={S.badge(C.forest, C.parchmentDark)}>
+              {entry}
+            </span>
+          ))}
         </div>
       </div>
 
