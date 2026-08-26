@@ -1426,6 +1426,7 @@ function AdminVotingPage({
   primaryVoterRegistry,
   outreachState,
   eligibilityState,
+  userDirectory,
   totalLots,
   votesNeeded,
   onImportCsv,
@@ -1439,6 +1440,12 @@ function AdminVotingPage({
   const [importMsg, setImportMsg] = useState("");
   const [importErr, setImportErr] = useState("");
   const lotLabels = buildLotLabels(totalLots);
+  const directoryRows = Object.values(userDirectory || {})
+    .sort((a, b) => {
+      if (!!a.isAdmin !== !!b.isAdmin) return a.isAdmin ? -1 : 1;
+      return String(a.name || "").localeCompare(String(b.name || ""));
+    });
+  const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
 
   useEffect(() => {
     setLotCountInput(String(totalLots));
@@ -1631,6 +1638,50 @@ function AdminVotingPage({
               {entry}
             </span>
           ))}
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>User access directory (from login/profile activity)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <span style={S.badge(C.amber, C.amberLight)}>Admin users: {adminDirectoryRows.length}</span>
+          <span style={S.badge(C.forest, C.parchmentDark)}>All known users: {directoryRows.length}</span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Name</th>
+                <th style={S.th}>Admin rights</th>
+                <th style={S.th}>Access role</th>
+                <th style={S.th}>Lots</th>
+                <th style={S.th}>Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {directoryRows.length === 0 && (
+                <tr>
+                  <td style={S.td} colSpan={5}>No users recorded yet. Users appear after they log in or save profile changes.</td>
+                </tr>
+              )}
+              {directoryRows.map((row) => (
+                <tr key={row.userId || row.name} style={{ background: row.isAdmin ? "#FFFBF5" : C.white }}>
+                  <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.name || "Unknown"}</td>
+                  <td style={S.td}>
+                    <span style={S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark)}>
+                      {row.isAdmin ? "Admin" : "Resident"}
+                    </span>
+                  </td>
+                  <td style={S.td}>{row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)}</td>
+                  <td style={S.td}>{Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "—"}</td>
+                  <td style={S.td}>{row.lastSeen || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -1949,6 +2000,10 @@ export default function App() {
     const saved = store.get("fw_outreach_state");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [userDirectory, setUserDirectory] = useState(() => {
+    const saved = store.get("fw_user_directory");
+    return saved && typeof saved === "object" ? saved : {};
+  });
   const [totalLots, setTotalLots] = useState(() => {
     const saved = Number(store.get("fw_total_lots"));
     if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
@@ -1969,6 +2024,7 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
   useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
+  useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
 
@@ -2016,6 +2072,24 @@ export default function App() {
     const parsed = Number(nextTotalLots);
     if (!Number.isInteger(parsed) || parsed < MIN_TOTAL_LOTS || parsed > MAX_TOTAL_LOTS) return;
     setTotalLots(parsed);
+  };
+
+  const trackUserAccess = (profile) => {
+    if (!profile?.name) return;
+    const profileLots = profile.isAdmin ? ["ADMIN"] : normalizeUserLots(profile).filter((lot) => lot !== "ADMIN");
+    const userId = profile.userId || `usr_${normalizeNameKey(profile.name)}`;
+    setUserDirectory((prev) => ({
+      ...prev,
+      [userId]: {
+        userId,
+        name: profile.name,
+        nameKey: normalizeNameKey(profile.name),
+        isAdmin: !!profile.isAdmin,
+        accessRole: profile.isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(profile.accessRole),
+        lots: profileLots,
+        lastSeen: todayLabel(),
+      },
+    }));
   };
 
   const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null) => {
@@ -2094,6 +2168,7 @@ export default function App() {
     store.set("fw_user", normalizedUser);
     setUser(normalizedUser);
     setPage(isAdmin ? "admin-votes" : "home");
+    trackUserAccess(normalizedUser);
     if (!isAdmin) {
       lots.forEach((lot) => trackOwner(lot, { name: normalizedUser.name }));
     }
@@ -2161,6 +2236,7 @@ export default function App() {
     }
     store.set("fw_user", updatedUser);
     setUser(updatedUser);
+    trackUserAccess(updatedUser);
     return null;
   };
 
@@ -2434,6 +2510,7 @@ export default function App() {
               primaryVoterRegistry={primaryVoterRegistry}
               outreachState={outreachState}
               eligibilityState={eligibilityState}
+              userDirectory={userDirectory}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
               onImportCsv={handleImportCsv}
