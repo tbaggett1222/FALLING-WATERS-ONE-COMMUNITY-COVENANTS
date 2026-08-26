@@ -35,8 +35,11 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
-const BACKUP_HEALTH_MAX_AGE_DAYS = 7;
+const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
+const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
+const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
 const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
+const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
@@ -2209,10 +2212,12 @@ function AdminVotingPage({
   totalLots,
   votesNeeded,
   lastBackupExportAt,
+  backupHealthThresholdDays,
   onImportCsv,
   onExportBackup,
   onRestoreBackup,
   onRecordBackupExport,
+  onUpdateBackupHealthThresholdDays,
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
@@ -2235,10 +2240,19 @@ function AdminVotingPage({
   const [newAdminName, setNewAdminName] = useState("");
   const [newAdminGrade, setNewAdminGrade] = useState(DEFAULT_ADMIN_GRADE);
   const [gradeErr, setGradeErr] = useState("");
+  const [backupThresholdInput, setBackupThresholdInput] = useState(String(backupHealthThresholdDays));
+  const [backupThresholdMsg, setBackupThresholdMsg] = useState("");
+  const [backupThresholdErr, setBackupThresholdErr] = useState("");
+  const effectiveBackupHealthThresholdDays =
+    Number.isInteger(Number(backupHealthThresholdDays)) &&
+    Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
+    Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+      ? Number(backupHealthThresholdDays)
+      : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
   const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
   const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
   const backupAgeDays = backupTimestampMs === null ? null : Math.floor((Date.now() - backupTimestampMs) / (1000 * 60 * 60 * 24));
-  const backupHealthLevel = backupTimestampMs === null ? "missing" : backupAgeDays > BACKUP_HEALTH_MAX_AGE_DAYS ? "stale" : "healthy";
+  const backupHealthLevel = backupTimestampMs === null ? "missing" : backupAgeDays > effectiveBackupHealthThresholdDays ? "stale" : "healthy";
   const backupHealthText =
     backupHealthLevel === "healthy"
       ? `Last full backup export: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} day${backupAgeDays === 1 ? "" : "s"} ago).`
@@ -2248,7 +2262,7 @@ function AdminVotingPage({
   const backupHealthGuidance =
     backupHealthLevel === "healthy"
       ? "Backup cadence is healthy."
-      : `Recommendation: export a full backup at least every ${BACKUP_HEALTH_MAX_AGE_DAYS} days and after each admin session.`;
+      : `Recommendation: export a full backup at least every ${effectiveBackupHealthThresholdDays} days and after each admin session.`;
   const lotLabels = buildLotLabels(totalLots);
   const directoryRows = Object.values(userDirectory || {})
     .sort((a, b) => {
@@ -2271,6 +2285,9 @@ function AdminVotingPage({
   useEffect(() => {
     setLotCountInput(String(totalLots));
   }, [totalLots]);
+  useEffect(() => {
+    setBackupThresholdInput(String(effectiveBackupHealthThresholdDays));
+  }, [effectiveBackupHealthThresholdDays]);
 
   const lotRows = lotLabels.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
@@ -2754,6 +2771,31 @@ function AdminVotingPage({
     }));
   };
 
+  const saveBackupHealthThreshold = (valueOverride = null) => {
+    setBackupThresholdErr("");
+    setBackupThresholdMsg("");
+    const candidate = valueOverride === null ? backupThresholdInput : valueOverride;
+    const parsed = Number.parseInt(String(candidate || "").trim(), 10);
+    if (
+      Number.isNaN(parsed)
+      || parsed < MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      || parsed > MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+    ) {
+      setBackupThresholdErr(
+        `Backup threshold must be between ${MIN_BACKUP_HEALTH_MAX_AGE_DAYS} and ${MAX_BACKUP_HEALTH_MAX_AGE_DAYS} days.`
+      );
+      return;
+    }
+    setBackupThresholdInput(String(parsed));
+    const result = onUpdateBackupHealthThresholdDays?.(parsed);
+    if (result?.error) {
+      setBackupThresholdErr(result.error);
+      return;
+    }
+    setBackupThresholdMsg(result?.message || `Backup health threshold set to ${parsed} days.`);
+    setTimeout(() => setBackupThresholdMsg(""), 3500);
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
@@ -2761,6 +2803,39 @@ function AdminVotingPage({
       </div>
       <div style={S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger")}>
         <strong>Backup health:</strong> {backupHealthText} {backupHealthGuidance}
+      </div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>Backup health policy</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Set how many days can pass before backup health is marked stale.
+        </div>
+        {backupThresholdErr && <div style={S.alert("danger")}>{backupThresholdErr}</div>}
+        {backupThresholdMsg && <div style={S.alert("success")}>{backupThresholdMsg}</div>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          <input
+            style={{ ...S.input, maxWidth: 180 }}
+            type="number"
+            min={MIN_BACKUP_HEALTH_MAX_AGE_DAYS}
+            max={MAX_BACKUP_HEALTH_MAX_AGE_DAYS}
+            value={backupThresholdInput}
+            onChange={(event) => setBackupThresholdInput(event.target.value)}
+          />
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={() => saveBackupHealthThreshold(null)}>
+            Save threshold
+          </button>
+          {[3, 7, 14].map((days) => (
+            <button
+              key={days}
+              style={{ ...S.btn(effectiveBackupHealthThresholdDays === days ? "primary" : "outline"), padding: "7px 12px" }}
+              onClick={() => saveBackupHealthThreshold(days)}
+            >
+              {days} days
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: C.muted }}>
+          Current stale threshold: <strong>{effectiveBackupHealthThresholdDays} days</strong>
+        </div>
       </div>
 
       <div style={S.card}>
@@ -3417,6 +3492,17 @@ export default function App() {
     const saved = store.get(LAST_BACKUP_EXPORT_KEY);
     return typeof saved === "string" && saved.trim() ? saved : "";
   });
+  const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
+    const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
+    if (
+      Number.isInteger(saved)
+      && saved >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      && saved <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+    ) {
+      return saved;
+    }
+    return DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
+  });
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
@@ -3433,6 +3519,7 @@ export default function App() {
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
+  useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => {
     const result = consolidateCovenantDocs(covenantDocs);
     if (result.removedCount > 0) {
@@ -4113,6 +4200,21 @@ export default function App() {
     setLastBackupExportAt(new Date(parsed).toISOString());
   };
 
+  const handleUpdateBackupHealthThresholdDays = (nextDays) => {
+    const parsed = Number.parseInt(String(nextDays || "").trim(), 10);
+    if (
+      Number.isNaN(parsed)
+      || parsed < MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      || parsed > MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+    ) {
+      return {
+        error: `Backup threshold must be between ${MIN_BACKUP_HEALTH_MAX_AGE_DAYS} and ${MAX_BACKUP_HEALTH_MAX_AGE_DAYS} days.`,
+      };
+    }
+    setBackupHealthThresholdDays(parsed);
+    return { message: `Backup health threshold set to ${parsed} days.` };
+  };
+
   const activityRows = Object.values(ownerActivity);
   const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
   const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -4247,10 +4349,12 @@ export default function App() {
               totalLots={totalLots}
               votesNeeded={votesNeeded}
               lastBackupExportAt={lastBackupExportAt}
+              backupHealthThresholdDays={backupHealthThresholdDays}
               onImportCsv={handleImportCsv}
               onExportBackup={handleExportBackup}
               onRestoreBackup={handleRestoreBackup}
               onRecordBackupExport={handleRecordBackupExport}
+              onUpdateBackupHealthThresholdDays={handleUpdateBackupHealthThresholdDays}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
