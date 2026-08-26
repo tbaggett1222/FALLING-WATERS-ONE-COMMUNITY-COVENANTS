@@ -105,6 +105,28 @@ const choiceLabel = (choice) =>
         ? "Undecided"
         : "Not voted";
 
+const ACCESS_ROLES = {
+  primary: "primary_voter",
+  commentOnly: "comment_only",
+};
+
+const normalizeAccessRole = (role) =>
+  role === ACCESS_ROLES.commentOnly ? ACCESS_ROLES.commentOnly : ACCESS_ROLES.primary;
+
+const accessRoleLabel = (role) =>
+  normalizeAccessRole(role) === ACCESS_ROLES.commentOnly
+    ? "Comment-only household member"
+    : "Primary voter";
+
+const isPrimaryVoter = (user) =>
+  !user?.isAdmin && normalizeAccessRole(user?.accessRole) === ACCESS_ROLES.primary;
+
+const normalizeNameKey = (name) =>
+  String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const generateUserId = (name = "resident") =>
+  `usr_${normalizeNameKey(name).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
+
 const lotNumberFromLabel = (lotLabel) => {
   const match = String(lotLabel || "").match(/(\d+)/);
   return match ? Number(match[1]) : null;
@@ -252,7 +274,7 @@ const S = {
 
 // ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
-  const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [err, setErr] = useState("");
+  const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary); const [err, setErr] = useState("");
   const handle = (e) => {
     e.preventDefault();
     const lots = parseLotsInput(lot);
@@ -265,9 +287,13 @@ function LoginScreen({ onLogin }) {
       lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
       lots,
       name: name.trim(),
+      accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole),
       isAdmin,
     };
-    onLogin(user);
+    const loginError = onLogin(user);
+    if (loginError) {
+      setErr(loginError);
+    }
   };
   return (
     <div style={{ minHeight:"100vh", background:C.forest, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
@@ -277,7 +303,7 @@ function LoginScreen({ onLogin }) {
           <div style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest, lineHeight:1.2 }}>Falling Waters</div>
           <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Community Covenant Portal</div>
         </div>
-        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Owners with multiple lots can enter all lot numbers to cast one vote per lot.</div>
+        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation.</div>
         {err && <div style={S.alert("danger")}>{err}</div>}
         <form onSubmit={handle}>
           <div style={{ marginBottom:14 }}>
@@ -291,6 +317,13 @@ function LoginScreen({ onLogin }) {
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Create / enter a password</label>
             <input style={S.input} type="password" placeholder="Min 4 characters" value={pw} onChange={e=>setPw(e.target.value)}/>
+          </div>
+          <div style={{ marginBottom:20 }}>
+            <label style={S.label}>Access role</label>
+            <select style={S.select} value={accessRole} onChange={e=>setAccessRole(e.target.value)}>
+              <option value={ACCESS_ROLES.primary}>Primary voter (can vote + comment)</option>
+              <option value={ACCESS_ROLES.commentOnly}>Comment-only household member</option>
+            </select>
           </div>
           <button type="submit" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", padding:"11px 20px", fontSize:14 }}>
             <Icon.lock/> Enter the portal
@@ -894,6 +927,7 @@ function ProposedCovenantPage() {
 // ── STR PAGE ─────────────────────────────────────────────────────────────────
 function STRPage({ user, votes, voteLedger, onVote }) {
   const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+  const canVote = isPrimaryVoter(user);
   const lotChoices = votingLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
   const allUnvoted = lotChoices.every((choice) => !choice);
   const uniformChoice = !allUnvoted && lotChoices.every((choice) => choice && choice === lotChoices[0]);
@@ -949,6 +983,11 @@ function STRPage({ user, votes, voteLedger, onVote }) {
 
       <div style={S.card}>
         <div style={S.cardTitle}>Cast your vote on short-term rentals</div>
+        {!canVote && (
+          <div style={S.alert("warn")}>
+            This login is set as <strong>{accessRoleLabel(user.accessRole)}</strong>. Voting is restricted to the designated primary voter for each lot, but you can still add community comments.
+          </div>
+        )}
         {votingLots.length > 1 && (
           <div style={S.alert("info")}>
             You are currently voting for <strong>{votingLots.length} lots</strong> ({votingLots.join(", ")}). Use per-lot controls below for separate votes, or quick actions to apply one choice across all listed lots.
@@ -981,19 +1020,22 @@ function STRPage({ user, votes, voteLedger, onVote }) {
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button
                       style={{ ...S.btn(lotChoiceMap[lot] === "eliminate" ? "danger" : "outline"), padding: "6px 10px", fontSize: 12 }}
-                      onClick={() => onVote("eliminate", lot)}
+                      onClick={() => canVote && onVote("eliminate", lot)}
+                      disabled={!canVote}
                     >
                       Eliminate
                     </button>
                     <button
                       style={{ ...S.btn(lotChoiceMap[lot] === "permit" ? "stone" : "outline"), padding: "6px 10px", fontSize: 12 }}
-                      onClick={() => onVote("permit", lot)}
+                      onClick={() => canVote && onVote("permit", lot)}
+                      disabled={!canVote}
                     >
                       Permit
                     </button>
                     <button
                       style={{ ...S.btn(lotChoiceMap[lot] === "undecided" ? "ghost" : "outline"), padding: "6px 10px", fontSize: 12 }}
-                      onClick={() => onVote("undecided", lot)}
+                      onClick={() => canVote && onVote("undecided", lot)}
+                      disabled={!canVote}
                     >
                       Undecided
                     </button>
@@ -1004,13 +1046,13 @@ function STRPage({ user, votes, voteLedger, onVote }) {
           </div>
         )}
         <div style={{ display:"flex", gap:12, marginTop:16, flexWrap:"wrap" }}>
-          <button style={{ ...S.btn(userVoted==="eliminate" ? "danger" : "outline"), borderColor: userVoted==="eliminate" ? C.danger : C.forest, color: userVoted==="eliminate" ? C.white : C.forest, background: userVoted==="eliminate" ? C.danger : "transparent" }} onClick={() => onVote("eliminate")}>
+          <button style={{ ...S.btn(userVoted==="eliminate" ? "danger" : "outline"), borderColor: userVoted==="eliminate" ? C.danger : C.forest, color: userVoted==="eliminate" ? C.white : C.forest, background: userVoted==="eliminate" ? C.danger : "transparent", opacity: canVote ? 1 : 0.55 }} onClick={() => canVote && onVote("eliminate")} disabled={!canVote}>
             🚫 {votingLots.length > 1 ? "Apply to all lots: eliminate STRs" : "Eliminate STRs — prohibit rentals under 12 months"}
           </button>
-          <button style={{ ...S.btn("outline"), borderColor: userVoted==="permit" ? C.stoneDark : C.border, background: userVoted==="permit" ? C.stone : "transparent", color: userVoted==="permit" ? C.white : C.ink }} onClick={() => onVote("permit")}>
+          <button style={{ ...S.btn("outline"), borderColor: userVoted==="permit" ? C.stoneDark : C.border, background: userVoted==="permit" ? C.stone : "transparent", color: userVoted==="permit" ? C.white : C.ink, opacity: canVote ? 1 : 0.55 }} onClick={() => canVote && onVote("permit")} disabled={!canVote}>
             📋 {votingLots.length > 1 ? "Apply to all lots: permit with regulation" : "Permit with regulation — 7-night minimum + rules"}
           </button>
-          <button style={{ ...S.btn("ghost"), background: userVoted==="undecided" ? C.parchmentDark : "transparent", border:`1px solid ${C.border}` }} onClick={() => onVote("undecided")}>
+          <button style={{ ...S.btn("ghost"), background: userVoted==="undecided" ? C.parchmentDark : "transparent", border:`1px solid ${C.border}`, opacity: canVote ? 1 : 0.55 }} onClick={() => canVote && onVote("undecided")} disabled={!canVote}>
             ❓ {votingLots.length > 1 ? "Apply to all lots: undecided" : "Undecided — need more information"}
           </button>
         </div>
@@ -1178,6 +1220,7 @@ function CommentsPage({ user, comments, onAdd }) {
 function ProfilePage({ user, voteLedger, onUpdateProfile }) {
   const [name, setName] = useState(user.name || "");
   const [lotsInput, setLotsInput] = useState(normalizeUserLots(user).filter((lot) => lot !== "ADMIN").join(", "));
+  const [accessRole, setAccessRole] = useState(normalizeAccessRole(user.accessRole));
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const lots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
@@ -1195,15 +1238,24 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
       setMsg("");
       return;
     }
-    onUpdateProfile({ name: name.trim(), lots: parsedLots });
+    const updateError = onUpdateProfile({ name: name.trim(), lots: parsedLots, accessRole });
+    if (updateError) {
+      setErr(updateError);
+      setMsg("");
+      return;
+    }
     setErr("");
-    setMsg(`Profile saved. Voting rights are now tied to ${parsedLots.length} lot${parsedLots.length === 1 ? "" : "s"}.`);
+    setMsg(
+      normalizeAccessRole(accessRole) === ACCESS_ROLES.commentOnly
+        ? "Profile saved. This account is comment-only and cannot cast official votes."
+        : `Profile saved. Voting rights are now tied to ${parsedLots.length} lot${parsedLots.length === 1 ? "" : "s"}.`
+    );
   };
 
   return (
     <div>
       <div style={S.alert("info")}>
-        Keep your profile current. Each non-combined lot in your profile receives its own vote.
+        Keep your profile current. Primary-voter accounts can cast one vote per non-combined lot; comment-only accounts can participate in discussion without casting official votes.
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
         <div style={S.card}>
@@ -1226,6 +1278,13 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
               <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
                 Separate multiple lots with commas. Example: Lot 36, Lot 37.
               </div>
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={S.label}>Access role</label>
+              <select style={S.select} value={accessRole} onChange={(e) => setAccessRole(e.target.value)}>
+                <option value={ACCESS_ROLES.primary}>Primary voter (official lot voting)</option>
+                <option value={ACCESS_ROLES.commentOnly}>Comment-only household member</option>
+              </select>
             </div>
             <button type="submit" style={S.btn("primary")}>Save profile</button>
           </form>
@@ -1250,7 +1309,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 }
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
-function AdminVotingPage({ ownerActivity, voteLedger }) {
+function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
   const [filter, setFilter] = useState("all");
 
   const lotRows = ALL_LOT_LABELS.map((lotLabel) => {
@@ -1261,6 +1320,7 @@ function AdminVotingPage({ ownerActivity, voteLedger }) {
       lot: lotLabel,
       lotNum: lotNumberFromLabel(lotLabel),
       ownerName: activity?.name || "",
+      primaryVoter: primaryVoterRegistry?.[lotLabel]?.name || "",
       hasVoted,
       choice,
       status: hasVoted ? "Voted" : activity ? "Registered - not voted" : "Not engaged",
@@ -1279,7 +1339,7 @@ function AdminVotingPage({ ownerActivity, voteLedger }) {
         : lotRows;
 
   const exportCsv = () => {
-    const headers = ["Lot", "Status", "Vote Choice", "Owner Name (if known)", "Commented", "Last Active"];
+    const headers = ["Lot", "Status", "Vote Choice", "Primary Voter", "Owner Name (if known)", "Commented", "Last Active"];
     const lines = [
       headers.join(","),
       ...lotRows.map((row) =>
@@ -1287,6 +1347,7 @@ function AdminVotingPage({ ownerActivity, voteLedger }) {
           row.lot,
           row.status,
           choiceLabel(row.choice),
+          row.primaryVoter || "",
           row.ownerName || "",
           row.commented ? "Yes" : "No",
           row.lastActive || "",
@@ -1347,6 +1408,7 @@ function AdminVotingPage({ ownerActivity, voteLedger }) {
                 <th style={S.th}>Lot</th>
                 <th style={S.th}>Status</th>
                 <th style={S.th}>Vote choice</th>
+                <th style={S.th}>Primary voter</th>
                 <th style={S.th}>Owner name (if known)</th>
                 <th style={S.th}>Commented</th>
                 <th style={S.th}>Last active</th>
@@ -1362,6 +1424,7 @@ function AdminVotingPage({ ownerActivity, voteLedger }) {
                     </span>
                   </td>
                   <td style={S.td}>{choiceLabel(row.choice)}</td>
+                  <td style={S.td}>{row.primaryVoter || "—"}</td>
                   <td style={S.td}>{row.ownerName || "—"}</td>
                   <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
                   <td style={S.td}>{row.lastActive || "—"}</td>
@@ -1533,6 +1596,8 @@ export default function App() {
     return {
       ...saved,
       isAdmin,
+      accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(saved.accessRole),
+      userId: saved.userId || generateUserId(saved.name),
       lots,
       lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
     };
@@ -1557,12 +1622,17 @@ export default function App() {
   });
   const [ownerActivity, setOwnerActivity] = useState(() => store.get("fw_owner_activity") || {});
   const [voteLedger, setVoteLedger] = useState(() => store.get("fw_vote_ledger") || {});
+  const [primaryVoterRegistry, setPrimaryVoterRegistry] = useState(() => {
+    const saved = store.get("fw_primary_voter_registry");
+    return saved && typeof saved === "object" ? saved : {};
+  });
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
   useEffect(() => { store.set("fw_covenant_docs", covenantDocs); }, [covenantDocs]);
   useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
+  useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -1577,24 +1647,84 @@ export default function App() {
     }));
   };
 
+  const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null) => {
+    const nextRegistry = { ...primaryVoterRegistry };
+    const candidateRole = normalizeAccessRole(candidateUser.accessRole);
+    const candidateLots = normalizeUserLots(candidateUser).filter((lot) => lot !== "ADMIN");
+    const candidateNameKey = normalizeNameKey(candidateUser.name);
+
+    if (previousUser && normalizeAccessRole(previousUser.accessRole) === ACCESS_ROLES.primary) {
+      const previousLots = normalizeUserLots(previousUser).filter((lot) => lot !== "ADMIN");
+      const previousNameKey = normalizeNameKey(previousUser.name);
+      previousLots.forEach((lot) => {
+        const existing = nextRegistry[lot];
+        const stillPrimaryForLot = candidateRole === ACCESS_ROLES.primary && candidateLots.includes(lot);
+        const sameProfile =
+          existing &&
+          ((previousUser.userId && existing.userId === previousUser.userId) ||
+            (existing.nameKey && existing.nameKey === previousNameKey));
+        if (sameProfile && !stillPrimaryForLot) {
+          delete nextRegistry[lot];
+        }
+      });
+    }
+
+    if (candidateRole === ACCESS_ROLES.primary) {
+      for (const lot of candidateLots) {
+        const existing = nextRegistry[lot];
+        if (
+          existing &&
+          !(
+            (candidateUser.userId && existing.userId === candidateUser.userId) ||
+            (existing.nameKey && existing.nameKey === candidateNameKey)
+          )
+        ) {
+          return {
+            error: `${lot} already has primary voter "${existing.name}". Use comment-only access for this account or contact admin.`,
+          };
+        }
+      }
+
+      candidateLots.forEach((lot) => {
+        nextRegistry[lot] = {
+          name: candidateUser.name,
+          nameKey: candidateNameKey,
+          userId: candidateUser.userId,
+          assignedAt: todayLabel(),
+        };
+      });
+    }
+
+    return { registry: nextRegistry };
+  };
+
   const handleLogin = (u) => {
     const lots = normalizeUserLots(u);
     const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
     const normalizedUser = {
       ...u,
       isAdmin,
+      accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(u.accessRole),
+      userId: u.userId || generateUserId(u.name),
       lots,
       lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
     };
+    if (!isAdmin) {
+      const check = reconcilePrimaryVoterRegistry(normalizedUser, null);
+      if (check.error) return check.error;
+      setPrimaryVoterRegistry(check.registry);
+    }
     store.set("fw_user", normalizedUser);
     setUser(normalizedUser);
     if (!isAdmin) {
       lots.forEach((lot) => trackOwner(lot, { name: normalizedUser.name }));
     }
+    return null;
   };
   const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
 
   const handleVote = (choice, lotOverride = null) => {
+    if (!isPrimaryVoter(user)) return;
     const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
     const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
     if (targetLots.length === 0) return;
@@ -1633,7 +1763,7 @@ export default function App() {
   };
   const handleAddDocument = (doc) => setCovenantDocs((prev) => [doc, ...prev]);
   const handleDeleteDocument = (docId) => setCovenantDocs((prev) => prev.filter((doc) => doc.id !== docId));
-  const handleUpdateProfile = ({ name, lots }) => {
+  const handleUpdateProfile = ({ name, lots, accessRole }) => {
     const isAdmin = user.isAdmin;
     const normalizedLots = isAdmin ? ["ADMIN"] : [...new Set((lots || []).map((lot) => normalizeLotLabel(lot)).filter(Boolean))];
     if (!isAdmin) {
@@ -1642,11 +1772,18 @@ export default function App() {
     const updatedUser = {
       ...user,
       name: name || user.name,
+      accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole || user.accessRole),
       lots: normalizedLots,
       lot: isAdmin ? "ADMIN" : normalizedLots.join(", "),
     };
+    if (!isAdmin) {
+      const check = reconcilePrimaryVoterRegistry(updatedUser, user);
+      if (check.error) return check.error;
+      setPrimaryVoterRegistry(check.registry);
+    }
     store.set("fw_user", updatedUser);
     setUser(updatedUser);
+    return null;
   };
 
   const activityRows = Object.values(ownerActivity);
@@ -1696,6 +1833,7 @@ export default function App() {
         <div style={S.sidebarUser}>
           <div style={{ display:"flex", alignItems:"center", gap:6 }}><Icon.user/><span>{user.name}</span></div>
           <div style={{ marginTop:2, opacity:.7 }}>{getUserLotDisplay(user)}{user.isAdmin ? " · Admin" : ""}</div>
+          {!user.isAdmin && <div style={{ marginTop:2, opacity:.7 }}>{accessRoleLabel(user.accessRole)}</div>}
         </div>
         <nav style={S.sidebarNav}>
           {navItems.map(item => (
@@ -1730,7 +1868,7 @@ export default function App() {
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
-          {page === "admin-votes" && user.isAdmin && <AdminVotingPage ownerActivity={ownerActivity} voteLedger={voteLedger}/>}
+          {page === "admin-votes" && user.isAdmin && <AdminVotingPage ownerActivity={ownerActivity} voteLedger={voteLedger} primaryVoterRegistry={primaryVoterRegistry}/>}
           {page === "admin-docs" && user.isAdmin && (
             <AdminDocumentsPage
               user={user}
