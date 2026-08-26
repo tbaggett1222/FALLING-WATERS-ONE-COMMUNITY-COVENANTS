@@ -53,6 +53,10 @@ const DOC_STATUS_OPTIONS = [
 const ADMIN_ALLOWED_USERS = [
   "Tracy Baggett",
 ];
+const ADMIN_ALLOWED_ALIASES = [
+  // Add explicit admin name variants here when needed.
+];
+const ADMIN_ACCESS_ENTRIES = [...ADMIN_ALLOWED_USERS, ...ADMIN_ALLOWED_ALIASES];
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -134,8 +138,12 @@ const isPrimaryVoter = (user) =>
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 
-const isAdminUserAllowed = (name) =>
-  ADMIN_ALLOWED_USERS.map((entry) => normalizeNameKey(entry)).includes(normalizeNameKey(name));
+const isAdminUserAllowed = (name) => {
+  const candidate = normalizeNameKey(name);
+  if (!candidate) return false;
+  const allowedNames = ADMIN_ACCESS_ENTRIES.map((entry) => normalizeNameKey(entry));
+  return allowedNames.includes(candidate);
+};
 
 const generateUserId = (name = "resident") =>
   `usr_${normalizeNameKey(name).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
@@ -411,6 +419,11 @@ function LoginScreen({ onLogin }) {
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Your name</label>
             <input style={S.input} placeholder="First and last name" value={name} onChange={e=>setName(e.target.value)}/>
+            {isAdminUserAllowed(name.trim()) && (
+              <div style={{ fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 }}>
+                Admin recognized. You will enter Admin Control Mode after sign in.
+              </div>
+            )}
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Create / enter a password</label>
@@ -1605,6 +1618,23 @@ function AdminVotingPage({
       </div>
 
       <div style={S.card}>
+        <div style={S.cardTitle}>Admin access roster</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          These names are currently approved for admin access in this portal.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {ADMIN_ACCESS_ENTRIES.length === 0 && (
+            <span style={S.badge(C.danger, C.dangerLight)}>No admin names configured</span>
+          )}
+          {ADMIN_ACCESS_ENTRIES.map((entry) => (
+            <span key={entry} style={S.badge(C.forest, C.parchmentDark)}>
+              {entry}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.card}>
         <div style={S.cardTitle}>Import master spreadsheet (CSV)</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
           Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date.
@@ -2063,6 +2093,7 @@ export default function App() {
     }
     store.set("fw_user", normalizedUser);
     setUser(normalizedUser);
+    setPage(isAdmin ? "admin-votes" : "home");
     if (!isAdmin) {
       lots.forEach((lot) => trackOwner(lot, { name: normalizedUser.name }));
     }
@@ -2347,6 +2378,16 @@ export default function App() {
           <div style={{ display:"flex", alignItems:"center", gap:6 }}><Icon.user/><span>{user.name}</span></div>
           <div style={{ marginTop:2, opacity:.7 }}>{getUserLotDisplay(user)}{user.isAdmin ? " · Admin" : ""}</div>
           {!user.isAdmin && <div style={{ marginTop:2, opacity:.7 }}>{accessRoleLabel(user.accessRole)}</div>}
+          <div style={{ marginTop: 8 }}>
+            <span
+              style={S.badge(
+                user.isAdmin ? C.amber : C.forest,
+                user.isAdmin ? C.amberLight : C.parchmentDark
+              )}
+            >
+              {user.isAdmin ? "Admin control mode" : "Resident portal mode"}
+            </span>
+          </div>
         </div>
         <nav style={S.sidebarNav}>
           {navItems.map(item => (
@@ -2372,6 +2413,11 @@ export default function App() {
           </div>
         </div>
         <div style={S.content}>
+          {user.isAdmin && (
+            <div style={S.alert("warn")}>
+              <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, and CSV import/export.
+            </div>
+          )}
           {page === "home" && <HomePage votes={votes} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "documents" && <DocumentsPage docs={covenantDocs}/>}
           {page === "comparison" && <ComparisonPage/>}
