@@ -138,15 +138,17 @@ const votesNeededForLots = (totalLots) =>
 const computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
   let eliminate = 0;
   let permit = 0;
+  let undecided = 0;
   lotLabels.forEach((lot) => {
     const choice = ledger?.[lot];
     if (choice === "eliminate") eliminate += 1;
     if (choice === "permit") permit += 1;
+    if (choice === "undecided") undecided += 1;
   });
   return {
     eliminate,
     permit,
-    undecided: Math.max(0, lotLabels.length - eliminate - permit),
+    undecided,
   };
 };
 
@@ -757,7 +759,8 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
 
 // ── HOME PAGE ────────────────────────────────────────────────────────────────
 function HomePage({ votes, stats, totalLots, votesNeeded }) {
-  const communityEngaged = Math.min(totalLots, votes.eliminate + votes.permit + votes.undecided);
+  const communityEngaged = Math.min(totalLots, stats.votedLots);
+  const notVotedLots = Math.max(totalLots - communityEngaged, 0);
   const engPct = Math.round((communityEngaged / totalLots) * 100);
   const yesPct = Math.round((votes.eliminate / totalLots) * 100);
   return (
@@ -795,7 +798,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have participated in the survey process</div>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{communityEngaged} of {totalLots} lots engaged</span><span>{engPct}%</span></div>
           <div style={S.meter}><div style={S.meterFill(engPct, C.forest)}/></div>
-          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {totalLots - communityEngaged} owners not yet reached</div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {notVotedLots} owners not yet reached</div>
           <div style={{ marginTop:10, fontSize:12, color:C.muted, lineHeight:1.55 }}>
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
           </div>
@@ -803,16 +806,18 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         <div style={S.card}>
           <div style={S.cardTitle}>STR vote progress</div>
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current STR policy preference within the one-community CC&R campaign</div>
-          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} not voted</span><span>{yesPct}% support elimination</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} undecided · {notVotedLots} not voted</span><span>{yesPct}% support elimination</span></div>
           <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
             <div style={{ width:`${(votes.eliminate/totalLots)*100}%`, background:C.danger, transition:"width 1s" }}/>
             <div style={{ width:`${(votes.permit/totalLots)*100}%`, background:C.stone, transition:"width 1s" }}/>
-            <div style={{ flex:1, background:C.parchmentDark }}/>
+            <div style={{ width:`${(votes.undecided/totalLots)*100}%`, background:"#3B82F6", transition:"width 1s" }}/>
+            <div style={{ width:`${(notVotedLots/totalLots)*100}%`, background:C.parchmentDark, transition:"width 1s" }}/>
           </div>
-          <div style={{ display:"flex", gap:14, fontSize:11, color:C.muted }}>
+          <div style={{ display:"flex", gap:14, flexWrap:"wrap", fontSize:11, color:C.muted }}>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate STRs ({votes.eliminate})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit STRs ({votes.permit})</span>
-            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({votes.undecided})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:"#3B82F6", borderRadius:2, display:"inline-block" }}/> Undecided ({votes.undecided})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({notVotedLots})</span>
           </div>
           <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {votesNeeded} votes to eliminate STRs. Currently {Math.max(votesNeeded - votes.eliminate, 0)} votes short.</div>
         </div>
@@ -1520,6 +1525,7 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
   const allUnvoted = lotChoices.every((choice) => !choice);
   const uniformChoice = !allUnvoted && lotChoices.every((choice) => choice && choice === lotChoices[0]);
   const userVoted = allUnvoted ? null : uniformChoice ? lotChoices[0] : "mixed";
+  const notVotedLots = Math.max(totalLots - (votes.eliminate + votes.permit + votes.undecided), 0);
   const lotChoiceMap = votingLots.reduce((acc, lot, idx) => {
     acc[lot] = lotChoices[idx] || null;
     return acc;
@@ -1543,11 +1549,12 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
         <p style={{ fontSize:13, color:C.ink, lineHeight:1.7, margin:0 }}>This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. <strong>Every lot owner's voice matters — this is why we need 100% engagement.</strong></p>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(190px, 1fr))", gap:12, marginBottom:20 }}>
         {[
           { label:"Eliminate STRs", count:votes.eliminate, pct:Math.round((votes.eliminate/totalLots)*100), color:C.danger, desc:"No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
           { label:"Permit with regulation", count:votes.permit, pct:Math.round((votes.permit/totalLots)*100), color:C.stone, desc:"7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
-          { label:"Not yet voted", count:votes.undecided, pct:Math.round((votes.undecided/totalLots)*100), color:C.parchmentDark, desc:"Owners who have not yet indicated a preference. Your voice is needed." },
+          { label:"Undecided response", count:votes.undecided, pct:Math.round((votes.undecided/totalLots)*100), color:"#3B82F6", desc:"Owners who participated but need more time or information before choosing eliminate/permit." },
+          { label:"Not yet voted", count:notVotedLots, pct:Math.round((notVotedLots/totalLots)*100), color:C.parchmentDark, desc:"Owners who have not yet submitted any preference. Your voice is needed." },
         ].map((v,i) => (
           <div key={i} style={{ background:C.white, border:`2px solid ${v.color}`, borderRadius:8, padding:"16px 20px" }}>
             <div style={{ fontSize:28, fontWeight:700, fontFamily:"Georgia,serif", color:v.color }}>{v.count}</div>
@@ -2453,7 +2460,7 @@ function AdminVotingPage({
 
 // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
 function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operationalStats }) {
-  const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
+  const surveyEngaged = operationalStats.votedLots;
   const notEngaged = Math.max(0, totalLots - surveyEngaged);
   const strComments = comments.filter(c => c.topic === "str");
   const restrictCount = comments.filter(c => c.stance === "restrict").length;
@@ -2980,26 +2987,23 @@ export default function App() {
     const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
     const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
     if (targetLots.length === 0) return;
-    const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
+    const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
     if (previousChoices.every((prevChoice) => prevChoice === choice)) return;
-
-    setVotes((priorVotes) => {
-      const nextVotes = { ...priorVotes };
-      targetLots.forEach((lot, idx) => {
-        const prevChoice = previousChoices[idx];
-        if (prevChoice) {
-          nextVotes[prevChoice] = Math.max(0, (nextVotes[prevChoice] || 0) - 1);
-        } else {
-          nextVotes.undecided = Math.max(0, (nextVotes.undecided || 0) - 1);
-        }
-        nextVotes[choice] = (nextVotes[choice] || 0) + 1;
-      });
-      return nextVotes;
-    });
 
     setVoteLedger((prevLedger) => {
       const nextLedger = { ...prevLedger };
       targetLots.forEach((lot) => { nextLedger[lot] = choice; });
+      setVotes((prevVotes) => {
+        const recomputed = recomputeVotesFromLedger(nextLedger);
+        if (
+          prevVotes.eliminate === recomputed.eliminate &&
+          prevVotes.permit === recomputed.permit &&
+          prevVotes.undecided === recomputed.undecided
+        ) {
+          return prevVotes;
+        }
+        return recomputed;
+      });
       return nextLedger;
     });
     targetLots.forEach((lot) => {
