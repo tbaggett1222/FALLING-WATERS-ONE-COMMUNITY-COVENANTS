@@ -135,7 +135,11 @@ const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 
 const isAdminUserAllowed = (name) =>
-  ADMIN_ALLOWED_USERS.map((entry) => normalizeNameKey(entry)).includes(normalizeNameKey(name));
+  ADMIN_ALLOWED_USERS.some((entry) => {
+    const allowed = normalizeNameKey(entry);
+    const candidate = normalizeNameKey(name);
+    return candidate === allowed || candidate.includes(allowed) || allowed.includes(candidate);
+  });
 
 const generateUserId = (name = "resident") =>
   `usr_${normalizeNameKey(name).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
@@ -411,6 +415,11 @@ function LoginScreen({ onLogin }) {
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Your name</label>
             <input style={S.input} placeholder="First and last name" value={name} onChange={e=>setName(e.target.value)}/>
+            {isAdminUserAllowed(name.trim()) && (
+              <div style={{ fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 }}>
+                Admin recognized. You will enter Admin Control Mode after sign in.
+              </div>
+            )}
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Create / enter a password</label>
@@ -2063,6 +2072,7 @@ export default function App() {
     }
     store.set("fw_user", normalizedUser);
     setUser(normalizedUser);
+    setPage(isAdmin ? "admin-votes" : "home");
     if (!isAdmin) {
       lots.forEach((lot) => trackOwner(lot, { name: normalizedUser.name }));
     }
@@ -2347,6 +2357,16 @@ export default function App() {
           <div style={{ display:"flex", alignItems:"center", gap:6 }}><Icon.user/><span>{user.name}</span></div>
           <div style={{ marginTop:2, opacity:.7 }}>{getUserLotDisplay(user)}{user.isAdmin ? " · Admin" : ""}</div>
           {!user.isAdmin && <div style={{ marginTop:2, opacity:.7 }}>{accessRoleLabel(user.accessRole)}</div>}
+          <div style={{ marginTop: 8 }}>
+            <span
+              style={S.badge(
+                user.isAdmin ? C.amber : C.forest,
+                user.isAdmin ? C.amberLight : C.parchmentDark
+              )}
+            >
+              {user.isAdmin ? "Admin control mode" : "Resident portal mode"}
+            </span>
+          </div>
         </div>
         <nav style={S.sidebarNav}>
           {navItems.map(item => (
@@ -2372,6 +2392,11 @@ export default function App() {
           </div>
         </div>
         <div style={S.content}>
+          {user.isAdmin && (
+            <div style={S.alert("warn")}>
+              <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, and CSV import/export.
+            </div>
+          )}
           {page === "home" && <HomePage votes={votes} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "documents" && <DocumentsPage docs={covenantDocs}/>}
           {page === "comparison" && <ComparisonPage/>}
