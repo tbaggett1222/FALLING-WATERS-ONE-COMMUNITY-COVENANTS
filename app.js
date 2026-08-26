@@ -22829,6 +22829,7 @@ var FallingWatersPortal = (() => {
     }))));
   }
   function AdminVotingPage({
+    comments,
     ownerActivity,
     voteLedger,
     primaryVoterRegistry,
@@ -22857,6 +22858,7 @@ var FallingWatersPortal = (() => {
     const [backupBusy, setBackupBusy] = (0, import_react.useState)(false);
     const [backupMsg, setBackupMsg] = (0, import_react.useState)("");
     const [backupErr, setBackupErr] = (0, import_react.useState)("");
+    const [bundleBusy, setBundleBusy] = (0, import_react.useState)(false);
     const [restoreMode, setRestoreMode] = (0, import_react.useState)("replace");
     const [restoreScopes, setRestoreScopes] = (0, import_react.useState)(() => defaultBackupRestoreScopes());
     const [gradeMsg, setGradeMsg] = (0, import_react.useState)("");
@@ -22968,6 +22970,101 @@ var FallingWatersPortal = (() => {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+    };
+    const downloadCsvFile = (fileName, headers, rows) => {
+      const lines = [
+        headers.join(","),
+        ...rows.map(
+          (row) => row.map((val) => `"${String(val ?? "").replaceAll('"', '""')}"`).join(",")
+        )
+      ];
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+    const exportCsvBundle = async () => {
+      setBackupErr("");
+      setBackupMsg("");
+      setBundleBusy(true);
+      try {
+        const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        const lotRowsSorted = [...lotRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+        downloadCsvFile(
+          `fw-bundle-votes-${stamp}.csv`,
+          ["Lot", "Vote Choice", "Has Voted", "Status"],
+          lotRowsSorted.map((row) => [
+            row.lot,
+            choiceLabel(row.choice),
+            row.hasVoted ? "Yes" : "No",
+            row.status
+          ])
+        );
+        downloadCsvFile(
+          `fw-bundle-eligibility-${stamp}.csv`,
+          ["Lot", "Vote Eligible", "Ineligible Reason", "Eligibility Last Updated"],
+          lotRowsSorted.map((row) => [
+            row.lot,
+            row.voteEligible ? "Yes" : "No",
+            row.ineligibleReason || "",
+            row.eligibilityUpdatedAt || ""
+          ])
+        );
+        downloadCsvFile(
+          `fw-bundle-outreach-${stamp}.csv`,
+          ["Lot", "Contacted", "Outreach Notes", "Last Contact Date", "Owner Name (if known)"],
+          lotRowsSorted.map((row) => [
+            row.lot,
+            row.contacted ? "Yes" : "No",
+            row.outreachNotes || "",
+            row.lastContact || "",
+            row.ownerName || ""
+          ])
+        );
+        downloadCsvFile(
+          `fw-bundle-comments-${stamp}.csv`,
+          ["Timestamp", "Name", "Lot", "Topic", "Stance", "Comment"],
+          (Array.isArray(comments) ? comments : []).map((comment) => [
+            comment?.ts || "",
+            comment?.name || "",
+            comment?.lot || (Array.isArray(comment?.lots) ? comment.lots.join(", ") : ""),
+            comment?.topic || "",
+            comment?.stance || "",
+            comment?.text || ""
+          ])
+        );
+        downloadCsvFile(
+          `fw-bundle-admin-access-${stamp}.csv`,
+          ["Approved Admin", "Admin Grade", "Last Updated"],
+          approvedAdminRows.map((row) => [
+            row.name,
+            adminGradeLabel(row.grade),
+            row.gradeUpdatedAt || ""
+          ])
+        );
+        downloadCsvFile(
+          `fw-bundle-user-directory-${stamp}.csv`,
+          ["Name", "Admin Rights", "Admin Grade", "Access Role", "Lots", "Last Seen"],
+          directoryRows.map((row) => [
+            row.name || "",
+            row.isAdmin ? "Admin" : "Resident",
+            row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "",
+            row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole),
+            Array.isArray(row.lots) ? row.lots.join(", ") : "",
+            row.lastSeen || ""
+          ])
+        );
+        setBackupMsg("CSV bundle exported (multiple files downloaded).");
+      } catch (err) {
+        setBackupErr(err?.message || "Could not export CSV bundle.");
+      } finally {
+        setBundleBusy(false);
+      }
     };
     const toggleLotEligibility = (row) => {
       if (row.voteEligible) {
@@ -23148,9 +23245,17 @@ var FallingWatersPortal = (() => {
       {
         style: { ...S.btn("primary"), padding: "7px 12px" },
         onClick: handleBackupExport,
-        disabled: backupBusy
+        disabled: backupBusy || bundleBusy
       },
       "Export full backup JSON"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("stone"), padding: "7px 12px" },
+        onClick: exportCsvBundle,
+        disabled: backupBusy || bundleBusy
+      },
+      "Export CSV bundle"
     ), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
@@ -23158,7 +23263,7 @@ var FallingWatersPortal = (() => {
         type: "file",
         accept: ".json,application/json",
         onChange: handleBackupRestore,
-        disabled: backupBusy
+        disabled: backupBusy || bundleBusy
       }
     )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.forest, fontWeight: 700, marginBottom: 8 } }, "Selective restore options"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: { fontSize: 12, color: C.muted } }, "Mode"), /* @__PURE__ */ import_react.default.createElement(
       "select",
@@ -24084,6 +24189,7 @@ var FallingWatersPortal = (() => {
     ), page === "admin-votes" && user.isAdmin && /* @__PURE__ */ import_react.default.createElement(
       AdminVotingPage,
       {
+        comments,
         ownerActivity,
         voteLedger,
         primaryVoterRegistry,

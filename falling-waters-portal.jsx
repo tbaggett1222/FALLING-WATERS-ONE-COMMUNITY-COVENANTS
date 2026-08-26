@@ -2195,6 +2195,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
 function AdminVotingPage({
+  comments,
   ownerActivity,
   voteLedger,
   primaryVoterRegistry,
@@ -2223,6 +2224,7 @@ function AdminVotingPage({
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMsg, setBackupMsg] = useState("");
   const [backupErr, setBackupErr] = useState("");
+  const [bundleBusy, setBundleBusy] = useState(false);
   const [restoreMode, setRestoreMode] = useState("replace");
   const [restoreScopes, setRestoreScopes] = useState(() => defaultBackupRestoreScopes());
   const [gradeMsg, setGradeMsg] = useState("");
@@ -2350,6 +2352,112 @@ function AdminVotingPage({
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const downloadCsvFile = (fileName, headers, rows) => {
+    const lines = [
+      headers.join(","),
+      ...rows.map((row) =>
+        row
+          .map((val) => `"${String(val ?? "").replaceAll('"', '""')}"`)
+          .join(",")
+      ),
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCsvBundle = async () => {
+    setBackupErr("");
+    setBackupMsg("");
+    setBundleBusy(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const lotRowsSorted = [...lotRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+
+      downloadCsvFile(
+        `fw-bundle-votes-${stamp}.csv`,
+        ["Lot", "Vote Choice", "Has Voted", "Status"],
+        lotRowsSorted.map((row) => [
+          row.lot,
+          choiceLabel(row.choice),
+          row.hasVoted ? "Yes" : "No",
+          row.status,
+        ])
+      );
+
+      downloadCsvFile(
+        `fw-bundle-eligibility-${stamp}.csv`,
+        ["Lot", "Vote Eligible", "Ineligible Reason", "Eligibility Last Updated"],
+        lotRowsSorted.map((row) => [
+          row.lot,
+          row.voteEligible ? "Yes" : "No",
+          row.ineligibleReason || "",
+          row.eligibilityUpdatedAt || "",
+        ])
+      );
+
+      downloadCsvFile(
+        `fw-bundle-outreach-${stamp}.csv`,
+        ["Lot", "Contacted", "Outreach Notes", "Last Contact Date", "Owner Name (if known)"],
+        lotRowsSorted.map((row) => [
+          row.lot,
+          row.contacted ? "Yes" : "No",
+          row.outreachNotes || "",
+          row.lastContact || "",
+          row.ownerName || "",
+        ])
+      );
+
+      downloadCsvFile(
+        `fw-bundle-comments-${stamp}.csv`,
+        ["Timestamp", "Name", "Lot", "Topic", "Stance", "Comment"],
+        (Array.isArray(comments) ? comments : []).map((comment) => [
+          comment?.ts || "",
+          comment?.name || "",
+          comment?.lot || (Array.isArray(comment?.lots) ? comment.lots.join(", ") : ""),
+          comment?.topic || "",
+          comment?.stance || "",
+          comment?.text || "",
+        ])
+      );
+
+      downloadCsvFile(
+        `fw-bundle-admin-access-${stamp}.csv`,
+        ["Approved Admin", "Admin Grade", "Last Updated"],
+        approvedAdminRows.map((row) => [
+          row.name,
+          adminGradeLabel(row.grade),
+          row.gradeUpdatedAt || "",
+        ])
+      );
+
+      downloadCsvFile(
+        `fw-bundle-user-directory-${stamp}.csv`,
+        ["Name", "Admin Rights", "Admin Grade", "Access Role", "Lots", "Last Seen"],
+        directoryRows.map((row) => [
+          row.name || "",
+          row.isAdmin ? "Admin" : "Resident",
+          row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "",
+          row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole),
+          Array.isArray(row.lots) ? row.lots.join(", ") : "",
+          row.lastSeen || "",
+        ])
+      );
+
+      setBackupMsg("CSV bundle exported (multiple files downloaded).");
+    } catch (err) {
+      setBackupErr(err?.message || "Could not export CSV bundle.");
+    } finally {
+      setBundleBusy(false);
+    }
   };
 
   const toggleLotEligibility = (row) => {
@@ -2672,16 +2780,23 @@ function AdminVotingPage({
           <button
             style={{ ...S.btn("primary"), padding: "7px 12px" }}
             onClick={handleBackupExport}
-            disabled={backupBusy}
+            disabled={backupBusy || bundleBusy}
           >
             Export full backup JSON
+          </button>
+          <button
+            style={{ ...S.btn("stone"), padding: "7px 12px" }}
+            onClick={exportCsvBundle}
+            disabled={backupBusy || bundleBusy}
+          >
+            Export CSV bundle
           </button>
           <input
             style={{ ...S.input, padding: "7px 10px", maxWidth: 320 }}
             type="file"
             accept=".json,application/json"
             onChange={handleBackupRestore}
-            disabled={backupBusy}
+            disabled={backupBusy || bundleBusy}
           />
         </div>
         <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
@@ -3954,6 +4069,7 @@ export default function App() {
           )}
           {page === "admin-votes" && user.isAdmin && (
             <AdminVotingPage
+              comments={comments}
               ownerActivity={ownerActivity}
               voteLedger={voteLedger}
               primaryVoterRegistry={primaryVoterRegistry}
