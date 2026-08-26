@@ -174,10 +174,32 @@ const normalizeAdminGrade = (grade) =>
 const adminGradeLabel = (grade) =>
   ADMIN_GRADE_OPTIONS.find((option) => option.value === normalizeAdminGrade(grade))?.label || "Full admin";
 
-const isAdminUserAllowed = (name) => {
+const normalizeAdminAccessEntries = (entries) => {
+  const list = Array.isArray(entries) ? entries : [];
+  const seen = new Set();
+  const normalized = [];
+  list.forEach((entry) => {
+    const safeEntry = String(entry || "").trim();
+    if (!safeEntry) return;
+    const key = normalizeNameKey(safeEntry);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    normalized.push(safeEntry);
+  });
+  return normalized;
+};
+
+const getInitialAdminAccessEntries = () => {
+  const seeded = normalizeAdminAccessEntries(ADMIN_ACCESS_ENTRIES);
+  const saved = store.get("fw_admin_access_entries");
+  const normalizedSaved = normalizeAdminAccessEntries(saved);
+  return normalizedSaved.length > 0 ? normalizedSaved : seeded;
+};
+
+const isAdminUserAllowed = (name, adminAccessEntries = ADMIN_ACCESS_ENTRIES) => {
   const candidate = normalizeNameKey(name);
   if (!candidate) return false;
-  const allowedNames = ADMIN_ACCESS_ENTRIES.map((entry) => normalizeNameKey(entry));
+  const allowedNames = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => normalizeNameKey(entry));
   return allowedNames.includes(candidate);
 };
 
@@ -622,12 +644,12 @@ const S = {
 };
 
 // ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, adminAccessEntries }) {
   const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary); const [err, setErr] = useState("");
   const handle = (e) => {
     e.preventDefault();
     const trimmedName = name.trim();
-    const hasAdminApproval = isAdminUserAllowed(trimmedName);
+    const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
     const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
     if ((!hasAdminApproval && lots.length === 0) || !trimmedName || pw.length < 4) {
       setErr('Please enter your name, lot number(s), and a password (min 4 characters).');
@@ -668,7 +690,7 @@ function LoginScreen({ onLogin }) {
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Your name</label>
             <input style={S.input} placeholder="First and last name" value={name} onChange={e=>setName(e.target.value)}/>
-            {isAdminUserAllowed(name.trim()) && (
+            {isAdminUserAllowed(name.trim(), adminAccessEntries) && (
               <div style={{ fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 }}>
                 Admin recognized. You will enter Admin Control Mode after sign in.
               </div>
@@ -1867,6 +1889,7 @@ function AdminVotingPage({
   outreachState,
   eligibilityState,
   userDirectory,
+  adminAccessEntries,
   adminAccessGrades,
   totalLots,
   votesNeeded,
@@ -1874,6 +1897,8 @@ function AdminVotingPage({
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
+  onGrantAdminAccess,
+  onRevokeAdminAccess,
 }) {
   const [filter, setFilter] = useState("all");
   const [lotQuery, setLotQuery] = useState("");
@@ -1882,6 +1907,9 @@ function AdminVotingPage({
   const [importMsg, setImportMsg] = useState("");
   const [importErr, setImportErr] = useState("");
   const [gradeMsg, setGradeMsg] = useState("");
+  const [newAdminName, setNewAdminName] = useState("");
+  const [newAdminGrade, setNewAdminGrade] = useState(DEFAULT_ADMIN_GRADE);
+  const [gradeErr, setGradeErr] = useState("");
   const lotLabels = buildLotLabels(totalLots);
   const directoryRows = Object.values(userDirectory || {})
     .sort((a, b) => {
@@ -1889,7 +1917,7 @@ function AdminVotingPage({
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
   const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
-  const approvedAdminRows = ADMIN_ACCESS_ENTRIES.map((entry) => {
+  const approvedAdminRows = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => {
     const nameKey = normalizeNameKey(entry);
     const gradeRecord = adminAccessGrades?.[nameKey] || {};
     const grade = normalizeAdminGrade(gradeRecord.grade || DEFAULT_ADMIN_GRADE);
@@ -2025,8 +2053,37 @@ function AdminVotingPage({
   };
 
   const updateAdminGrade = (name, grade) => {
+    setGradeErr("");
     const result = onSetAdminAccessGrade?.(name, grade);
+    if (result?.error) {
+      setGradeErr(result.error);
+      return;
+    }
     setGradeMsg(result?.message || `Updated admin grade for ${name}.`);
+    setTimeout(() => setGradeMsg(""), 3500);
+  };
+
+  const grantAdminAccess = () => {
+    setGradeErr("");
+    const result = onGrantAdminAccess?.(newAdminName, newAdminGrade);
+    if (result?.error) {
+      setGradeErr(result.error);
+      return;
+    }
+    setGradeMsg(result?.message || "Admin access granted.");
+    setNewAdminName("");
+    setNewAdminGrade(DEFAULT_ADMIN_GRADE);
+    setTimeout(() => setGradeMsg(""), 3500);
+  };
+
+  const revokeAdminAccess = (name) => {
+    setGradeErr("");
+    const result = onRevokeAdminAccess?.(name);
+    if (result?.error) {
+      setGradeErr(result.error);
+      return;
+    }
+    setGradeMsg(result?.message || `Admin access removed for ${name}.`);
     setTimeout(() => setGradeMsg(""), 3500);
   };
 
@@ -2089,7 +2146,34 @@ function AdminVotingPage({
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
           These names are currently approved for admin access in this portal. Assign an access grade for governance and internal control tracking.
         </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>Grant admin rights (name)</label>
+            <input
+              style={S.input}
+              value={newAdminName}
+              onChange={(event) => setNewAdminName(event.target.value)}
+              placeholder="Full name"
+            />
+          </div>
+          <div>
+            <label style={S.label}>Admin grade</label>
+            <select
+              style={S.select}
+              value={newAdminGrade}
+              onChange={(event) => setNewAdminGrade(event.target.value)}
+            >
+              {ADMIN_GRADE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <button style={{ ...S.btn("primary"), padding: "8px 12px" }} onClick={grantAdminAccess}>
+            Grant admin rights
+          </button>
+        </div>
         {gradeMsg && <div style={S.alert("success")}>{gradeMsg}</div>}
+        {gradeErr && <div style={S.alert("danger")}>{gradeErr}</div>}
         <div style={{ overflowX: "auto" }}>
           <table style={S.table}>
             <thead>
@@ -2097,12 +2181,13 @@ function AdminVotingPage({
                 <th style={S.th}>Approved admin</th>
                 <th style={S.th}>Access grade</th>
                 <th style={S.th}>Last updated</th>
+                <th style={S.th}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {approvedAdminRows.length === 0 && (
                 <tr>
-                  <td style={S.td} colSpan={3}>No admin names configured.</td>
+                  <td style={S.td} colSpan={4}>No admin names configured.</td>
                 </tr>
               )}
               {approvedAdminRows.map((row) => (
@@ -2120,6 +2205,14 @@ function AdminVotingPage({
                     </select>
                   </td>
                   <td style={S.td}>{row.gradeUpdatedAt || "—"}</td>
+                  <td style={S.td}>
+                    <button
+                      style={{ ...S.btn("outline"), padding: "5px 8px", fontSize: 11 }}
+                      onClick={() => revokeAdminAccess(row.name)}
+                    >
+                      Revoke
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2445,11 +2538,13 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded }) {
 
 // ── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const initialAdminAccessEntries = getInitialAdminAccessEntries();
+  const [adminAccessEntries, setAdminAccessEntries] = useState(initialAdminAccessEntries);
   const [user, setUser] = useState(() => {
     const saved = store.get("fw_user");
     if (!saved) return null;
     const lots = normalizeUserLots(saved);
-    const hasAdminApproval = isAdminUserAllowed(saved.name);
+    const hasAdminApproval = isAdminUserAllowed(saved.name, initialAdminAccessEntries);
     const requestedAdmin = !!saved.isAdmin || (lots.length === 1 && lots[0] === "ADMIN");
     if (requestedAdmin && !hasAdminApproval) return null;
     if (!hasAdminApproval && lots.length === 0) return null;
@@ -2521,6 +2616,7 @@ export default function App() {
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
   useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
   useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
+  useEffect(() => { store.set("fw_admin_access_entries", adminAccessEntries); }, [adminAccessEntries]);
   useEffect(() => { store.set("fw_admin_access_grades", adminAccessGrades); }, [adminAccessGrades]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
@@ -2531,6 +2627,13 @@ export default function App() {
       setCovenantDocs(result.docs);
     }
   }, []);
+  useEffect(() => {
+    if (user?.isAdmin && !isAdminUserAllowed(user.name, adminAccessEntries)) {
+      store.set("fw_user", null);
+      setUser(null);
+      setPage("home");
+    }
+  }, [adminAccessEntries, user]);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -2581,6 +2684,9 @@ export default function App() {
   const handleSetAdminAccessGrade = (name, grade) => {
     const safeName = String(name || "").trim();
     if (!safeName) return { error: "Admin name is required." };
+    if (!isAdminUserAllowed(safeName, adminAccessEntries)) {
+      return { error: `${safeName} is not currently in the approved admin list.` };
+    }
     const key = normalizeNameKey(safeName);
     const normalizedGrade = normalizeAdminGrade(grade);
     setAdminAccessGrades((prev) => ({
@@ -2592,6 +2698,43 @@ export default function App() {
       },
     }));
     return { message: `${safeName} grade set to ${adminGradeLabel(normalizedGrade)}.` };
+  };
+
+  const handleGrantAdminAccess = (name, grade = DEFAULT_ADMIN_GRADE) => {
+    const safeName = String(name || "").trim();
+    if (!safeName) return { error: "Enter a name to grant admin rights." };
+    const key = normalizeNameKey(safeName);
+    const exists = adminAccessEntries.some((entry) => normalizeNameKey(entry) === key);
+    const normalizedGrade = normalizeAdminGrade(grade);
+    if (!exists) {
+      setAdminAccessEntries((prev) => normalizeAdminAccessEntries([...prev, safeName]));
+    }
+    setAdminAccessGrades((prev) => ({
+      ...prev,
+      [key]: {
+        name: safeName,
+        grade: normalizedGrade,
+        updatedAt: todayLabel(),
+      },
+    }));
+    return { message: exists ? `${safeName} already had admin rights; grade updated.` : `${safeName} now has admin rights.` };
+  };
+
+  const handleRevokeAdminAccess = (name) => {
+    const safeName = String(name || "").trim();
+    if (!safeName) return { error: "Admin name is required." };
+    const key = normalizeNameKey(safeName);
+    const remaining = adminAccessEntries.filter((entry) => normalizeNameKey(entry) !== key);
+    if (remaining.length === 0) {
+      return { error: "At least one admin must remain configured." };
+    }
+    setAdminAccessEntries(remaining);
+    setAdminAccessGrades((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    return { message: `${safeName} admin rights revoked.` };
   };
 
   const trackUserAccess = (profile) => {
@@ -2665,7 +2808,7 @@ export default function App() {
 
   const handleLogin = (u) => {
     const lots = normalizeUserLots(u);
-    const hasAdminApproval = isAdminUserAllowed(u.name);
+    const hasAdminApproval = isAdminUserAllowed(u.name, adminAccessEntries);
     const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
     if (requestedAdmin && !hasAdminApproval) {
       return "This account is not authorized for admin access. Contact the HOA administrator.";
@@ -2956,7 +3099,7 @@ export default function App() {
     votedLots: activityRows.filter((row) => row.voteChoice).length,
   };
 
-  if (!user) return <LoginScreen onLogin={handleLogin}/>;
+  if (!user) return <LoginScreen onLogin={handleLogin} adminAccessEntries={adminAccessEntries}/>;
 
   const navItems = [
     { id:"home", label:"Overview", icon:<Icon.home/> },
@@ -3054,6 +3197,7 @@ export default function App() {
               outreachState={outreachState}
               eligibilityState={eligibilityState}
               userDirectory={userDirectory}
+              adminAccessEntries={adminAccessEntries}
               adminAccessGrades={adminAccessGrades}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
@@ -3061,6 +3205,8 @@ export default function App() {
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
+              onGrantAdminAccess={handleGrantAdminAccess}
+              onRevokeAdminAccess={handleRevokeAdminAccess}
             />
           )}
           {page === "admin-docs" && user.isAdmin && (
