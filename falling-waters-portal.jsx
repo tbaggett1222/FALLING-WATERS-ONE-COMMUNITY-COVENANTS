@@ -36,6 +36,8 @@ const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
+const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
   "Traffic & parking pressure",
   "Parties, loud noise, and disturbances",
@@ -85,6 +87,8 @@ const buildLotLabels = (totalLots) =>
 
 const votesNeededForLots = (totalLots) =>
   Math.ceil((Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2) / 3);
+
+const formatMegabytes = (bytes) => `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MB`;
 
 const parseLotsInput = (value) => {
   const raw = String(value || "").trim();
@@ -621,9 +625,19 @@ function DocumentsPage({ docs }) {
                     </ul>
                   </div>
                 )}
+                {doc.attachmentNotice && (
+                  <div style={{ ...S.alert("warn"), marginBottom: 12 }}>
+                    {doc.attachmentNotice}
+                  </div>
+                )}
                 {doc.fileDataUrl && (
                   <a href={doc.fileDataUrl} download={doc.fileName || `${doc.title}.pdf`} style={{ fontSize:12, color:"#1D4ED8", fontWeight:600, textDecoration:"none" }}>
                     Download uploaded covenant file ({doc.fileName || "attachment"})
+                  </a>
+                )}
+                {!doc.fileDataUrl && doc.externalUrl && (
+                  <a href={doc.externalUrl} target="_blank" rel="noreferrer" style={{ fontSize:12, color:"#1D4ED8", fontWeight:600, textDecoration:"none" }}>
+                    Open external covenant link
                   </a>
                 )}
               </div>
@@ -644,6 +658,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
   const [ref, setRef] = useState("");
   const [status, setStatus] = useState("uploaded");
   const [notes, setNotes] = useState("");
+  const [externalUrl, setExternalUrl] = useState("");
   const [file, setFile] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
@@ -659,6 +674,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
     setRef("");
     setStatus("uploaded");
     setNotes("");
+    setExternalUrl("");
     setFile(null);
   };
 
@@ -671,23 +687,32 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
       setError("Title is required.");
       return;
     }
-    if (!file) {
-      setError("Please select a covenant file to upload.");
+    const normalizedExternalUrl = String(externalUrl || "").trim();
+    if (!file && !normalizedExternalUrl) {
+      setError("Please select a covenant file or provide an external document URL.");
       return;
     }
-    if (file.size > 1024 * 1024 * 1.5) {
-      setError("File is too large for portal storage. Please keep uploads under 1.5MB.");
+    if (file && file.size > MAX_UPLOAD_BYTES) {
+      setError(`File is too large. Please keep uploads under ${formatMegabytes(MAX_UPLOAD_BYTES)}.`);
       return;
     }
 
     setIsSaving(true);
     try {
-      const fileDataUrl = await readFileAsDataUrl(file);
+      let fileDataUrl = null;
+      let attachmentNotice = "";
+      if (file && file.size <= MAX_INLINE_ATTACHMENT_BYTES) {
+        fileDataUrl = await readFileAsDataUrl(file);
+      } else if (file && file.size > MAX_INLINE_ATTACHMENT_BYTES) {
+        attachmentNotice = `Attachment not embedded in portal storage because ${file.name} (${formatMegabytes(file.size)}) exceeds the inline storage limit (${formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)}). Add an external URL so residents can open the full document.`;
+      }
       let extractedText = "";
-      try {
-        extractedText = await readFileAsText(file);
-      } catch {
-        extractedText = "";
+      if (file) {
+        try {
+          extractedText = await readFileAsText(file);
+        } catch {
+          extractedText = "";
+        }
       }
 
       const autoCompareSummary = summarizeUploadedCovenant(extractedText, docs.length);
@@ -706,15 +731,20 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
         source: "uploaded",
         uploadedBy: user.name,
         uploadedAt: todayLabel(),
-        fileName: file.name,
-        fileType: file.type || "application/octet-stream",
+        fileName: file?.name || "",
+        fileType: file?.type || "",
+        fileSizeBytes: file?.size || 0,
         fileDataUrl,
+        externalUrl: normalizedExternalUrl,
+        attachmentNotice,
         notes: notes.trim(),
         sections: notes.trim() ? [{ heading: "Admin summary", text: notes.trim() }] : [],
         autoCompareSummary,
       });
 
-      setSuccess("Covenant uploaded and added to CC&R Documents with automatic comparison summary.");
+      setSuccess(fileDataUrl
+        ? "Covenant uploaded and added to CC&R Documents with automatic comparison summary."
+        : "Covenant record saved. Large attachment was not embedded; use an external URL for resident access.");
       resetForm();
     } catch (err) {
       setError(err?.message || "Upload failed. Please try again.");
@@ -776,7 +806,19 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                File must be under 1.5MB for browser storage.
+                Files up to {formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)} are embedded for direct download. Larger files can still be added (up to {formatMegabytes(MAX_UPLOAD_BYTES)}) with an external URL.
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={S.label}>External document URL (optional, recommended for large files)</label>
+              <input
+                style={S.input}
+                value={externalUrl}
+                onChange={(e) => setExternalUrl(e.target.value)}
+                placeholder="https://... link residents can open"
+              />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                Use this when a file is too large to embed directly in browser storage.
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
@@ -808,8 +850,11 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
             <div key={doc.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}>
               <div style={{ fontWeight: 700, fontSize: 13, color: C.forest }}>{doc.title}</div>
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                {doc.year} · {doc.fileName || "No attachment"} · {doc.uploadedAt || "Unknown"}
+                {doc.year} · {doc.fileName || (doc.externalUrl ? "External link only" : "No attachment")} · {doc.uploadedAt || "Unknown"}
               </div>
+              {!doc.fileDataUrl && doc.attachmentNotice && (
+                <div style={{ fontSize: 11, color: C.amber, marginTop: 6 }}>{doc.attachmentNotice}</div>
+              )}
               <button
                 style={{ ...S.btn("outline"), marginTop: 8, padding: "6px 10px", fontSize: 12 }}
                 onClick={() => onDeleteDocument(doc.id)}
