@@ -62,6 +62,39 @@ const todayLabel = () =>
 const isLegacySampleComment = (comment) =>
   LEGACY_SAMPLE_COMMENT_KEYS.has(`${comment?.lot || ""}|${comment?.name || ""}|${comment?.ts || ""}`);
 
+const normalizeLotLabel = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (raw.toLowerCase() === "admin") return "ADMIN";
+  const stripped = raw.replace(/^lot\s*/i, "").trim();
+  if (!stripped) return null;
+  return `Lot ${stripped}`;
+};
+
+const parseLotsInput = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  if (raw.toLowerCase() === "admin") return ["ADMIN"];
+  const normalizedDelimiters = raw.replace(/\band\b/gi, ",");
+  const tokens = normalizedDelimiters.split(/[,;/]+/).map((token) => normalizeLotLabel(token)).filter(Boolean);
+  return [...new Set(tokens)];
+};
+
+const normalizeUserLots = (user) => {
+  if (!user) return [];
+  if (user.isAdmin) return ["ADMIN"];
+  if (Array.isArray(user.lots) && user.lots.length > 0) {
+    return [...new Set(user.lots.map((lot) => normalizeLotLabel(lot)).filter(Boolean))];
+  }
+  return parseLotsInput(user.lot);
+};
+
+const getUserLotDisplay = (user) => {
+  const lots = normalizeUserLots(user);
+  if (lots.length <= 1) return lots[0] || user?.lot || "";
+  return lots.join(", ");
+};
+
 const readFileAsDataUrl = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -207,8 +240,18 @@ function LoginScreen({ onLogin }) {
   const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [err, setErr] = useState("");
   const handle = (e) => {
     e.preventDefault();
-    if (!lot.trim() || !name.trim() || pw.length < 4) { setErr("Please enter your lot number, name, and a password (min 4 characters)."); return; }
-    const user = { lot: lot.trim(), name: name.trim(), isAdmin: lot.trim().toLowerCase() === "admin" };
+    const lots = parseLotsInput(lot);
+    if (lots.length === 0 || !name.trim() || pw.length < 4) {
+      setErr('Please enter your lot number(s), name, and a password (min 4 characters).');
+      return;
+    }
+    const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    const user = {
+      lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
+      lots,
+      name: name.trim(),
+      isAdmin,
+    };
     onLogin(user);
   };
   return (
@@ -219,12 +262,12 @@ function LoginScreen({ onLogin }) {
           <div style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest, lineHeight:1.2 }}>Falling Waters</div>
           <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Community Covenant Portal</div>
         </div>
-        <div style={S.alert("info")}>Enter your lot number and name to access the portal. Your identity will be associated with your comments and vote.</div>
+        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Owners with multiple lots can enter all lot numbers to cast one vote per lot.</div>
         {err && <div style={S.alert("danger")}>{err}</div>}
         <form onSubmit={handle}>
           <div style={{ marginBottom:14 }}>
-            <label style={S.label}>Lot number or "ADMIN"</label>
-            <input style={S.input} placeholder="e.g. Lot 42 or 123" value={lot} onChange={e=>setLot(e.target.value)}/>
+            <label style={S.label}>Lot number(s) or "ADMIN"</label>
+            <input style={S.input} placeholder="e.g. Lot 36, Lot 37" value={lot} onChange={e=>setLot(e.target.value)}/>
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Your name</label>
@@ -834,8 +877,12 @@ function ProposedCovenantPage() {
 }
 
 // ── STR PAGE ─────────────────────────────────────────────────────────────────
-function STRPage({ user, votes, onVote }) {
-  const userVoted = store.get(`vote_${user.lot}`);
+function STRPage({ user, votes, voteLedger, onVote }) {
+  const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+  const lotChoices = votingLots
+    .map((lot) => voteLedger[lot] || store.get(`vote_${lot}`))
+    .filter(Boolean);
+  const userVoted = lotChoices.length === 0 ? null : lotChoices.every((choice) => choice === lotChoices[0]) ? lotChoices[0] : "mixed";
   const reasons = [
     { icon:"🚗", title:"Increased traffic and parking", text:"Short-term rental guests unfamiliar with private mountain roads park on roadways, block shared driveways, and generate traffic volumes the infrastructure was not designed for. Our private roads — maintained at owner expense — experience accelerated wear." },
     { icon:"🔊", title:"Noise, parties, and disturbances", text:"Vacation renters operate on a different code of conduct than permanent residents and long-term tenants. Late-night parties, amplified music, and large gatherings that violate our nuisance provisions are consistently reported near STR properties. Enforcement is difficult when the owner isn't present." },
@@ -883,8 +930,20 @@ function STRPage({ user, votes, onVote }) {
 
       <div style={S.card}>
         <div style={S.cardTitle}>Cast your vote on short-term rentals</div>
+        {votingLots.length > 1 && (
+          <div style={S.alert("info")}>
+            You are currently voting for <strong>{votingLots.length} lots</strong> ({votingLots.join(", ")}). Each vote selection applies one vote per listed lot.
+          </div>
+        )}
         {userVoted ? (
-          <div style={S.alert("success")}><strong>Your vote has been recorded: "{userVoted === "eliminate" ? "Eliminate STRs" : userVoted === "permit" ? "Permit with regulation" : "Undecided"}".</strong> You can change your vote at any time before the formal ballot closes. Thank you for participating.</div>
+          <div style={userVoted === "mixed" ? S.alert("warn") : S.alert("success")}>
+            <strong>
+              {userVoted === "mixed"
+                ? "Your listed lots currently have mixed selections."
+                : `Your vote has been recorded: "${userVoted === "eliminate" ? "Eliminate STRs" : userVoted === "permit" ? "Permit with regulation" : "Undecided"}".`}
+            </strong>{" "}
+            You can change your vote at any time before the formal ballot closes. Thank you for participating.
+          </div>
         ) : (
           <div style={S.alert("info")}>This is a preliminary preference survey — not the formal legal vote. Results inform the working group's drafting process. The formal certified-mail ballot will follow attorney review and draft completion.</div>
         )}
@@ -953,6 +1012,7 @@ function CommentsPage({ user, comments, onAdd }) {
       onAdd({
         id:Date.now(),
         lot:user.lot,
+        lots: normalizeUserLots(user),
         name:user.name,
         ts:todayLabel(),
         topic:formTopic,
@@ -1207,7 +1267,19 @@ function DashboardPage({ votes, comments, stats }) {
 
 // ── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser] = useState(() => store.get("fw_user"));
+  const [user, setUser] = useState(() => {
+    const saved = store.get("fw_user");
+    if (!saved) return null;
+    const lots = normalizeUserLots(saved);
+    if (lots.length === 0) return null;
+    const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    return {
+      ...saved,
+      isAdmin,
+      lots,
+      lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
+    };
+  });
   const [page, setPage] = useState("home");
   const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
   const [comments, setComments] = useState(() => {
@@ -1249,35 +1321,57 @@ export default function App() {
   };
 
   const handleLogin = (u) => {
-    store.set("fw_user", u);
-    setUser(u);
-    trackOwner(u.lot, { name: u.name });
+    const lots = normalizeUserLots(u);
+    const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    const normalizedUser = {
+      ...u,
+      isAdmin,
+      lots,
+      lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
+    };
+    store.set("fw_user", normalizedUser);
+    setUser(normalizedUser);
+    if (!isAdmin) {
+      lots.forEach((lot) => trackOwner(lot, { name: normalizedUser.name }));
+    }
   };
   const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
 
   const handleVote = (choice) => {
-    const prev = voteLedger[user.lot] || store.get(`vote_${user.lot}`);
-    if (prev === choice) return;
+    const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+    if (votingLots.length === 0) return;
+    const previousChoices = votingLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
+    if (previousChoices.every((prevChoice) => prevChoice === choice)) return;
 
     setVotes((priorVotes) => {
       const nextVotes = { ...priorVotes };
-      if (prev) {
-        nextVotes[prev] = Math.max(0, (nextVotes[prev] || 0) - 1);
-      } else {
-        nextVotes.undecided = Math.max(0, (nextVotes.undecided || 0) - 1);
-      }
-      nextVotes[choice] = (nextVotes[choice] || 0) + 1;
+      votingLots.forEach((lot, idx) => {
+        const prevChoice = previousChoices[idx];
+        if (prevChoice) {
+          nextVotes[prevChoice] = Math.max(0, (nextVotes[prevChoice] || 0) - 1);
+        } else {
+          nextVotes.undecided = Math.max(0, (nextVotes.undecided || 0) - 1);
+        }
+        nextVotes[choice] = (nextVotes[choice] || 0) + 1;
+      });
       return nextVotes;
     });
 
-    setVoteLedger((prevLedger) => ({ ...prevLedger, [user.lot]: choice }));
-    store.set(`vote_${user.lot}`, choice);
-    trackOwner(user.lot, { voteChoice: choice, votedAt: todayLabel(), name: user.name });
+    setVoteLedger((prevLedger) => {
+      const nextLedger = { ...prevLedger };
+      votingLots.forEach((lot) => { nextLedger[lot] = choice; });
+      return nextLedger;
+    });
+    votingLots.forEach((lot) => {
+      store.set(`vote_${lot}`, choice);
+      trackOwner(lot, { voteChoice: choice, votedAt: todayLabel(), name: user.name });
+    });
   };
 
   const handleAddComment = (c) => {
     setComments(prev => [c, ...prev]);
-    trackOwner(c.lot, { commented: true, name: c.name });
+    const commentLots = Array.isArray(c.lots) ? c.lots.filter((lot) => lot !== "ADMIN") : [c.lot];
+    commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
   };
   const handleAddDocument = (doc) => setCovenantDocs((prev) => [doc, ...prev]);
   const handleDeleteDocument = (docId) => setCovenantDocs((prev) => prev.filter((doc) => doc.id !== docId));
@@ -1324,7 +1418,7 @@ export default function App() {
         </div>
         <div style={S.sidebarUser}>
           <div style={{ display:"flex", alignItems:"center", gap:6 }}><Icon.user/><span>{user.name}</span></div>
-          <div style={{ marginTop:2, opacity:.7 }}>{user.lot}{user.isAdmin ? " · Admin" : ""}</div>
+          <div style={{ marginTop:2, opacity:.7 }}>{getUserLotDisplay(user)}{user.isAdmin ? " · Admin" : ""}</div>
         </div>
         <nav style={S.sidebarNav}>
           {navItems.map(item => (
@@ -1355,7 +1449,7 @@ export default function App() {
           {page === "comparison" && <ComparisonPage/>}
           {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
-          {page === "str" && <STRPage user={user} votes={votes} onVote={handleVote}/>}
+          {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
           {page === "admin-docs" && user.isAdmin && (
