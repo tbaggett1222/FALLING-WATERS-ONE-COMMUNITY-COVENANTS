@@ -252,6 +252,81 @@ const readFileAsText = (file) =>
     reader.readAsText(file);
   });
 
+const COVENANT_ASSET_DB_NAME = "fw-covenant-assets";
+const COVENANT_ASSET_STORE = "files";
+
+const openCovenantAssetDb = () =>
+  new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("This browser does not support large local file storage."));
+      return;
+    }
+    const request = indexedDB.open(COVENANT_ASSET_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(COVENANT_ASSET_STORE)) {
+        db.createObjectStore(COVENANT_ASSET_STORE, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(new Error("Could not open browser storage for covenant files."));
+  });
+
+const putCovenantAssetBlob = async (id, blob, fileName = "", fileType = "") => {
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readwrite");
+    tx.objectStore(COVENANT_ASSET_STORE).put({
+      id,
+      blob,
+      fileName,
+      fileType,
+      updatedAt: Date.now(),
+    });
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(new Error("Could not store large covenant file in browser storage."));
+    };
+  });
+};
+
+const getCovenantAssetBlob = async (id) => {
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readonly");
+    const request = tx.objectStore(COVENANT_ASSET_STORE).get(id);
+    request.onsuccess = () => {
+      db.close();
+      resolve(request.result?.blob || null);
+    };
+    request.onerror = () => {
+      db.close();
+      reject(new Error("Could not load stored covenant file from browser storage."));
+    };
+  });
+};
+
+const deleteCovenantAssetBlob = async (id) => {
+  if (!id) return;
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readwrite");
+    tx.objectStore(COVENANT_ASSET_STORE).delete(id);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(new Error("Could not remove stored covenant file from browser storage."));
+    };
+  });
+};
+
 const summarizeUploadedCovenant = (rawText, existingDocsCount) => {
   const text = (rawText || "").toLowerCase();
   if (!text.trim()) {
@@ -571,15 +646,48 @@ const DEFAULT_COVENANT_DOCS = [
 function DocumentsPage({ docs }) {
   const [open, setOpen] = useState(null);
   const [viewerDocId, setViewerDocId] = useState(null);
+  const [viewerAssetUrl, setViewerAssetUrl] = useState("");
+  const [viewerAssetError, setViewerAssetError] = useState("");
   const safeDocs = Array.isArray(docs) ? docs : [];
   const viewerDoc = safeDocs.find((doc) => doc.id === viewerDocId) || null;
-  const viewerSrc = viewerDoc?.fileDataUrl || viewerDoc?.externalUrl || "";
+  const viewerSrc = viewerDoc?.fileDataUrl || viewerAssetUrl || viewerDoc?.externalUrl || "";
   const statusColors = {
     original:{ bg:"#DBEAFE", c:"#1E40AF" },
     active2014:{ bg:C.amberLight, c:C.amber },
     disputed:{ bg:C.dangerLight, c:C.danger },
     uploaded:{ bg:"#E0E7FF", c:"#4338CA" },
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+    setViewerAssetUrl("");
+    setViewerAssetError("");
+    if (!viewerDoc || viewerDoc.fileDataUrl || !viewerDoc.fileAssetKey) return undefined;
+    (async () => {
+      try {
+        const blob = await getCovenantAssetBlob(viewerDoc.fileAssetKey);
+        if (!blob) {
+          throw new Error("Stored file is not available in this browser. Ask admin to re-upload or provide external URL.");
+        }
+        objectUrl = URL.createObjectURL(blob);
+        if (!cancelled) {
+          setViewerAssetUrl(objectUrl);
+        } else {
+          URL.revokeObjectURL(objectUrl);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setViewerAssetError(err?.message || "Could not load local browser copy of this covenant.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [viewerDoc?.id, viewerDoc?.fileAssetKey, viewerDoc?.fileDataUrl]);
+
   return (
     <div>
       <div style={S.alert("info")}><strong>These are the covenant records currently in Falling Waters.</strong> Depending on your lot number and whether you signed the 2021 consent form, one of these documents governs your property. Click any document to read key provisions and uploaded comparison notes.</div>
@@ -633,7 +741,7 @@ function DocumentsPage({ docs }) {
                     {doc.attachmentNotice}
                   </div>
                 )}
-                {(doc.fileDataUrl || doc.externalUrl) && (
+                {(doc.fileDataUrl || doc.fileAssetKey || doc.externalUrl) && (
                   <div>
                     <button style={S.btn("outline")} onClick={() => setViewerDocId(doc.id)}>
                       Read-only view covenant
@@ -692,7 +800,7 @@ function DocumentsPage({ docs }) {
               />
             ) : (
               <div style={{ padding: 16, fontSize: 12, color: C.muted }}>
-                No embedded viewer source is available for this document.
+                {viewerAssetError || "No embedded viewer source is available for this document."}
               </div>
             )}
             <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.border}`, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
@@ -760,17 +868,32 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
 
     setIsSaving(true);
     try {
+      const documentId = `upload_${Date.now()}`;
       let fileDataUrl = null;
+      let fileAssetKey = "";
       let attachmentNotice = "";
       if (file && file.size <= MAX_INLINE_ATTACHMENT_BYTES) {
         fileDataUrl = await readFileAsDataUrl(file);
       } else if (file && file.size > MAX_INLINE_ATTACHMENT_BYTES) {
-        attachmentNotice = `Attachment not embedded in portal storage because ${file.name} (${formatMegabytes(file.size)}) exceeds the inline storage limit (${formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)}). Add an external URL so residents can open the full document.`;
+        try {
+          await putCovenantAssetBlob(documentId, file, file.name, file.type || "application/octet-stream");
+          fileAssetKey = documentId;
+          attachmentNotice = `Large file stored in this browser for read-only viewing: ${file.name} (${formatMegabytes(file.size)}). This local copy may not be visible on other devices unless you provide an external URL.`;
+        } catch (storageErr) {
+          if (!normalizedExternalUrl) {
+            throw new Error("Large file could not be stored in browser storage. Please provide an external document URL.");
+          }
+          attachmentNotice = `Large file could not be stored locally in this browser. Residents can use the provided external URL to view the document.`;
+        }
       }
       let extractedText = "";
       if (file) {
         try {
-          extractedText = await readFileAsText(file);
+          if (file.type?.includes("text") || file.size <= 2 * 1024 * 1024) {
+            extractedText = await readFileAsText(file);
+          } else {
+            extractedText = "";
+          }
         } catch {
           extractedText = "";
         }
@@ -781,7 +904,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
         DOC_STATUS_OPTIONS.find((opt) => opt.value === status)?.label || "Uploaded for review";
 
       onAddDocument({
-        id: `upload_${Date.now()}`,
+        id: documentId,
         year: year.trim() || "N/A",
         title: title.trim(),
         preparer: preparer.trim() || "Uploaded by HOA admin",
@@ -796,6 +919,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
         fileType: file?.type || "",
         fileSizeBytes: file?.size || 0,
         fileDataUrl,
+        fileAssetKey,
         externalUrl: normalizedExternalUrl,
         attachmentNotice,
         notes: notes.trim(),
@@ -805,7 +929,9 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
 
       setSuccess(fileDataUrl
         ? "Covenant uploaded and added to CC&R Documents with automatic comparison summary."
-        : "Covenant record saved. Large attachment was not embedded; use an external URL for resident access.");
+        : fileAssetKey
+          ? "Covenant uploaded. Large file stored in browser for read-only viewing."
+          : "Covenant record saved. Residents can use the external URL for read-only viewing.");
       resetForm();
     } catch (err) {
       setError(err?.message || "Upload failed. Please try again.");
@@ -867,7 +993,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                Files up to {formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)} are embedded for read-only viewing. Larger files can still be added (up to {formatMegabytes(MAX_UPLOAD_BYTES)}) with an external URL.
+                Files up to {formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)} are embedded directly. Larger files up to {formatMegabytes(MAX_UPLOAD_BYTES)} are stored in browser storage for read-only viewing.
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
@@ -879,7 +1005,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
                 placeholder="https://... link residents can open"
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                Use this when a file is too large to embed directly in browser storage.
+                Optional fallback link, especially useful when the document must also be viewable from other devices.
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
@@ -2321,7 +2447,14 @@ export default function App() {
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
   };
   const handleAddDocument = (doc) => setCovenantDocs((prev) => [doc, ...prev]);
-  const handleDeleteDocument = (docId) => setCovenantDocs((prev) => prev.filter((doc) => doc.id !== docId));
+  const handleDeleteDocument = (docId) =>
+    setCovenantDocs((prev) => {
+      const target = prev.find((doc) => doc.id === docId);
+      if (target?.fileAssetKey) {
+        deleteCovenantAssetBlob(target.fileAssetKey).catch(() => {});
+      }
+      return prev.filter((doc) => doc.id !== docId);
+    });
   const handleUpdateProfile = ({ name, lots, accessRole }) => {
     const isAdmin = user.isAdmin;
     const normalizedLots = isAdmin ? ["ADMIN"] : [...new Set((lots || []).map((lot) => normalizeLotLabel(lot)).filter(Boolean))];
