@@ -55,6 +55,7 @@ const DOC_STATUS_OPTIONS = [
 const store = {
   get: (k) => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del: (k) => { try { localStorage.removeItem(k); } catch {} },
 };
 
 const todayLabel = () =>
@@ -130,6 +131,62 @@ const generateUserId = (name = "resident") =>
 const lotNumberFromLabel = (lotLabel) => {
   const match = String(lotLabel || "").match(/(\d+)/);
   return match ? Number(match[1]) : null;
+};
+
+const normalizeBoolean = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return false;
+  return ["1", "true", "yes", "y", "contacted"].includes(raw);
+};
+
+const normalizeImportedVoteChoice = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return null;
+  if (["eliminate", "eliminate strs", "ban", "prohibit", "no str"].includes(raw)) return "eliminate";
+  if (["permit", "permit with regulation", "allow", "allow str", "regulated permit"].includes(raw)) return "permit";
+  if (["undecided", "neutral"].includes(raw)) return "undecided";
+  if (["not voted", "no vote", "none", "na", "n/a"].includes(raw)) return null;
+  return null;
+};
+
+const parseCsvLine = (line) => {
+  const values = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      values.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  values.push(current);
+  return values.map((value) => value.trim());
+};
+
+const parseCsvText = (text) => {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 2) return [];
+  const headers = parseCsvLine(lines[0]);
+  return lines.slice(1).map((line) => {
+    const cols = parseCsvLine(line);
+    return headers.reduce((acc, header, idx) => {
+      acc[header] = cols[idx] || "";
+      return acc;
+    }, {});
+  });
 };
 
 const readFileAsDataUrl = (file) =>
@@ -1309,11 +1366,15 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 }
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
-function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
+function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outreachState, onImportCsv }) {
   const [filter, setFilter] = useState("all");
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+  const [importErr, setImportErr] = useState("");
 
   const lotRows = ALL_LOT_LABELS.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
+    const outreach = outreachState?.[lotLabel] || null;
     const choice = voteLedger[lotLabel] || store.get(`vote_${lotLabel}`) || null;
     const hasVoted = !!choice;
     return {
@@ -1326,6 +1387,9 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
       status: hasVoted ? "Voted" : activity ? "Registered - not voted" : "Not engaged",
       commented: !!activity?.commented,
       lastActive: activity?.lastActive || "",
+      contacted: !!outreach?.contacted,
+      outreachNotes: outreach?.notes || "",
+      lastContact: outreach?.lastContact || "",
     };
   });
 
@@ -1339,7 +1403,7 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
         : lotRows;
 
   const exportCsv = () => {
-    const headers = ["Lot", "Status", "Vote Choice", "Primary Voter", "Owner Name (if known)", "Commented", "Last Active"];
+    const headers = ["Lot", "Status", "Vote Choice", "Primary Voter", "Owner Name (if known)", "Commented", "Last Active", "Contacted", "Outreach Notes", "Last Contact Date"];
     const lines = [
       headers.join(","),
       ...lotRows.map((row) =>
@@ -1351,6 +1415,9 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
           row.ownerName || "",
           row.commented ? "Yes" : "No",
           row.lastActive || "",
+          row.contacted ? "Yes" : "No",
+          row.outreachNotes || "",
+          row.lastContact || "",
         ]
           .map((val) => `"${String(val).replaceAll('"', '""')}"`)
           .join(",")
@@ -1367,10 +1434,47 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
     URL.revokeObjectURL(url);
   };
 
+  const handleImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setImportErr("");
+    setImportMsg("");
+    setImporting(true);
+    try {
+      const csvText = await readFileAsText(file);
+      const rows = parseCsvText(csvText);
+      if (rows.length === 0) {
+        setImportErr("CSV appears empty or missing data rows.");
+        return;
+      }
+      const result = onImportCsv(rows);
+      if (result?.error) {
+        setImportErr(result.error);
+      } else {
+        setImportMsg(result?.message || `Imported ${rows.length} CSV rows.`);
+      }
+    } catch (err) {
+      setImportErr(err?.message || "Could not import CSV file.");
+    } finally {
+      setImporting(false);
+      event.target.value = "";
+    }
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
-        Admin visibility: this roster tracks lot-level participation and voting status so you can see exactly which lots still need outreach.
+        Admin visibility: this roster tracks lot-level participation, voting, and outreach status. You can also import a master CSV to update vote and outreach state in one step.
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Import master spreadsheet (CSV)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Accepted columns (case-insensitive): Lot, Vote Choice, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date.
+        </div>
+        {importErr && <div style={S.alert("danger")}>{importErr}</div>}
+        {importMsg && <div style={S.alert("success")}>{importMsg}</div>}
+        <input style={{ ...S.input, padding: "7px 10px" }} type="file" accept=".csv,text/csv" onChange={handleImport} disabled={importing} />
       </div>
 
       <div style={S.statGrid}>
@@ -1378,7 +1482,7 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
           { num: TOTAL_LOTS, label: "Total lots", accent: C.forest },
           { num: votedRows.length, label: "Lots voted", accent: C.success },
           { num: notVotedRows.length, label: "Lots not voted", accent: C.danger },
-          { num: `${Math.round((votedRows.length / TOTAL_LOTS) * 100)}%`, label: "Vote completion", accent: C.stone },
+          { num: `${Math.round((lotRows.filter((row) => row.contacted).length / TOTAL_LOTS) * 100)}%`, label: "Outreach contacted", accent: C.stone },
         ].map((s, i) => (
           <div key={i} style={S.statCard(s.accent)}>
             <div style={S.statNum}>{s.num}</div>
@@ -1411,6 +1515,9 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
                 <th style={S.th}>Primary voter</th>
                 <th style={S.th}>Owner name (if known)</th>
                 <th style={S.th}>Commented</th>
+                <th style={S.th}>Contacted</th>
+                <th style={S.th}>Outreach notes</th>
+                <th style={S.th}>Last contact</th>
                 <th style={S.th}>Last active</th>
               </tr>
             </thead>
@@ -1427,6 +1534,9 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry }) {
                   <td style={S.td}>{row.primaryVoter || "—"}</td>
                   <td style={S.td}>{row.ownerName || "—"}</td>
                   <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
+                  <td style={S.td}>{row.contacted ? "Yes" : "No"}</td>
+                  <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{row.outreachNotes || "—"}</td>
+                  <td style={S.td}>{row.lastContact || "—"}</td>
                   <td style={S.td}>{row.lastActive || "—"}</td>
                 </tr>
               ))}
@@ -1626,6 +1736,10 @@ export default function App() {
     const saved = store.get("fw_primary_voter_registry");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [outreachState, setOutreachState] = useState(() => {
+    const saved = store.get("fw_outreach_state");
+    return saved && typeof saved === "object" ? saved : {};
+  });
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
@@ -1633,6 +1747,7 @@ export default function App() {
   useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
+  useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -1786,6 +1901,131 @@ export default function App() {
     return null;
   };
 
+  const recomputeVotesFromLedger = (ledger) => {
+    let eliminate = 0;
+    let permit = 0;
+    ALL_LOT_LABELS.forEach((lot) => {
+      const choice = ledger[lot];
+      if (choice === "eliminate") eliminate += 1;
+      if (choice === "permit") permit += 1;
+    });
+    return {
+      eliminate,
+      permit,
+      undecided: Math.max(0, TOTAL_LOTS - eliminate - permit),
+    };
+  };
+
+  const handleImportCsv = (rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { error: "No CSV rows found to import." };
+    }
+
+    const nextVoteLedger = { ...voteLedger };
+    const nextOwnerActivity = { ...ownerActivity };
+    const nextPrimaryRegistry = { ...primaryVoterRegistry };
+    const nextOutreach = { ...outreachState };
+    const touchedVoteLots = new Set();
+    let recognizedLots = 0;
+
+    rows.forEach((row) => {
+      const lower = Object.entries(row || {}).reduce((acc, [key, value]) => {
+        acc[String(key || "").trim().toLowerCase()] = value;
+        return acc;
+      }, {});
+
+      const pick = (aliases) => {
+        for (const alias of aliases) {
+          if (Object.prototype.hasOwnProperty.call(lower, alias)) return lower[alias];
+        }
+        return undefined;
+      };
+      const hasColumn = (aliases) => aliases.some((alias) => Object.prototype.hasOwnProperty.call(lower, alias));
+
+      const lotRaw = pick(["lot", "lot number", "lot #"]);
+      const lot = normalizeLotLabel(lotRaw);
+      if (!lot || !ALL_LOT_LABELS.includes(lot)) return;
+      recognizedLots += 1;
+
+      const voteAliases = ["vote choice", "vote", "vote_choice", "choice"];
+      if (hasColumn(voteAliases)) {
+        const normalizedChoice = normalizeImportedVoteChoice(pick(voteAliases));
+        if (normalizedChoice) nextVoteLedger[lot] = normalizedChoice;
+        else delete nextVoteLedger[lot];
+        touchedVoteLots.add(lot);
+      }
+
+      const ownerNameRaw = pick(["owner name (if known)", "owner name", "owner", "voter name"]);
+      const commentedAliases = ["commented", "has commented"];
+      const lastActiveRaw = pick(["last active", "last active date"]);
+      if (ownerNameRaw !== undefined || hasColumn(commentedAliases) || lastActiveRaw !== undefined) {
+        const existing = nextOwnerActivity[lot] || { hasLoggedIn: true };
+        if (ownerNameRaw !== undefined && String(ownerNameRaw || "").trim()) {
+          existing.name = String(ownerNameRaw || "").trim();
+        }
+        if (hasColumn(commentedAliases)) {
+          existing.commented = normalizeBoolean(pick(commentedAliases));
+        }
+        if (lastActiveRaw !== undefined && String(lastActiveRaw || "").trim()) {
+          existing.lastActive = String(lastActiveRaw || "").trim();
+        }
+        nextOwnerActivity[lot] = existing;
+      }
+
+      const primaryAliases = ["primary voter", "primary voter name"];
+      if (hasColumn(primaryAliases)) {
+        const primaryName = String(pick(primaryAliases) || "").trim();
+        if (primaryName) {
+          nextPrimaryRegistry[lot] = {
+            name: primaryName,
+            nameKey: normalizeNameKey(primaryName),
+            userId: nextPrimaryRegistry[lot]?.userId || generateUserId(primaryName),
+            assignedAt: todayLabel(),
+          };
+        } else {
+          delete nextPrimaryRegistry[lot];
+        }
+      }
+
+      const contactedAliases = ["contacted", "outreach contacted"];
+      const notesAliases = ["outreach notes", "notes"];
+      const lastContactAliases = ["last contact date", "last contact"];
+      if (hasColumn(contactedAliases) || hasColumn(notesAliases) || hasColumn(lastContactAliases)) {
+        const existingOutreach = { ...(nextOutreach[lot] || {}) };
+        if (hasColumn(contactedAliases)) {
+          existingOutreach.contacted = normalizeBoolean(pick(contactedAliases));
+        }
+        if (hasColumn(notesAliases)) {
+          existingOutreach.notes = String(pick(notesAliases) || "").trim();
+        }
+        if (hasColumn(lastContactAliases)) {
+          existingOutreach.lastContact = String(pick(lastContactAliases) || "").trim();
+        }
+        const shouldKeep =
+          existingOutreach.contacted ||
+          String(existingOutreach.notes || "").trim().length > 0 ||
+          String(existingOutreach.lastContact || "").trim().length > 0;
+        if (shouldKeep) nextOutreach[lot] = existingOutreach;
+        else delete nextOutreach[lot];
+      }
+    });
+
+    touchedVoteLots.forEach((lot) => {
+      if (nextVoteLedger[lot]) store.set(`vote_${lot}`, nextVoteLedger[lot]);
+      else store.del(`vote_${lot}`);
+    });
+
+    setVoteLedger(nextVoteLedger);
+    setVotes(recomputeVotesFromLedger(nextVoteLedger));
+    setOwnerActivity(nextOwnerActivity);
+    setPrimaryVoterRegistry(nextPrimaryRegistry);
+    setOutreachState(nextOutreach);
+
+    return {
+      message: `Imported ${rows.length} rows (${recognizedLots} recognized lots). Updated ${touchedVoteLots.size} lot vote records and outreach/owner fields where provided.`,
+    };
+  };
+
   const activityRows = Object.values(ownerActivity);
   const stats = {
     loggedInLots: activityRows.length,
@@ -1868,7 +2108,7 @@ export default function App() {
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
-          {page === "admin-votes" && user.isAdmin && <AdminVotingPage ownerActivity={ownerActivity} voteLedger={voteLedger} primaryVoterRegistry={primaryVoterRegistry}/>}
+          {page === "admin-votes" && user.isAdmin && <AdminVotingPage ownerActivity={ownerActivity} voteLedger={voteLedger} primaryVoterRegistry={primaryVoterRegistry} outreachState={outreachState} onImportCsv={handleImportCsv}/>}
           {page === "admin-docs" && user.isAdmin && (
             <AdminDocumentsPage
               user={user}
