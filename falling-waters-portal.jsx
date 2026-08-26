@@ -66,6 +66,28 @@ const COMMENT_TOPIC_OPTIONS = [
   { value: "general", label: "General covenants" },
   { value: "process", label: "Process & voting" },
 ];
+const COMMENT_STANCE_OPTIONS_BY_TOPIC = {
+  str: [
+    { value: "restrict", label: "I support restricting STRs" },
+    { value: "permit", label: "I support permitting STRs" },
+    { value: "neutral", label: "Neutral / I have a question" },
+  ],
+  acc: [
+    { value: "restrict", label: "I support stricter ACC standards" },
+    { value: "permit", label: "I support more flexible ACC standards" },
+    { value: "neutral", label: "Neutral / I have a question" },
+  ],
+  general: [
+    { value: "restrict", label: "I support this covenant direction" },
+    { value: "permit", label: "I want changes to this direction" },
+    { value: "neutral", label: "Neutral / I have a question" },
+  ],
+  process: [
+    { value: "restrict", label: "I support the current process" },
+    { value: "permit", label: "I want process changes" },
+    { value: "neutral", label: "Neutral / I have a question" },
+  ],
+};
 const DOC_STATUS_OPTIONS = [
   { value: "original", label: "Original" },
   { value: "active2014", label: "Active — Phase II lots" },
@@ -1662,15 +1684,24 @@ function CommentsPage({ user, comments, onAdd }) {
     acc[topic.value] = topic.label;
     return acc;
   }, {});
+  const stanceOptions = COMMENT_STANCE_OPTIONS_BY_TOPIC[formTopic] || COMMENT_STANCE_OPTIONS_BY_TOPIC.general;
   const concernOptions =
     formTopic === "str"
       ? STR_CONCERN_OPTIONS
       : formTopic === "acc"
         ? ACC_CONCERN_OPTIONS
         : GENERAL_CONCERN_OPTIONS;
-  const stanceColors = { restrict:{ c:C.danger, bg:C.dangerLight, label:"Supports restriction" }, permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports permitting" }, neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" } };
+  const stanceColors = {
+    restrict:{ c:C.danger, bg:C.dangerLight, label:"Supports stricter standards" },
+    permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports more flexibility" },
+    neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" },
+  };
   useEffect(() => {
     setFormConcern((current) => (concernOptions.includes(current) ? current : concernOptions[0]));
+  }, [formTopic]);
+  useEffect(() => {
+    const stanceValues = stanceOptions.map((option) => option.value);
+    setFormStance((current) => (current && stanceValues.includes(current) ? current : ""));
   }, [formTopic]);
   const submit = (e) => {
     e.preventDefault();
@@ -1697,6 +1728,23 @@ function CommentsPage({ user, comments, onAdd }) {
       <div style={S.alert("info")}>
         <strong>Community comments topics include ACC Building Guidelines.</strong> Use the Topic dropdown to post feedback specifically on ACC standards, design rules, and approval process concerns.
       </div>
+      <div style={{ ...S.card, marginBottom: 14 }}>
+        <div style={S.cardTitle}>Quick topic select</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+          Choose the discussion focus before writing your comment.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {COMMENT_TOPIC_OPTIONS.map((topic) => (
+            <button
+              key={topic.value}
+              style={{ ...S.btn(formTopic === topic.value ? "stone" : "outline"), padding: "7px 12px" }}
+              onClick={() => setFormTopic(topic.value)}
+            >
+              {topic.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 2fr", gap:20 }}>
         <div>
           <div style={S.card}>
@@ -1716,9 +1764,9 @@ function CommentsPage({ user, comments, onAdd }) {
                 <label style={S.label}>My position</label>
                 <select style={S.select} value={formStance} onChange={e=>setFormStance(e.target.value)}>
                   <option value="">— Select —</option>
-                  <option value="restrict">I support restricting STRs</option>
-                  <option value="permit">I support permitting STRs</option>
-                  <option value="neutral">Neutral / I have a question</option>
+                  {stanceOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </div>
               <div style={{ marginBottom:12 }}>
@@ -1753,8 +1801,8 @@ function CommentsPage({ user, comments, onAdd }) {
               <label style={S.label}>Position</label>
               <select style={S.select} value={filterStance} onChange={e=>setFilterStance(e.target.value)}>
                 <option value="">All positions</option>
-                <option value="restrict">Supports restriction</option>
-                <option value="permit">Supports permitting</option>
+                <option value="restrict">Supports stricter standards</option>
+                <option value="permit">Supports more flexibility</option>
                 <option value="neutral">Neutral / question</option>
               </select>
             </div>
