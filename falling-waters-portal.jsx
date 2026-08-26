@@ -570,7 +570,10 @@ const DEFAULT_COVENANT_DOCS = [
 
 function DocumentsPage({ docs }) {
   const [open, setOpen] = useState(null);
+  const [viewerDocId, setViewerDocId] = useState(null);
   const safeDocs = Array.isArray(docs) ? docs : [];
+  const viewerDoc = safeDocs.find((doc) => doc.id === viewerDocId) || null;
+  const viewerSrc = viewerDoc?.fileDataUrl || viewerDoc?.externalUrl || "";
   const statusColors = {
     original:{ bg:"#DBEAFE", c:"#1E40AF" },
     active2014:{ bg:C.amberLight, c:C.amber },
@@ -630,21 +633,79 @@ function DocumentsPage({ docs }) {
                     {doc.attachmentNotice}
                   </div>
                 )}
-                {doc.fileDataUrl && (
-                  <a href={doc.fileDataUrl} download={doc.fileName || `${doc.title}.pdf`} style={{ fontSize:12, color:"#1D4ED8", fontWeight:600, textDecoration:"none" }}>
-                    Download uploaded covenant file ({doc.fileName || "attachment"})
-                  </a>
-                )}
-                {!doc.fileDataUrl && doc.externalUrl && (
-                  <a href={doc.externalUrl} target="_blank" rel="noreferrer" style={{ fontSize:12, color:"#1D4ED8", fontWeight:600, textDecoration:"none" }}>
-                    Open external covenant link
-                  </a>
+                {(doc.fileDataUrl || doc.externalUrl) && (
+                  <div>
+                    <button style={S.btn("outline")} onClick={() => setViewerDocId(doc.id)}>
+                      Read-only view covenant
+                    </button>
+                    <div style={{ fontSize:11, color:C.muted, marginTop:6 }}>
+                      Resident access is view-only in this portal.
+                    </div>
+                  </div>
                 )}
               </div>
             )}
           </div>
         );
       })}
+      {viewerDoc && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 24,
+          }}
+          onClick={() => setViewerDocId(null)}
+        >
+          <div
+            style={{
+              width: "min(1100px, 96vw)",
+              height: "min(90vh, 860px)",
+              background: C.white,
+              borderRadius: 10,
+              border: `1px solid ${C.border}`,
+              boxShadow: "0 24px 60px rgba(0,0,0,0.35)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div style={{ padding: "12px 14px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.forest }}>
+                Read-only covenant viewer · {viewerDoc.title}
+              </div>
+              <button style={{ ...S.btn("outline"), padding: "6px 10px" }} onClick={() => setViewerDocId(null)}>
+                Close
+              </button>
+            </div>
+            {viewerSrc ? (
+              <iframe
+                title={`Read-only covenant viewer ${viewerDoc.id}`}
+                src={viewerSrc}
+                style={{ border: "none", width: "100%", flex: 1, background: C.white }}
+              />
+            ) : (
+              <div style={{ padding: 16, fontSize: 12, color: C.muted }}>
+                No embedded viewer source is available for this document.
+              </div>
+            )}
+            <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.border}`, fontSize: 11, color: C.muted, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+              <span>If the document does not render in the embedded viewer, open it in a new tab.</span>
+              {viewerSrc && (
+                <a href={viewerSrc} target="_blank" rel="noreferrer" style={{ color: "#1D4ED8", textDecoration: "none", fontWeight: 600 }}>
+                  Open read-only view in new tab
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -806,7 +867,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument }) {
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                Files up to {formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)} are embedded for direct download. Larger files can still be added (up to {formatMegabytes(MAX_UPLOAD_BYTES)}) with an external URL.
+                Files up to {formatMegabytes(MAX_INLINE_ATTACHMENT_BYTES)} are embedded for read-only viewing. Larger files can still be added (up to {formatMegabytes(MAX_UPLOAD_BYTES)}) with an external URL.
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
