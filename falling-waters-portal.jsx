@@ -35,6 +35,7 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
 const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
 const TOTAL_LOTS = 200;
 const VOTES_NEEDED = 134;
+const ALL_LOT_LABELS = Array.from({ length: TOTAL_LOTS }, (_, idx) => `Lot ${idx + 1}`);
 const STR_CONCERN_OPTIONS = [
   "Traffic & parking pressure",
   "Parties, loud noise, and disturbances",
@@ -103,6 +104,11 @@ const choiceLabel = (choice) =>
       : choice === "undecided"
         ? "Undecided"
         : "Not voted";
+
+const lotNumberFromLabel = (lotLabel) => {
+  const match = String(lotLabel || "").match(/(\d+)/);
+  return match ? Number(match[1]) : null;
+};
 
 const readFileAsDataUrl = (file) =>
   new Promise((resolve, reject) => {
@@ -1243,6 +1249,132 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
   );
 }
 
+// ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
+function AdminVotingPage({ ownerActivity, voteLedger }) {
+  const [filter, setFilter] = useState("all");
+
+  const lotRows = ALL_LOT_LABELS.map((lotLabel) => {
+    const activity = ownerActivity[lotLabel] || null;
+    const choice = voteLedger[lotLabel] || store.get(`vote_${lotLabel}`) || null;
+    const hasVoted = !!choice;
+    return {
+      lot: lotLabel,
+      lotNum: lotNumberFromLabel(lotLabel),
+      ownerName: activity?.name || "",
+      hasVoted,
+      choice,
+      status: hasVoted ? "Voted" : activity ? "Registered - not voted" : "Not engaged",
+      commented: !!activity?.commented,
+      lastActive: activity?.lastActive || "",
+    };
+  });
+
+  const votedRows = lotRows.filter((row) => row.hasVoted);
+  const notVotedRows = lotRows.filter((row) => !row.hasVoted);
+  const filteredRows =
+    filter === "voted"
+      ? votedRows
+      : filter === "not-voted"
+        ? notVotedRows
+        : lotRows;
+
+  const exportCsv = () => {
+    const headers = ["Lot", "Status", "Vote Choice", "Owner Name (if known)", "Commented", "Last Active"];
+    const lines = [
+      headers.join(","),
+      ...lotRows.map((row) =>
+        [
+          row.lot,
+          row.status,
+          choiceLabel(row.choice),
+          row.ownerName || "",
+          row.commented ? "Yes" : "No",
+          row.lastActive || "",
+        ]
+          .map((val) => `"${String(val).replaceAll('"', '""')}"`)
+          .join(",")
+      ),
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fw-voting-roster-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div>
+      <div style={S.alert("info")}>
+        Admin visibility: this roster tracks lot-level participation and voting status so you can see exactly which lots still need outreach.
+      </div>
+
+      <div style={S.statGrid}>
+        {[
+          { num: TOTAL_LOTS, label: "Total lots", accent: C.forest },
+          { num: votedRows.length, label: "Lots voted", accent: C.success },
+          { num: notVotedRows.length, label: "Lots not voted", accent: C.danger },
+          { num: `${Math.round((votedRows.length / TOTAL_LOTS) * 100)}%`, label: "Vote completion", accent: C.stone },
+        ].map((s, i) => (
+          <div key={i} style={S.statCard(s.accent)}>
+            <div style={S.statNum}>{s.num}</div>
+            <div style={S.statLabel}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={S.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={S.cardTitle}>Lot-level voting roster</div>
+            <div style={{ fontSize: 12, color: C.muted }}>{filteredRows.length} lot records shown</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button style={{ ...S.btn(filter === "all" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("all")}>All lots</button>
+            <button style={{ ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("voted")}>Voted only</button>
+            <button style={{ ...S.btn(filter === "not-voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("not-voted")}>Not voted only</button>
+            <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={exportCsv}>Export CSV</button>
+          </div>
+        </div>
+
+        <div style={{ overflowX: "auto", marginTop: 12 }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Lot</th>
+                <th style={S.th}>Status</th>
+                <th style={S.th}>Vote choice</th>
+                <th style={S.th}>Owner name (if known)</th>
+                <th style={S.th}>Commented</th>
+                <th style={S.th}>Last active</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRows.sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999)).map((row) => (
+                <tr key={row.lot} style={{ background: row.hasVoted ? C.white : "#FFF7ED" }}>
+                  <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.lot}</td>
+                  <td style={S.td}>
+                    <span style={S.badge(row.hasVoted ? C.success : C.danger, row.hasVoted ? C.successLight : C.dangerLight)}>
+                      {row.status}
+                    </span>
+                  </td>
+                  <td style={S.td}>{choiceLabel(row.choice)}</td>
+                  <td style={S.td}>{row.ownerName || "—"}</td>
+                  <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
+                  <td style={S.td}>{row.lastActive || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
 function DashboardPage({ votes, comments, stats }) {
   const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
@@ -1536,6 +1668,7 @@ export default function App() {
     ...(!user.isAdmin ? [{ id:"profile", label:"My profile", icon:<Icon.user/> }] : []),
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
+    ...(user.isAdmin ? [{ id:"admin-votes", label:"Admin voting roster", icon:<Icon.vote/> }] : []),
     ...(user.isAdmin ? [{ id:"admin-docs", label:"Admin document tools", icon:<Icon.doc/> }] : []),
   ];
 
@@ -1549,6 +1682,7 @@ export default function App() {
     profile:"Resident profile",
     comments:"Community comments",
     dashboard:"Campaign dashboard",
+    "admin-votes":"Admin voting roster",
     "admin-docs":"Admin document upload",
   };
 
@@ -1596,6 +1730,7 @@ export default function App() {
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
+          {page === "admin-votes" && user.isAdmin && <AdminVotingPage ownerActivity={ownerActivity} voteLedger={voteLedger}/>}
           {page === "admin-docs" && user.isAdmin && (
             <AdminDocumentsPage
               user={user}
