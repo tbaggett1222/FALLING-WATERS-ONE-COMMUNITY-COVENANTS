@@ -25,7 +25,7 @@ const SEED_COMMENTS = [
   { id: 1, lot: "Lot 12", name: "J. Harmon", ts: "Aug 18, 2026", topic: "str", stance: "restrict", text: "We moved here for the peace and quiet of a mountain community — not to live next door to a revolving-door rental. Last summer our neighbors hosted 14 different groups in 3 months. The noise, trash, and parking on the road made life miserable. We need a clear restriction." },
   { id: 2, lot: "Lot 47", name: "M. Delgado", ts: "Aug 19, 2026", topic: "str", stance: "permit", text: "I purchased my lot specifically because there was no STR restriction in the 2014 covenants. My lot is my retirement income. I support reasonable regulation — 7-night minimum, registration — but an outright ban would be a significant financial hardship." },
   { id: 3, lot: "Lot 88", name: "R. Patel", ts: "Aug 20, 2026", topic: "general", stance: "neutral", text: "The key issue for me is the covenant legitimacy problem. I tried to sell my lot last year and two title companies flagged the conflicting covenant situation. It cost me a deal. I'll support whatever unified covenant gets us clean title." },
-  { id: 4, lot: "Lot 23", name: "C. Whitfield", ts: "Aug 21, 2026", topic: "str", stance: "restrict", text: "Short-term rentals bring strangers into a community that has no gate, no security, and backs up to bear habitat. We just had a bear incident because someone was feeding wildlife. STR guests don't know the rules, don't care about the rules, and the owner isn't here to enforce them." },
+  { id: 4, lot: "Lot 23", name: "C. Whitfield", ts: "Aug 21, 2026", topic: "str", stance: "restrict", text: "Short-term rentals bring strangers into a community that has no gate, no security, and backs up to wildlife habitat. Wildlife-specific safety language should be handled in a future CC&R amendment. STR guests don't know the rules, don't care about the rules, and the owner isn't here to enforce them." },
   { id: 5, lot: "Lot 156", name: "T. Nguyen", ts: "Aug 22, 2026", topic: "process", stance: "neutral", text: "I'm supportive of the unification effort but want to make sure vacant lot owners like me have a real voice. Can the working group confirm that proxy voting will be available? I live in Atlanta and can't attend meetings." },
   { id: 6, lot: "Lot 34", name: "S. Burke", ts: "Aug 23, 2026", topic: "str", stance: "restrict", text: "The 2008 declaration required a 1-year minimum lease. STRs were never legally permitted in the original covenants. Our attorney confirmed this. I don't understand why we're treating this as a new restriction — it isn't. We're just making explicit what was always the rule." },
 ];
@@ -37,7 +37,7 @@ const STR_CONCERN_OPTIONS = [
   "Traffic & parking pressure",
   "Parties, loud noise, and disturbances",
   "Drug activity / security concerns",
-  "Wildlife safety (bear incidents)",
+  "Wildlife safety (future CC&R topic)",
   "Property value and neighborhood character",
   "Legal clarity and enforceability",
 ];
@@ -310,7 +310,7 @@ function HomePage({ votes, stats }) {
           {[
             { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
             { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
-            { icon:"🐻", title:"Safety and community character", text:"STR guests don't know our community rules — bear feeding, noise, parking, fire safety. We've already had a bear attack. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts all residents at risk." },
+            { icon:"🐻", title:"Safety and community character", text:"STR guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
           ].map((item,i) => (
             <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
               <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
@@ -630,7 +630,7 @@ function ComparisonPage() {
     { topic:"Lake & wetlands", c2008:"Comprehensive — 5 detailed sections", c2014:"Not addressed", c2021:"Comprehensive — mirrors 2008 with updates", risk:"low", proposed:"Retain 2021 lake/wetlands provisions verbatim" },
     { topic:"Duration", c2008:"Perpetual; 90% to terminate in first 20 yrs", c2014:"Expires Jan 1 2040; auto-renews 10 yrs", c2021:"Perpetual; auto-renews 20 yrs; 2/3 to change", risk:"low", proposed:"Adopt 2021 perpetual model for stability" },
     { topic:"ACC / ARB authority", c2008:"ARB — Declarant appoints until all lots sold", c2014:"ACC appointed by Executive Board; detailed standards", c2021:"ACC 3–5 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk:"medium", proposed:"Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
-    { topic:"Wildlife & bear rules", c2008:"Not addressed", c2014:"Not addressed", c2021:"Not addressed", risk:"new", proposed:"Add new Section 8.33 — bear feeding prohibition, secure storage rules, fines up to $1,000, consistent with Board Resolution BR-2026-01" },
+    { topic:"Wildlife & outdoor safety rules", c2008:"Not addressed", c2014:"Not addressed", c2021:"Not addressed", risk:"new", proposed:"Future addition candidate: consider a dedicated wildlife and outdoor-safety section in a later amendment after one unified CC&R is adopted." },
   ];
   const risk = { critical:{ label:"Critical", c:C.danger, bg:C.dangerLight }, high:{ label:"High", c:"#9A3412", bg:"#FFEDD5" }, medium:{ label:"Medium", c:C.amber, bg:C.amberLight }, low:{ label:"Low", c:C.success, bg:C.successLight }, new:{ label:"New provision", c:"#6B21A8", bg:"#F3E8FF" } };
   return (
@@ -735,7 +735,7 @@ function ProposedCovenantPage() {
     {
       article: "Article 4 — Nuisance, Safety, and Conduct",
       summary:
-        "Adds explicit standards for noise, large parties, illegal drug activity, parking obstruction, and wildlife-feeding prohibitions.",
+        "Adds explicit standards for noise, large parties, illegal drug activity, and parking obstruction. Wildlife-specific language is reserved for a future CC&R amendment.",
       source: "Responds to owner concerns and closes enforcement gaps in current documents.",
     },
     {
@@ -834,7 +834,7 @@ function STRPage({ user, votes, onVote }) {
   const reasons = [
     { icon:"🚗", title:"Increased traffic and parking", text:"Short-term rental guests unfamiliar with private mountain roads park on roadways, block shared driveways, and generate traffic volumes the infrastructure was not designed for. Our private roads — maintained at owner expense — experience accelerated wear." },
     { icon:"🔊", title:"Noise, parties, and disturbances", text:"Vacation renters operate on a different code of conduct than permanent residents and long-term tenants. Late-night parties, amplified music, and large gatherings that violate our nuisance provisions are consistently reported near STR properties. Enforcement is difficult when the owner isn't present." },
-    { icon:"🐻", title:"Wildlife and safety incidents", text:"STR guests don't know our bear safety protocols. They leave food out, leave garbage unsecured, and have been documented feeding wildlife. Our community recently had a bear attack directly linked to human feeding behavior. Rotating guests who don't know the rules amplify this risk continuously." },
+    { icon:"🐻", title:"Wildlife-area stewardship", text:"STR guests may be unfamiliar with mountain-community wildlife expectations such as secure garbage and outdoor food handling. These standards are important but will be addressed as a future CC&R amendment topic rather than in the current STR decision language." },
     { icon:"🏘", title:"Community character and property values", text:"Falling Waters was designed as a residential community — not a resort destination. When neighboring lots operate as hotels with rotating occupants, the character of the surrounding properties changes. Long-term studies consistently show mixed residential/STR neighborhoods experience higher property value volatility." },
     { icon:"⚖", title:"Enforcement and liability", text:"The HOA has limited enforcement capacity. Every STR guest who violates a rule requires the Association to identify them, trace them to an owner, and pursue enforcement — while the owner may be hundreds of miles away. The Association's liability exposure from guest incidents is also heightened when the lot is functioning commercially." },
     { icon:"🏛", title:"Legal history — STRs were never permitted", text:"The original 2008 declaration required all leases to be for at least one year, effectively prohibiting short-term rentals before Airbnb existed. No owner has ever had a legally clear right to operate an STR in Falling Waters. The unified CC&R makes explicit what the community intended from the beginning." },
@@ -908,7 +908,7 @@ function RisksPage() {
     { sev:"High", title:"2021 enforcement challenges", detail:"Any HOA enforcement action taken under the 2021 declaration could be challenged by a non-signer arguing the document doesn't bind them. Fines, liens, and enforcement letters issued under the 2021 covenant may be legally unenforceable against 2008 and 2014 lot owners who didn't sign the consent form. The HOA's enforcement authority is fundamentally compromised.", color:"#9A3412", bg:"#FFEDD5" },
     { sev:"High", title:"Uncapped assessment increases", detail:"The 2021 document removed the 2014 declaration's 10% annual assessment cap without highlighting the change during the consent-form process. Under the 2021 document, the Board has unlimited discretion to raise annual assessments. Owners who signed the 2021 consent form may have unknowingly waived the cap that existed in the 2014 document.", color:"#9A3412", bg:"#FFEDD5" },
     { sev:"High", title:"Covenant expiration in 2040", detail:"The 2014 declaration expires January 1, 2040 — only 14 years away. Lots governed by the 2014 document will have no governing CC&R after that date unless renewed. A community without CC&Rs loses all restrictions on use, construction standards, and HOA authority. Any buyer purchasing a 2014-lot lot should be aware of this expiration.", color:"#9A3412", bg:"#FFEDD5" },
-    { sev:"Medium", title:"Wildlife and safety liability", detail:"Without a unified, enforceable covenant covering all 200 lots, the Association's ability to enforce bear safety rules, noise prohibitions, and nuisance provisions is inconsistent. If a STR guest causes a bear incident or community safety event, the Association's legal exposure depends on which covenant governs the lot — and the answer may be that the Association had no enforceable authority to prevent the harm.", color:C.amber, bg:C.amberLight },
+    { sev:"Medium", title:"Wildlife and safety policy gap", detail:"Without a unified, enforceable covenant covering all 200 lots, the Association's ability to enforce consistent safety and nuisance standards is limited. Wildlife-specific restrictions are best treated as a future amendment once one community-wide CC&R is in place.", color:C.amber, bg:C.amberLight },
     { sev:"Medium", title:"Community governance legitimacy", detail:"An HOA board that enforces rules selectively — because it can only clearly enforce them on some lots — loses the trust and respect of the broader community. Governance works when rules are fair, consistent, and known. The current three-covenant situation makes genuine community governance nearly impossible.", color:C.amber, bg:C.amberLight },
   ];
   return (
