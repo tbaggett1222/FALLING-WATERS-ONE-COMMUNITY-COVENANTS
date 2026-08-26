@@ -50,6 +50,9 @@ const DOC_STATUS_OPTIONS = [
   { value: "disputed", label: "Disputed — consent form only" },
   { value: "uploaded", label: "Uploaded for review" },
 ];
+const ADMIN_ALLOWED_USERS = [
+  "Tracy Baggett",
+];
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -124,6 +127,9 @@ const isPrimaryVoter = (user) =>
 
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const isAdminUserAllowed = (name) =>
+  ADMIN_ALLOWED_USERS.map((entry) => normalizeNameKey(entry)).includes(normalizeNameKey(name));
 
 const generateUserId = (name = "resident") =>
   `usr_${normalizeNameKey(name).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
@@ -340,6 +346,10 @@ function LoginScreen({ onLogin }) {
       return;
     }
     const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    if (isAdmin && !isAdminUserAllowed(name.trim())) {
+      setErr("This account is not authorized for admin access. Contact the HOA administrator.");
+      return;
+    }
     const user = {
       lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
       lots,
@@ -360,7 +370,7 @@ function LoginScreen({ onLogin }) {
           <div style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest, lineHeight:1.2 }}>Falling Waters</div>
           <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Community Covenant Portal</div>
         </div>
-        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation.</div>
+        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Admin pages are restricted to approved users only.</div>
         {err && <div style={S.alert("danger")}>{err}</div>}
         <form onSubmit={handle}>
           <div style={{ marginBottom:14 }}>
@@ -1702,7 +1712,9 @@ export default function App() {
     if (!saved) return null;
     const lots = normalizeUserLots(saved);
     if (lots.length === 0) return null;
-    const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    if (requestedAdmin && !isAdminUserAllowed(saved.name)) return null;
+    const isAdmin = requestedAdmin;
     return {
       ...saved,
       isAdmin,
@@ -1816,6 +1828,9 @@ export default function App() {
   const handleLogin = (u) => {
     const lots = normalizeUserLots(u);
     const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    if (isAdmin && !isAdminUserAllowed(u.name)) {
+      return "This account is not authorized for admin access. Contact the HOA administrator.";
+    }
     const normalizedUser = {
       ...u,
       isAdmin,
