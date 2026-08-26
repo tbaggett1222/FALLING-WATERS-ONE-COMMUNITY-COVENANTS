@@ -344,8 +344,133 @@ const readFileAsText = (file) =>
     reader.readAsText(file);
   });
 
+const PORTAL_BACKUP_TYPE = "falling-waters-portal-backup";
+const PORTAL_BACKUP_VERSION = 1;
+
 const COVENANT_ASSET_DB_NAME = "fw-covenant-assets";
 const COVENANT_ASSET_STORE = "files";
+
+const VALID_VOTE_CHOICES = new Set(["eliminate", "permit", "undecided"]);
+
+const readBlobAsDataUrl = (blob) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not serialize stored covenant file."));
+    reader.readAsDataURL(blob);
+  });
+
+const dataUrlToBlob = (dataUrl) => {
+  const raw = String(dataUrl || "");
+  const [meta, payload = ""] = raw.split(",", 2);
+  if (!meta.startsWith("data:")) {
+    throw new Error("Backup file contains an invalid covenant attachment encoding.");
+  }
+  const mimeMatch = meta.match(/^data:([^;]+)/);
+  const mime = mimeMatch?.[1] || "application/octet-stream";
+  const isBase64 = /;base64$/i.test(meta);
+  if (!isBase64) {
+    return new Blob([decodeURIComponent(payload)], { type: mime });
+  }
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let idx = 0; idx < binary.length; idx += 1) {
+    bytes[idx] = binary.charCodeAt(idx);
+  }
+  return new Blob([bytes], { type: mime });
+};
+
+const listCovenantAssetRecords = async () => {
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readonly");
+    const request = tx.objectStore(COVENANT_ASSET_STORE).getAll();
+    request.onsuccess = async () => {
+      try {
+        const records = Array.isArray(request.result) ? request.result : [];
+        const serialized = [];
+        for (const record of records) {
+          if (!record?.id || !(record?.blob instanceof Blob)) continue;
+          const blobDataUrl = await readBlobAsDataUrl(record.blob);
+          serialized.push({
+            id: record.id,
+            fileName: record.fileName || "",
+            fileType: record.fileType || record.blob.type || "application/octet-stream",
+            updatedAt: Number(record.updatedAt) || Date.now(),
+            blobDataUrl,
+          });
+        }
+        db.close();
+        resolve(serialized);
+      } catch {
+        db.close();
+        reject(new Error("Could not prepare covenant attachments for backup export."));
+      }
+    };
+    request.onerror = () => {
+      db.close();
+      reject(new Error("Could not read covenant attachments from browser storage."));
+    };
+  });
+};
+
+const replaceCovenantAssetRecords = async (records) => {
+  const safeRecords = Array.isArray(records) ? records : [];
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readwrite");
+    const storeRef = tx.objectStore(COVENANT_ASSET_STORE);
+    storeRef.clear();
+    safeRecords.forEach((record) => {
+      const id = String(record?.id || "").trim();
+      if (!id) return;
+      const encoded = String(record?.blobDataUrl || "");
+      if (!encoded.startsWith("data:")) return;
+      try {
+        const blob = dataUrlToBlob(encoded);
+        storeRef.put({
+          id,
+          blob,
+          fileName: record?.fileName || "",
+          fileType: record?.fileType || blob.type || "application/octet-stream",
+          updatedAt: Number(record?.updatedAt) || Date.now(),
+        });
+      } catch {}
+    });
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(new Error("Could not restore covenant attachments from backup."));
+    };
+  });
+};
+
+const collectLegacyVoteEntries = () => {
+  const entries = {};
+  if (typeof localStorage === "undefined") return entries;
+  for (let idx = 0; idx < localStorage.length; idx += 1) {
+    const key = localStorage.key(idx);
+    if (!key || !key.startsWith("vote_")) continue;
+    const choice = store.get(key);
+    if (VALID_VOTE_CHOICES.has(choice)) {
+      entries[key] = choice;
+    }
+  }
+  return entries;
+};
+
+const clearLegacyVoteEntries = () => {
+  if (typeof localStorage === "undefined") return;
+  const keys = [];
+  for (let idx = 0; idx < localStorage.length; idx += 1) {
+    const key = localStorage.key(idx);
+    if (key && key.startsWith("vote_")) keys.push(key);
+  }
+  keys.forEach((key) => store.del(key));
+};
 
 const openCovenantAssetDb = () =>
   new Promise((resolve, reject) => {
@@ -2010,6 +2135,8 @@ function AdminVotingPage({
   totalLots,
   votesNeeded,
   onImportCsv,
+  onExportBackup,
+  onRestoreBackup,
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
@@ -2022,6 +2149,9 @@ function AdminVotingPage({
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importErr, setImportErr] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState("");
+  const [backupErr, setBackupErr] = useState("");
   const [gradeMsg, setGradeMsg] = useState("");
   const [newAdminName, setNewAdminName] = useState("");
   const [newAdminGrade, setNewAdminGrade] = useState(DEFAULT_ADMIN_GRADE);
@@ -2230,6 +2360,47 @@ function AdminVotingPage({
     }
   };
 
+  const handleBackupExport = async () => {
+    setBackupErr("");
+    setBackupMsg("");
+    setBackupBusy(true);
+    try {
+      const result = await onExportBackup?.();
+      if (result?.error) {
+        setBackupErr(result.error);
+      } else {
+        setBackupMsg(result?.message || "Backup exported.");
+      }
+    } catch (err) {
+      setBackupErr(err?.message || "Could not export backup JSON.");
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleBackupRestore = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setBackupErr("");
+    setBackupMsg("");
+    setBackupBusy(true);
+    try {
+      const rawText = await readFileAsText(file);
+      const parsed = JSON.parse(rawText);
+      const result = await onRestoreBackup?.(parsed);
+      if (result?.error) {
+        setBackupErr(result.error);
+      } else {
+        setBackupMsg(result?.message || "Backup restored.");
+      }
+    } catch (err) {
+      setBackupErr(err?.message || "Could not restore backup JSON.");
+    } finally {
+      setBackupBusy(false);
+      event.target.value = "";
+    }
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
@@ -2394,6 +2565,34 @@ function AdminVotingPage({
         {importErr && <div style={S.alert("danger")}>{importErr}</div>}
         {importMsg && <div style={S.alert("success")}>{importMsg}</div>}
         <input style={{ ...S.input, padding: "7px 10px" }} type="file" accept=".csv,text/csv" onChange={handleImport} disabled={importing} />
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Backup / Restore full portal data (JSON)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Exports all portal records (lots, voting ledger, comments, outreach, admin access, and uploaded covenant files) into one backup file.
+        </div>
+        {backupErr && <div style={S.alert("danger")}>{backupErr}</div>}
+        {backupMsg && <div style={S.alert("success")}>{backupMsg}</div>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button
+            style={{ ...S.btn("primary"), padding: "7px 12px" }}
+            onClick={handleBackupExport}
+            disabled={backupBusy}
+          >
+            Export full backup JSON
+          </button>
+          <input
+            style={{ ...S.input, padding: "7px 10px", maxWidth: 320 }}
+            type="file"
+            accept=".json,application/json"
+            onChange={handleBackupRestore}
+            disabled={backupBusy}
+          />
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+          Restoring a backup replaces current portal data in this browser with the selected snapshot.
+        </div>
       </div>
 
       <div style={S.statGrid}>
@@ -3266,6 +3465,144 @@ export default function App() {
     };
   };
 
+  const handleExportBackup = async () => {
+    const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+    const backup = {
+      backupType: PORTAL_BACKUP_TYPE,
+      version: PORTAL_BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      payload: {
+        fw_user: user,
+        fw_votes: votes,
+        fw_comments: comments,
+        fw_comments_data_version: COMMENTS_DATA_VERSION,
+        fw_covenant_docs: covenantDocs,
+        fw_owner_activity: ownerActivity,
+        fw_vote_ledger: voteLedger,
+        fw_primary_voter_registry: primaryVoterRegistry,
+        fw_outreach_state: outreachState,
+        fw_user_directory: userDirectory,
+        fw_admin_access_entries: adminAccessEntries,
+        fw_admin_access_grades: adminAccessGrades,
+        fw_total_lots: totalLots,
+        fw_vote_eligibility: eligibilityState,
+        legacy_vote_entries: collectLegacyVoteEntries(),
+        covenant_asset_records: covenantAssetRecords,
+      },
+    };
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fw-full-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return {
+      message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${covenantAssetRecords.length} stored covenant attachments).`,
+    };
+  };
+
+  const handleRestoreBackup = async (rawBackup) => {
+    const candidate = rawBackup?.payload && typeof rawBackup.payload === "object" ? rawBackup.payload : rawBackup;
+    if (!candidate || typeof candidate !== "object") {
+      return { error: "Backup JSON format is invalid." };
+    }
+    if (rawBackup?.backupType && rawBackup.backupType !== PORTAL_BACKUP_TYPE) {
+      return { error: `Unsupported backup type "${rawBackup.backupType}".` };
+    }
+    if (rawBackup?.version && Number(rawBackup.version) > PORTAL_BACKUP_VERSION) {
+      return { error: `Backup version ${rawBackup.version} is newer than this portal supports.` };
+    }
+
+    const parsedTotalLots = Number(candidate.fw_total_lots);
+    const nextTotalLots =
+      Number.isInteger(parsedTotalLots) && parsedTotalLots >= MIN_TOTAL_LOTS && parsedTotalLots <= MAX_TOTAL_LOTS
+        ? parsedTotalLots
+        : DEFAULT_TOTAL_LOTS;
+    const nextLotLabels = buildLotLabels(nextTotalLots);
+    const nextLotSet = new Set(nextLotLabels);
+    const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+
+    const importedLedgerRaw = sanitizeObj(candidate.fw_vote_ledger);
+    const nextVoteLedger = {};
+    Object.entries(importedLedgerRaw).forEach(([lotLabel, choice]) => {
+      const normalizedLot = normalizeLotLabel(lotLabel);
+      if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
+      if (!VALID_VOTE_CHOICES.has(choice)) return;
+      nextVoteLedger[normalizedLot] = choice;
+    });
+
+    const importedLegacyVotes = sanitizeObj(candidate.legacy_vote_entries);
+    clearLegacyVoteEntries();
+    Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
+      if (!String(key).startsWith("vote_")) return;
+      if (!VALID_VOTE_CHOICES.has(choice)) return;
+      store.set(key, choice);
+    });
+    Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
+      store.set(`vote_${lotLabel}`, choice);
+    });
+
+    const nextComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
+    const nextCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : DEFAULT_COVENANT_DOCS;
+    const nextOwnerActivity = sanitizeObj(candidate.fw_owner_activity);
+    const nextPrimaryRegistry = sanitizeObj(candidate.fw_primary_voter_registry);
+    const nextOutreach = sanitizeObj(candidate.fw_outreach_state);
+    const nextUserDirectory = sanitizeObj(candidate.fw_user_directory);
+    const nextEligibility = sanitizeObj(candidate.fw_vote_eligibility);
+    const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
+    const effectiveAdminEntries = nextAdminEntries.length > 0 ? nextAdminEntries : getInitialAdminAccessEntries();
+    const nextAdminGrades = sanitizeObj(candidate.fw_admin_access_grades);
+    const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
+    await replaceCovenantAssetRecords(restoredAssets);
+
+    setTotalLots(nextTotalLots);
+    setVoteLedger(nextVoteLedger);
+    setVotes(computeVoteTotalsFromLedger(nextVoteLedger, nextLotLabels));
+    setComments(nextComments);
+    setCovenantDocs(nextCovenantDocs);
+    setOwnerActivity(nextOwnerActivity);
+    setPrimaryVoterRegistry(nextPrimaryRegistry);
+    setOutreachState(nextOutreach);
+    setUserDirectory(nextUserDirectory);
+    setEligibilityState(nextEligibility);
+    setAdminAccessEntries(effectiveAdminEntries);
+    setAdminAccessGrades(nextAdminGrades);
+    store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
+
+    const restoredUserRaw = candidate.fw_user;
+    const restoredUser =
+      restoredUserRaw && typeof restoredUserRaw === "object"
+        ? (() => {
+            const lots = normalizeUserLots(restoredUserRaw);
+            const hasAdminApproval = isAdminUserAllowed(restoredUserRaw.name, effectiveAdminEntries);
+            const requestedAdmin = !!restoredUserRaw.isAdmin || (lots.length === 1 && lots[0] === "ADMIN");
+            if (requestedAdmin && !hasAdminApproval) return null;
+            if (!hasAdminApproval && lots.length === 0) return null;
+            const isAdmin = hasAdminApproval || requestedAdmin;
+            const effectiveLots = isAdmin ? ["ADMIN"] : lots;
+            return {
+              ...restoredUserRaw,
+              isAdmin,
+              accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(restoredUserRaw.accessRole),
+              userId: restoredUserRaw.userId || generateUserId(restoredUserRaw.name),
+              lots: effectiveLots,
+              lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
+            };
+          })()
+        : null;
+    store.set("fw_user", restoredUser);
+    setUser(restoredUser);
+    setPage(restoredUser?.isAdmin ? "admin-votes" : "home");
+
+    return {
+      message: `Backup restored: ${Object.keys(nextVoteLedger).length} vote records, ${nextComments.length} comments, ${restoredAssets.length} covenant attachment records.`,
+    };
+  };
+
   const activityRows = Object.values(ownerActivity);
   const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
   const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -3365,7 +3702,7 @@ export default function App() {
         <div style={S.content}>
           {user.isAdmin && (
             <div style={S.alert("warn")}>
-              <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, and CSV import/export.
+              <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore.
             </div>
           )}
           {page === "home" && <HomePage votes={votes} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
@@ -3399,6 +3736,8 @@ export default function App() {
               totalLots={totalLots}
               votesNeeded={votesNeeded}
               onImportCsv={handleImportCsv}
+              onExportBackup={handleExportBackup}
+              onRestoreBackup={handleRestoreBackup}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
