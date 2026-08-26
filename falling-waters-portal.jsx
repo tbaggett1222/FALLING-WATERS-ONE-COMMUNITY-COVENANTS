@@ -62,7 +62,7 @@ const GENERAL_CONCERN_OPTIONS = [
 ];
 const COMMENT_TOPIC_OPTIONS = [
   { value: "str", label: "Short-term rentals" },
-  { value: "acc", label: "ACC building guidelines" },
+  { value: "acc", label: "ACC Building Guidelines" },
   { value: "general", label: "General covenants" },
   { value: "process", label: "Process & voting" },
 ];
@@ -1464,6 +1464,9 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
   ];
   return (
     <div>
+      <div style={S.alert("warn")}>
+        <strong>STR &amp; Unified CC&amp;R Vote:</strong> this section captures each lot's STR policy preference as part of the one-community covenant adoption effort.
+      </div>
       <div style={{ ...S.card, background:`linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border:`1px solid ${C.danger}` }}>
         <div style={{ fontFamily:"Georgia,serif", fontSize:18, fontWeight:"bold", color:C.danger, marginBottom:8 }}>Short-Term Rentals — The Central Issue</div>
         <p style={{ fontSize:13, color:C.ink, lineHeight:1.7, margin:"0 0 12px" }}>Our attorney has confirmed: <strong>owners whose chain of title only includes the 2014 declaration have no enforceable short-term rental restriction today.</strong> Georgia courts will not imply a restriction that is not in an owner's title. Without a unified CC&R, Falling Waters cannot establish a consistent, community-wide STR rule — whether permissive or restrictive.</p>
@@ -1657,6 +1660,9 @@ function CommentsPage({ user, comments, onAdd }) {
   };
   return (
     <div>
+      <div style={S.alert("info")}>
+        <strong>Community comments topics include ACC Building Guidelines.</strong> Use the Topic dropdown to post feedback specifically on ACC standards, design rules, and approval process concerns.
+      </div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 2fr", gap:20 }}>
         <div>
           <div style={S.card}>
@@ -2873,7 +2879,7 @@ export default function App() {
     { id:"comparison", label:"Side-by-side compare", icon:<Icon.compare/> },
     { id:"proposed", label:"Proposed One CC&R", icon:<Icon.star/> },
     { id:"risks", label:"Risks of inaction", icon:<Icon.home2/> },
-    { id:"str", label:"STR — key issue", icon:<Icon.vote/> },
+    { id:"str", label:"STR & Unified CC&R vote", icon:<Icon.vote/> },
     ...(!user.isAdmin ? [{ id:"profile", label:"My profile", icon:<Icon.user/> }] : []),
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
@@ -2887,7 +2893,7 @@ export default function App() {
     comparison:"Side-by-side comparison",
     proposed:"Proposed One Community CC&R",
     risks:"Risks of inaction",
-    str:"Short-term rentals",
+    str:"STR & Unified CC&R vote",
     profile:"Resident profile",
     comments:"Community comments",
     dashboard:"Campaign dashboard",
@@ -2937,7 +2943,7 @@ export default function App() {
           <div style={{ display:"flex", gap:10, alignItems:"center" }}>
             <span style={{ fontSize:12, color:C.muted }}>Need {votesNeeded} votes ·</span>
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
-            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>Vote now →</button>}
+            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>STR & Unified CC&R vote →</button>}
           </div>
         </div>
         <div style={S.content}>
