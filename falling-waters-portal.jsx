@@ -35,6 +35,8 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
+const BACKUP_HEALTH_MAX_AGE_DAYS = 7;
+const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
@@ -2206,9 +2208,11 @@ function AdminVotingPage({
   adminAccessGrades,
   totalLots,
   votesNeeded,
+  lastBackupExportAt,
   onImportCsv,
   onExportBackup,
   onRestoreBackup,
+  onRecordBackupExport,
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
@@ -2231,6 +2235,20 @@ function AdminVotingPage({
   const [newAdminName, setNewAdminName] = useState("");
   const [newAdminGrade, setNewAdminGrade] = useState(DEFAULT_ADMIN_GRADE);
   const [gradeErr, setGradeErr] = useState("");
+  const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
+  const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
+  const backupAgeDays = backupTimestampMs === null ? null : Math.floor((Date.now() - backupTimestampMs) / (1000 * 60 * 60 * 24));
+  const backupHealthLevel = backupTimestampMs === null ? "missing" : backupAgeDays > BACKUP_HEALTH_MAX_AGE_DAYS ? "stale" : "healthy";
+  const backupHealthText =
+    backupHealthLevel === "healthy"
+      ? `Last full backup export: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} day${backupAgeDays === 1 ? "" : "s"} ago).`
+      : backupHealthLevel === "stale"
+        ? `Last full backup export is stale: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} days ago).`
+        : "No recorded full backup export yet.";
+  const backupHealthGuidance =
+    backupHealthLevel === "healthy"
+      ? "Backup cadence is healthy."
+      : `Recommendation: export a full backup at least every ${BACKUP_HEALTH_MAX_AGE_DAYS} days and after each admin session.`;
   const lotLabels = buildLotLabels(totalLots);
   const directoryRows = Object.values(userDirectory || {})
     .sort((a, b) => {
@@ -2583,6 +2601,7 @@ function AdminVotingPage({
         allRows
       );
 
+      onRecordBackupExport?.(nowIso);
       setBackupMsg("Full CSV export downloaded as a single file with all sections.");
     } catch (err) {
       setBackupErr(err?.message || "Could not export CSV bundle.");
@@ -2681,6 +2700,7 @@ function AdminVotingPage({
       if (result?.error) {
         setBackupErr(result.error);
       } else {
+        onRecordBackupExport?.(new Date().toISOString());
         setBackupMsg(result?.message || "Backup exported.");
       }
     } catch (err) {
@@ -2738,6 +2758,9 @@ function AdminVotingPage({
     <div>
       <div style={S.alert("info")}>
         Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals.
+      </div>
+      <div style={S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger")}>
+        <strong>Backup health:</strong> {backupHealthText} {backupHealthGuidance}
       </div>
 
       <div style={S.card}>
@@ -3390,6 +3413,10 @@ export default function App() {
     const saved = store.get("fw_vote_eligibility");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [lastBackupExportAt, setLastBackupExportAt] = useState(() => {
+    const saved = store.get(LAST_BACKUP_EXPORT_KEY);
+    return typeof saved === "string" && saved.trim() ? saved : "";
+  });
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
@@ -3405,6 +3432,7 @@ export default function App() {
   useEffect(() => { store.set("fw_admin_access_grades", adminAccessGrades); }, [adminAccessGrades]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
+  useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
   useEffect(() => {
     const result = consolidateCovenantDocs(covenantDocs);
     if (result.removedCount > 0) {
@@ -4078,6 +4106,13 @@ export default function App() {
     };
   };
 
+  const handleRecordBackupExport = (isoTimestamp = new Date().toISOString()) => {
+    const safeIso = String(isoTimestamp || "").trim();
+    const parsed = Date.parse(safeIso);
+    if (Number.isNaN(parsed)) return;
+    setLastBackupExportAt(new Date(parsed).toISOString());
+  };
+
   const activityRows = Object.values(ownerActivity);
   const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
   const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -4211,9 +4246,11 @@ export default function App() {
               adminAccessGrades={adminAccessGrades}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
+              lastBackupExportAt={lastBackupExportAt}
               onImportCsv={handleImportCsv}
               onExportBackup={handleExportBackup}
               onRestoreBackup={handleRestoreBackup}
+              onRecordBackupExport={handleRecordBackupExport}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}

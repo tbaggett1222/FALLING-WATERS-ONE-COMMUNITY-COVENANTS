@@ -21490,6 +21490,8 @@ var FallingWatersPortal = (() => {
   var DEFAULT_TOTAL_LOTS = 200;
   var MAX_TOTAL_LOTS = 500;
   var MIN_TOTAL_LOTS = 1;
+  var BACKUP_HEALTH_MAX_AGE_DAYS = 7;
+  var LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
   var STR_CONCERN_OPTIONS = [
@@ -22840,9 +22842,11 @@ var FallingWatersPortal = (() => {
     adminAccessGrades,
     totalLots,
     votesNeeded,
+    lastBackupExportAt,
     onImportCsv,
     onExportBackup,
     onRestoreBackup,
+    onRecordBackupExport,
     onUpdateEligibility,
     onUpdateTotalLots,
     onSetAdminAccessGrade,
@@ -22865,6 +22869,12 @@ var FallingWatersPortal = (() => {
     const [newAdminName, setNewAdminName] = (0, import_react.useState)("");
     const [newAdminGrade, setNewAdminGrade] = (0, import_react.useState)(DEFAULT_ADMIN_GRADE);
     const [gradeErr, setGradeErr] = (0, import_react.useState)("");
+    const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
+    const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
+    const backupAgeDays = backupTimestampMs === null ? null : Math.floor((Date.now() - backupTimestampMs) / (1e3 * 60 * 60 * 24));
+    const backupHealthLevel = backupTimestampMs === null ? "missing" : backupAgeDays > BACKUP_HEALTH_MAX_AGE_DAYS ? "stale" : "healthy";
+    const backupHealthText = backupHealthLevel === "healthy" ? `Last full backup export: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} day${backupAgeDays === 1 ? "" : "s"} ago).` : backupHealthLevel === "stale" ? `Last full backup export is stale: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} days ago).` : "No recorded full backup export yet.";
+    const backupHealthGuidance = backupHealthLevel === "healthy" ? "Backup cadence is healthy." : `Recommendation: export a full backup at least every ${BACKUP_HEALTH_MAX_AGE_DAYS} days and after each admin session.`;
     const lotLabels = buildLotLabels(totalLots);
     const directoryRows = Object.values(userDirectory || {}).sort((a, b) => {
       if (!!a.isAdmin !== !!b.isAdmin) return a.isAdmin ? -1 : 1;
@@ -23183,6 +23193,7 @@ var FallingWatersPortal = (() => {
           ["Section", "Row Id", "Field", "Value Type", "Value"],
           allRows
         );
+        onRecordBackupExport?.(nowIso);
         setBackupMsg("Full CSV export downloaded as a single file with all sections.");
       } catch (err) {
         setBackupErr(err?.message || "Could not export CSV bundle.");
@@ -23274,6 +23285,7 @@ var FallingWatersPortal = (() => {
         if (result?.error) {
           setBackupErr(result.error);
         } else {
+          onRecordBackupExport?.((/* @__PURE__ */ new Date()).toISOString());
           setBackupMsg(result?.message || "Backup exported.");
         }
       } catch (err) {
@@ -23323,7 +23335,7 @@ var FallingWatersPortal = (() => {
         [scopeKey]: !(normalizeRestoreScopes(prev)[scopeKey] !== false)
       }));
     };
-    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-owner universe settings"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many lots are included in official participation and vote math. The 2/3 threshold updates automatically."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
+    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Backup health:"), " ", backupHealthText, " ", backupHealthGuidance), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-owner universe settings"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many lots are included in official participation and vote math. The 2/3 threshold updates automatically."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, maxWidth: 180 },
@@ -23634,6 +23646,10 @@ var FallingWatersPortal = (() => {
       const saved = store.get("fw_vote_eligibility");
       return saved && typeof saved === "object" ? saved : {};
     });
+    const [lastBackupExportAt, setLastBackupExportAt] = (0, import_react.useState)(() => {
+      const saved = store.get(LAST_BACKUP_EXPORT_KEY);
+      return typeof saved === "string" && saved.trim() ? saved : "";
+    });
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
     (0, import_react.useEffect)(() => {
@@ -23672,6 +23688,9 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       store.set("fw_vote_eligibility", eligibilityState);
     }, [eligibilityState]);
+    (0, import_react.useEffect)(() => {
+      store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || "");
+    }, [lastBackupExportAt]);
     (0, import_react.useEffect)(() => {
       const result = consolidateCovenantDocs(covenantDocs);
       if (result.removedCount > 0) {
@@ -24244,6 +24263,12 @@ var FallingWatersPortal = (() => {
         message: `Backup restored (${restoreMode}): ${appliedScopeLabels.join(", ")}. Vote records now ${Object.keys(nextVoteLedger).length}; comments ${nextComments.length}.`
       };
     };
+    const handleRecordBackupExport = (isoTimestamp = (/* @__PURE__ */ new Date()).toISOString()) => {
+      const safeIso = String(isoTimestamp || "").trim();
+      const parsed = Date.parse(safeIso);
+      if (Number.isNaN(parsed)) return;
+      setLastBackupExportAt(new Date(parsed).toISOString());
+    };
     const activityRows = Object.values(ownerActivity);
     const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
     const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -24324,9 +24349,11 @@ var FallingWatersPortal = (() => {
         adminAccessGrades,
         totalLots,
         votesNeeded,
+        lastBackupExportAt,
         onImportCsv: handleImportCsv,
         onExportBackup: handleExportBackup,
         onRestoreBackup: handleRestoreBackup,
+        onRecordBackupExport: handleRecordBackupExport,
         onUpdateEligibility: handleUpdateEligibility,
         onUpdateTotalLots: handleUpdateTotalLots,
         onSetAdminAccessGrade: handleSetAdminAccessGrade,
