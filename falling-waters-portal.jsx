@@ -145,6 +145,29 @@ const normalizeBoolean = (value) => {
   return ["1", "true", "yes", "y", "contacted"].includes(raw);
 };
 
+const normalizeImportedEligibility = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return null;
+  if (
+    ["eligible", "yes", "y", "true", "1", "current", "dues paid", "paid", "good standing"].includes(raw)
+    || raw.includes("good standing")
+    || raw.includes("dues paid")
+  ) {
+    return true;
+  }
+  if (
+    ["ineligible", "no", "n", "false", "0", "dues unpaid", "unpaid", "delinquent", "not current", "suspended", "disqualified"].includes(raw)
+    || raw.includes("unpaid")
+    || raw.includes("delinquent")
+    || raw.includes("not current")
+    || raw.includes("ineligible")
+    || raw.includes("disqual")
+  ) {
+    return false;
+  }
+  return null;
+};
+
 const normalizeImportedVoteChoice = (value) => {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return null;
@@ -1376,7 +1399,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 }
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
-function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outreachState, onImportCsv }) {
+function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outreachState, eligibilityState, onImportCsv, onUpdateEligibility }) {
   const [filter, setFilter] = useState("all");
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState("");
@@ -1385,8 +1408,10 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
   const lotRows = ALL_LOT_LABELS.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
     const outreach = outreachState?.[lotLabel] || null;
+    const eligibility = eligibilityState?.[lotLabel] || null;
     const choice = voteLedger[lotLabel] || store.get(`vote_${lotLabel}`) || null;
     const hasVoted = !!choice;
+    const voteEligible = eligibility?.eligible === false ? false : true;
     return {
       lot: lotLabel,
       lotNum: lotNumberFromLabel(lotLabel),
@@ -1394,7 +1419,10 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
       primaryVoter: primaryVoterRegistry?.[lotLabel]?.name || "",
       hasVoted,
       choice,
-      status: hasVoted ? "Voted" : activity ? "Registered - not voted" : "Not engaged",
+      status: hasVoted ? (voteEligible ? "Voted" : "Voted - non-eligible") : activity ? "Registered - not voted" : "Not engaged",
+      voteEligible,
+      ineligibleReason: voteEligible ? "" : String(eligibility?.reason || "").trim(),
+      eligibilityUpdatedAt: eligibility?.updatedAt || "",
       commented: !!activity?.commented,
       lastActive: activity?.lastActive || "",
       contacted: !!outreach?.contacted,
@@ -1404,16 +1432,38 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
   });
 
   const votedRows = lotRows.filter((row) => row.hasVoted);
+  const eligibleVotedRows = lotRows.filter((row) => row.voteEligible && row.hasVoted);
+  const ineligibleRows = lotRows.filter((row) => !row.voteEligible);
+  const ineligibleVotedRows = lotRows.filter((row) => !row.voteEligible && row.hasVoted);
+  const eligibleEliminateVotes = eligibleVotedRows.filter((row) => row.choice === "eliminate").length;
+  const eligiblePermitVotes = eligibleVotedRows.filter((row) => row.choice === "permit").length;
+  const eligibleUndecidedVotes = lotRows.filter((row) => row.voteEligible && !row.hasVoted).length;
   const notVotedRows = lotRows.filter((row) => !row.hasVoted);
   const filteredRows =
     filter === "voted"
       ? votedRows
       : filter === "not-voted"
         ? notVotedRows
+        : filter === "ineligible"
+          ? ineligibleRows
         : lotRows;
 
   const exportCsv = () => {
-    const headers = ["Lot", "Status", "Vote Choice", "Primary Voter", "Owner Name (if known)", "Commented", "Last Active", "Contacted", "Outreach Notes", "Last Contact Date"];
+    const headers = [
+      "Lot",
+      "Status",
+      "Vote Choice",
+      "Vote Eligible",
+      "Ineligible Reason",
+      "Eligibility Last Updated",
+      "Primary Voter",
+      "Owner Name (if known)",
+      "Commented",
+      "Last Active",
+      "Contacted",
+      "Outreach Notes",
+      "Last Contact Date",
+    ];
     const lines = [
       headers.join(","),
       ...lotRows.map((row) =>
@@ -1421,6 +1471,9 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
           row.lot,
           row.status,
           choiceLabel(row.choice),
+          row.voteEligible ? "Yes" : "No",
+          row.ineligibleReason || "",
+          row.eligibilityUpdatedAt || "",
           row.primaryVoter || "",
           row.ownerName || "",
           row.commented ? "Yes" : "No",
@@ -1442,6 +1495,14 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const toggleLotEligibility = (row) => {
+    if (row.voteEligible) {
+      onUpdateEligibility(row.lot, { eligible: false, reason: row.ineligibleReason || "Dues unpaid" });
+    } else {
+      onUpdateEligibility(row.lot, { eligible: true, reason: "" });
+    }
   };
 
   const handleImport = async (event) => {
@@ -1474,13 +1535,13 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
   return (
     <div>
       <div style={S.alert("info")}>
-        Admin visibility: this roster tracks lot-level participation, voting, and outreach status. You can also import a master CSV to update vote and outreach state in one step.
+        Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals.
       </div>
 
       <div style={S.card}>
         <div style={S.cardTitle}>Import master spreadsheet (CSV)</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
-          Accepted columns (case-insensitive): Lot, Vote Choice, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date.
+          Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date.
         </div>
         {importErr && <div style={S.alert("danger")}>{importErr}</div>}
         {importMsg && <div style={S.alert("success")}>{importMsg}</div>}
@@ -1490,15 +1551,19 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
       <div style={S.statGrid}>
         {[
           { num: TOTAL_LOTS, label: "Total lots", accent: C.forest },
-          { num: votedRows.length, label: "Lots voted", accent: C.success },
-          { num: notVotedRows.length, label: "Lots not voted", accent: C.danger },
-          { num: `${Math.round((lotRows.filter((row) => row.contacted).length / TOTAL_LOTS) * 100)}%`, label: "Outreach contacted", accent: C.stone },
+          { num: eligibleVotedRows.length, label: "Eligible votes counted", accent: C.success },
+          { num: ineligibleVotedRows.length, label: "Non-eligible votes flagged", accent: C.danger },
+          { num: ineligibleRows.length, label: "Lots marked non-eligible", accent: C.amber },
         ].map((s, i) => (
           <div key={i} style={S.statCard(s.accent)}>
             <div style={S.statNum}>{s.num}</div>
             <div style={S.statLabel}>{s.label}</div>
           </div>
         ))}
+      </div>
+
+      <div style={S.alert("warn")}>
+        Official tally (eligible lots only): <strong>{eligibleEliminateVotes}</strong> eliminate, <strong>{eligiblePermitVotes}</strong> permit, <strong>{eligibleUndecidedVotes}</strong> not voted.
       </div>
 
       <div style={S.card}>
@@ -1511,6 +1576,7 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
             <button style={{ ...S.btn(filter === "all" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("all")}>All lots</button>
             <button style={{ ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("voted")}>Voted only</button>
             <button style={{ ...S.btn(filter === "not-voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("not-voted")}>Not voted only</button>
+            <button style={{ ...S.btn(filter === "ineligible" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("ineligible")}>Non-eligible only</button>
             <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={exportCsv}>Export CSV</button>
           </div>
         </div>
@@ -1522,6 +1588,7 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
                 <th style={S.th}>Lot</th>
                 <th style={S.th}>Status</th>
                 <th style={S.th}>Vote choice</th>
+                <th style={S.th}>Vote eligibility</th>
                 <th style={S.th}>Primary voter</th>
                 <th style={S.th}>Owner name (if known)</th>
                 <th style={S.th}>Commented</th>
@@ -1533,14 +1600,40 @@ function AdminVotingPage({ ownerActivity, voteLedger, primaryVoterRegistry, outr
             </thead>
             <tbody>
               {filteredRows.sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999)).map((row) => (
-                <tr key={row.lot} style={{ background: row.hasVoted ? C.white : "#FFF7ED" }}>
+                <tr key={row.lot} style={{ background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" }}>
                   <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.lot}</td>
                   <td style={S.td}>
-                    <span style={S.badge(row.hasVoted ? C.success : C.danger, row.hasVoted ? C.successLight : C.dangerLight)}>
+                    <span style={S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight)}>
                       {row.status}
                     </span>
                   </td>
                   <td style={S.td}>{choiceLabel(row.choice)}</td>
+                  <td style={{ ...S.td, minWidth: 220 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <span style={S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight)}>
+                        {row.voteEligible ? "Eligible" : "Non-eligible"}
+                      </span>
+                      <button
+                        style={{ ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "5px 8px", fontSize: 11 }}
+                        onClick={() => toggleLotEligibility(row)}
+                      >
+                        {row.voteEligible ? "Mark non-eligible" : "Restore eligibility"}
+                      </button>
+                      {!row.voteEligible && (
+                        <>
+                          <input
+                            style={{ ...S.input, padding: "6px 8px", fontSize: 11 }}
+                            value={row.ineligibleReason}
+                            placeholder="Reason (e.g. HOA dues unpaid)"
+                            onChange={(event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })}
+                          />
+                          <div style={{ fontSize: 10, color: C.muted }}>
+                            Updated {row.eligibilityUpdatedAt || "today"}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </td>
                   <td style={S.td}>{row.primaryVoter || "—"}</td>
                   <td style={S.td}>{row.ownerName || "—"}</td>
                   <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
@@ -1752,6 +1845,10 @@ export default function App() {
     const saved = store.get("fw_outreach_state");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [eligibilityState, setEligibilityState] = useState(() => {
+    const saved = store.get("fw_vote_eligibility");
+    return saved && typeof saved === "object" ? saved : {};
+  });
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
@@ -1760,6 +1857,7 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
   useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
+  useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -1772,6 +1870,33 @@ export default function App() {
         ...patch,
       },
     }));
+  };
+
+  const handleUpdateEligibility = (lot, patch = {}) => {
+    if (!lot || !ALL_LOT_LABELS.includes(lot)) return;
+    setEligibilityState((prev) => {
+      const next = { ...prev };
+      const existing = next[lot] || {};
+      const currentEligible = existing.eligible === false ? false : true;
+      const targetEligible =
+        patch.eligible === undefined
+          ? currentEligible
+          : patch.eligible !== false;
+      if (targetEligible) {
+        delete next[lot];
+        return next;
+      }
+      const reason =
+        patch.reason !== undefined
+          ? String(patch.reason || "").trim()
+          : String(existing.reason || "").trim();
+      next[lot] = {
+        eligible: false,
+        reason,
+        updatedAt: todayLabel(),
+      };
+      return next;
+    });
   };
 
   const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null) => {
@@ -1940,7 +2065,9 @@ export default function App() {
     const nextOwnerActivity = { ...ownerActivity };
     const nextPrimaryRegistry = { ...primaryVoterRegistry };
     const nextOutreach = { ...outreachState };
+    const nextEligibility = { ...eligibilityState };
     const touchedVoteLots = new Set();
+    const touchedEligibilityLots = new Set();
     let recognizedLots = 0;
 
     rows.forEach((row) => {
@@ -2023,6 +2150,28 @@ export default function App() {
         if (shouldKeep) nextOutreach[lot] = existingOutreach;
         else delete nextOutreach[lot];
       }
+
+      const eligibleAliases = ["vote eligible", "eligible", "eligibility", "eligibility status", "eligible to vote", "dues paid", "dues current"];
+      const ineligibleReasonAliases = ["ineligible reason", "reason ineligible", "disqualification reason", "eligibility notes", "eligibility reason"];
+      if (hasColumn(eligibleAliases) || hasColumn(ineligibleReasonAliases)) {
+        const existingEligibility = { ...(nextEligibility[lot] || {}) };
+        const importedEligible = normalizeImportedEligibility(pick(eligibleAliases));
+        const importedReason = hasColumn(ineligibleReasonAliases) ? String(pick(ineligibleReasonAliases) || "").trim() : undefined;
+        let voteEligible = existingEligibility.eligible === false ? false : true;
+        if (importedEligible !== null) voteEligible = importedEligible;
+        const reason = importedReason !== undefined ? importedReason : String(existingEligibility.reason || "").trim();
+
+        if (voteEligible) {
+          delete nextEligibility[lot];
+        } else {
+          nextEligibility[lot] = {
+            eligible: false,
+            reason,
+            updatedAt: todayLabel(),
+          };
+        }
+        touchedEligibilityLots.add(lot);
+      }
     });
 
     touchedVoteLots.forEach((lot) => {
@@ -2035,9 +2184,10 @@ export default function App() {
     setOwnerActivity(nextOwnerActivity);
     setPrimaryVoterRegistry(nextPrimaryRegistry);
     setOutreachState(nextOutreach);
+    setEligibilityState(nextEligibility);
 
     return {
-      message: `Imported ${rows.length} rows (${recognizedLots} recognized lots). Updated ${touchedVoteLots.size} lot vote records and outreach/owner fields where provided.`,
+      message: `Imported ${rows.length} rows (${recognizedLots} recognized lots). Updated ${touchedVoteLots.size} lot vote records, ${touchedEligibilityLots.size} eligibility records, and outreach/owner fields where provided.`,
     };
   };
 
@@ -2123,7 +2273,17 @@ export default function App() {
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
-          {page === "admin-votes" && user.isAdmin && <AdminVotingPage ownerActivity={ownerActivity} voteLedger={voteLedger} primaryVoterRegistry={primaryVoterRegistry} outreachState={outreachState} onImportCsv={handleImportCsv}/>}
+          {page === "admin-votes" && user.isAdmin && (
+            <AdminVotingPage
+              ownerActivity={ownerActivity}
+              voteLedger={voteLedger}
+              primaryVoterRegistry={primaryVoterRegistry}
+              outreachState={outreachState}
+              eligibilityState={eligibilityState}
+              onImportCsv={handleImportCsv}
+              onUpdateEligibility={handleUpdateEligibility}
+            />
+          )}
           {page === "admin-docs" && user.isAdmin && (
             <AdminDocumentsPage
               user={user}
