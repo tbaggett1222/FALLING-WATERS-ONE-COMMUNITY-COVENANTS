@@ -21,14 +21,16 @@ const C = {
 };
 
 // ── SEED DATA ────────────────────────────────────────────────────────────────
-const SEED_COMMENTS = [
-  { id: 1, lot: "Lot 12", name: "J. Harmon", ts: "Aug 18, 2026", topic: "str", stance: "restrict", text: "We moved here for the peace and quiet of a mountain community — not to live next door to a revolving-door rental. Last summer our neighbors hosted 14 different groups in 3 months. The noise, trash, and parking on the road made life miserable. We need a clear restriction." },
-  { id: 2, lot: "Lot 47", name: "M. Delgado", ts: "Aug 19, 2026", topic: "str", stance: "permit", text: "I purchased my lot specifically because there was no STR restriction in the 2014 covenants. My lot is my retirement income. I support reasonable regulation — 7-night minimum, registration — but an outright ban would be a significant financial hardship." },
-  { id: 3, lot: "Lot 88", name: "R. Patel", ts: "Aug 20, 2026", topic: "general", stance: "neutral", text: "The key issue for me is the covenant legitimacy problem. I tried to sell my lot last year and two title companies flagged the conflicting covenant situation. It cost me a deal. I'll support whatever unified covenant gets us clean title." },
-  { id: 4, lot: "Lot 23", name: "C. Whitfield", ts: "Aug 21, 2026", topic: "str", stance: "restrict", text: "Short-term rentals bring strangers into a community that has no gate, no security, and backs up to wildlife habitat. Wildlife-specific safety language should be handled in a future CC&R amendment. STR guests don't know the rules, don't care about the rules, and the owner isn't here to enforce them." },
-  { id: 5, lot: "Lot 156", name: "T. Nguyen", ts: "Aug 22, 2026", topic: "process", stance: "neutral", text: "I'm supportive of the unification effort but want to make sure vacant lot owners like me have a real voice. Can the working group confirm that proxy voting will be available? I live in Atlanta and can't attend meetings." },
-  { id: 6, lot: "Lot 34", name: "S. Burke", ts: "Aug 23, 2026", topic: "str", stance: "restrict", text: "The 2008 declaration required a 1-year minimum lease. STRs were never legally permitted in the original covenants. Our attorney confirmed this. I don't understand why we're treating this as a new restriction — it isn't. We're just making explicit what was always the rule." },
-];
+const SEED_COMMENTS = [];
+const COMMENTS_DATA_VERSION = 2;
+const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
+  "Lot 12|J. Harmon|Aug 18, 2026",
+  "Lot 47|M. Delgado|Aug 19, 2026",
+  "Lot 88|R. Patel|Aug 20, 2026",
+  "Lot 23|C. Whitfield|Aug 21, 2026",
+  "Lot 156|T. Nguyen|Aug 22, 2026",
+  "Lot 34|S. Burke|Aug 23, 2026",
+]);
 
 const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
 const TOTAL_LOTS = 200;
@@ -56,6 +58,9 @@ const store = {
 
 const todayLabel = () =>
   new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+const isLegacySampleComment = (comment) =>
+  LEGACY_SAMPLE_COMMENT_KEYS.has(`${comment?.lot || ""}|${comment?.name || ""}|${comment?.ts || ""}`);
 
 const readFileAsDataUrl = (file) =>
   new Promise((resolve, reject) => {
@@ -1205,7 +1210,18 @@ export default function App() {
   const [user, setUser] = useState(() => store.get("fw_user"));
   const [page, setPage] = useState("home");
   const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
-  const [comments, setComments] = useState(() => store.get("fw_comments") || SEED_COMMENTS);
+  const [comments, setComments] = useState(() => {
+    const savedComments = store.get("fw_comments");
+    const safeSavedComments = Array.isArray(savedComments) ? savedComments : [];
+    const savedVersion = store.get("fw_comments_data_version");
+    if (savedVersion !== COMMENTS_DATA_VERSION) {
+      const cleaned = safeSavedComments.filter((comment) => !isLegacySampleComment(comment));
+      store.set("fw_comments", cleaned);
+      store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
+      return cleaned;
+    }
+    return safeSavedComments.length ? safeSavedComments : SEED_COMMENTS;
+  });
   const [covenantDocs, setCovenantDocs] = useState(() => {
     const saved = store.get("fw_covenant_docs");
     return Array.isArray(saved) && saved.length ? saved : DEFAULT_COVENANT_DOCS;
