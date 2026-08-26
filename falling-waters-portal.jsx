@@ -388,9 +388,10 @@ const summarizeUploadedCovenant = (rawText, existingDocsCount) => {
 };
 
 const CANONICAL_DOC_IDS = new Set(["2008", "2014", "2021"]);
+const CANONICAL_DECLARATION_YEARS = new Set(["2008", "2014", "2021"]);
 
 const normalizedDocYear = (doc) => {
-  const match = String(doc?.year || "").match(/\d{4}/);
+  const match = String(doc?.year || "").match(/\d{4}/) || String(doc?.title || "").match(/\b(19|20)\d{2}\b/);
   return match ? match[0] : "";
 };
 
@@ -402,7 +403,12 @@ const normalizedDocTitleKey = (title) =>
 
 const isDeclarationStyleDoc = (doc) => {
   const titleKey = normalizedDocTitleKey(doc?.title);
-  return titleKey.includes("declaration") && (titleKey.includes("covenant") || titleKey.includes("restriction"));
+  return (
+    titleKey.includes("declaration")
+    || titleKey.includes("ccr")
+    || titleKey.includes("cc r")
+    || (titleKey.includes("covenant") && titleKey.includes("restriction"))
+  );
 };
 
 const docRecencyScore = (doc) => {
@@ -415,7 +421,7 @@ const docRecencyScore = (doc) => {
 
 const covenantDocDedupKey = (doc) => {
   const year = normalizedDocYear(doc);
-  if (year && isDeclarationStyleDoc(doc)) return `declaration-year:${year}`;
+  if (year && (isDeclarationStyleDoc(doc) || CANONICAL_DECLARATION_YEARS.has(year))) return `declaration-year:${year}`;
   const titleKey = normalizedDocTitleKey(doc?.title);
   return `${year || "na"}|${titleKey || String(doc?.id || "")}`;
 };
