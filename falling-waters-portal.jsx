@@ -53,6 +53,9 @@ const DOC_STATUS_OPTIONS = [
 const ADMIN_ALLOWED_USERS = [
   "Tracy Baggett",
 ];
+const ADMIN_ALLOWED_ALIASES = [
+  // Add explicit admin name variants here when needed.
+];
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -134,12 +137,12 @@ const isPrimaryVoter = (user) =>
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 
-const isAdminUserAllowed = (name) =>
-  ADMIN_ALLOWED_USERS.some((entry) => {
-    const allowed = normalizeNameKey(entry);
-    const candidate = normalizeNameKey(name);
-    return candidate === allowed || candidate.includes(allowed) || allowed.includes(candidate);
-  });
+const isAdminUserAllowed = (name) => {
+  const candidate = normalizeNameKey(name);
+  if (!candidate) return false;
+  const allowedNames = [...ADMIN_ALLOWED_USERS, ...ADMIN_ALLOWED_ALIASES].map((entry) => normalizeNameKey(entry));
+  return allowedNames.includes(candidate);
+};
 
 const generateUserId = (name = "resident") =>
   `usr_${normalizeNameKey(name).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
