@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -32,10 +32,15 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
   "Lot 34|S. Burke|Aug 23, 2026",
 ]);
 
-const SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
+const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
+const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
+const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
+const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
+const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
+const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
@@ -107,6 +112,26 @@ const ADMIN_GRADE_OPTIONS = [
   { value: "read_only_admin", label: "Read-only admin" },
 ];
 const DEFAULT_ADMIN_GRADE = "full_admin";
+const BACKUP_RESTORE_SCOPE_OPTIONS = [
+  { key: "lotSettings", label: "Lot count settings" },
+  { key: "votes", label: "Voting ledger + per-lot vote keys" },
+  { key: "comments", label: "Community comments" },
+  { key: "ownerActivity", label: "Owner activity records" },
+  { key: "outreach", label: "Outreach contact state" },
+  { key: "eligibility", label: "Vote eligibility flags" },
+  { key: "primaryVoters", label: "Primary voter assignments" },
+  { key: "adminAccess", label: "Admin access roster + grades" },
+  { key: "userDirectory", label: "User access directory" },
+  { key: "covenantDocs", label: "Covenant document metadata" },
+  { key: "covenantFiles", label: "Stored covenant file blobs" },
+  { key: "sessionUser", label: "Current signed-in session" },
+];
+
+const defaultBackupRestoreScopes = () =>
+  BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
+    acc[scope.key] = true;
+    return acc;
+  }, {});
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -135,6 +160,23 @@ const buildLotLabels = (totalLots) =>
 
 const votesNeededForLots = (totalLots) =>
   Math.ceil((Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2) / 3);
+
+const computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
+  let eliminate = 0;
+  let permit = 0;
+  let undecided = 0;
+  lotLabels.forEach((lot) => {
+    const choice = ledger?.[lot];
+    if (choice === "eliminate") eliminate += 1;
+    if (choice === "permit") permit += 1;
+    if (choice === "undecided") undecided += 1;
+  });
+  return {
+    eliminate,
+    permit,
+    undecided,
+  };
+};
 
 const formatMegabytes = (bytes) => `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MB`;
 
@@ -328,8 +370,184 @@ const readFileAsText = (file) =>
     reader.readAsText(file);
   });
 
+const PORTAL_BACKUP_TYPE = "falling-waters-portal-backup";
+const PORTAL_BACKUP_VERSION = 1;
+
 const COVENANT_ASSET_DB_NAME = "fw-covenant-assets";
 const COVENANT_ASSET_STORE = "files";
+
+const VALID_VOTE_CHOICES = new Set(["eliminate", "permit", "undecided"]);
+
+const readBlobAsDataUrl = (blob) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not serialize stored covenant file."));
+    reader.readAsDataURL(blob);
+  });
+
+const dataUrlToBlob = (dataUrl) => {
+  const raw = String(dataUrl || "");
+  const [meta, payload = ""] = raw.split(",", 2);
+  if (!meta.startsWith("data:")) {
+    throw new Error("Backup file contains an invalid covenant attachment encoding.");
+  }
+  const mimeMatch = meta.match(/^data:([^;]+)/);
+  const mime = mimeMatch?.[1] || "application/octet-stream";
+  const isBase64 = /;base64$/i.test(meta);
+  if (!isBase64) {
+    return new Blob([decodeURIComponent(payload)], { type: mime });
+  }
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let idx = 0; idx < binary.length; idx += 1) {
+    bytes[idx] = binary.charCodeAt(idx);
+  }
+  return new Blob([bytes], { type: mime });
+};
+
+const listCovenantAssetRecords = async () => {
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readonly");
+    const request = tx.objectStore(COVENANT_ASSET_STORE).getAll();
+    request.onsuccess = async () => {
+      try {
+        const records = Array.isArray(request.result) ? request.result : [];
+        const serialized = [];
+        for (const record of records) {
+          if (!record?.id || !(record?.blob instanceof Blob)) continue;
+          const blobDataUrl = await readBlobAsDataUrl(record.blob);
+          serialized.push({
+            id: record.id,
+            fileName: record.fileName || "",
+            fileType: record.fileType || record.blob.type || "application/octet-stream",
+            updatedAt: Number(record.updatedAt) || Date.now(),
+            blobDataUrl,
+          });
+        }
+        db.close();
+        resolve(serialized);
+      } catch {
+        db.close();
+        reject(new Error("Could not prepare covenant attachments for backup export."));
+      }
+    };
+    request.onerror = () => {
+      db.close();
+      reject(new Error("Could not read covenant attachments from browser storage."));
+    };
+  });
+};
+
+const replaceCovenantAssetRecords = async (records) => {
+  const safeRecords = Array.isArray(records) ? records : [];
+  const db = await openCovenantAssetDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(COVENANT_ASSET_STORE, "readwrite");
+    const storeRef = tx.objectStore(COVENANT_ASSET_STORE);
+    storeRef.clear();
+    safeRecords.forEach((record) => {
+      const id = String(record?.id || "").trim();
+      if (!id) return;
+      const encoded = String(record?.blobDataUrl || "");
+      if (!encoded.startsWith("data:")) return;
+      try {
+        const blob = dataUrlToBlob(encoded);
+        storeRef.put({
+          id,
+          blob,
+          fileName: record?.fileName || "",
+          fileType: record?.fileType || blob.type || "application/octet-stream",
+          updatedAt: Number(record?.updatedAt) || Date.now(),
+        });
+      } catch {}
+    });
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(new Error("Could not restore covenant attachments from backup."));
+    };
+  });
+};
+
+const collectLegacyVoteEntries = () => {
+  const entries = {};
+  if (typeof localStorage === "undefined") return entries;
+  for (let idx = 0; idx < localStorage.length; idx += 1) {
+    const key = localStorage.key(idx);
+    if (!key || !key.startsWith("vote_")) continue;
+    const choice = store.get(key);
+    if (VALID_VOTE_CHOICES.has(choice)) {
+      entries[key] = choice;
+    }
+  }
+  return entries;
+};
+
+const clearLegacyVoteEntries = () => {
+  if (typeof localStorage === "undefined") return;
+  const keys = [];
+  for (let idx = 0; idx < localStorage.length; idx += 1) {
+    const key = localStorage.key(idx);
+    if (key && key.startsWith("vote_")) keys.push(key);
+  }
+  keys.forEach((key) => store.del(key));
+};
+
+const normalizeRestoreScopes = (scopes) => {
+  const defaults = defaultBackupRestoreScopes();
+  if (!scopes || typeof scopes !== "object") return defaults;
+  const normalized = { ...defaults };
+  Object.keys(defaults).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(scopes, key)) {
+      normalized[key] = scopes[key] !== false;
+    }
+  });
+  return normalized;
+};
+
+const hasSelectedRestoreScope = (scopes) =>
+  Object.values(normalizeRestoreScopes(scopes)).some(Boolean);
+
+const mergeCommentsBySignature = (existingComments, incomingComments) => {
+  const list = [];
+  const seen = new Set();
+  const add = (comment) => {
+    if (!comment || typeof comment !== "object") return;
+    const key = [
+      comment.id || "",
+      comment.name || "",
+      comment.lot || "",
+      comment.topic || "",
+      comment.stance || "",
+      comment.ts || "",
+      comment.text || "",
+    ].join("|");
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(comment);
+  };
+  (Array.isArray(existingComments) ? existingComments : []).forEach(add);
+  (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+  return list;
+};
+
+const mergeCovenantDocsById = (existingDocs, incomingDocs) => {
+  const map = new Map();
+  (Array.isArray(existingDocs) ? existingDocs : []).forEach((doc, idx) => {
+    const id = String(doc?.id || `existing-${idx}`);
+    map.set(id, doc);
+  });
+  (Array.isArray(incomingDocs) ? incomingDocs : []).forEach((doc, idx) => {
+    const id = String(doc?.id || `incoming-${idx}`);
+    map.set(id, doc);
+  });
+  return Array.from(map.values());
+};
 
 const openCovenantAssetDb = () =>
   new Promise((resolve, reject) => {
@@ -743,9 +961,30 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
 
 // ── HOME PAGE ────────────────────────────────────────────────────────────────
 function HomePage({ votes, stats, totalLots, votesNeeded }) {
-  const communityEngaged = Math.min(totalLots, votes.eliminate + votes.permit + votes.undecided);
+  const communityEngaged = Math.min(totalLots, stats.votedLots);
+  const notVotedLots = Math.max(totalLots - communityEngaged, 0);
   const engPct = Math.round((communityEngaged / totalLots) * 100);
   const yesPct = Math.round((votes.eliminate / totalLots) * 100);
+  const voteResponseCount = votes.eliminate + votes.permit + votes.undecided;
+  const totalCoverage = voteResponseCount + notVotedLots;
+  const integrityChecks = [
+    {
+      label: "Vote response buckets",
+      equation: `${votes.eliminate} + ${votes.permit} + ${votes.undecided} + ${notVotedLots} = ${totalCoverage} of ${totalLots}`,
+      pass: totalCoverage === totalLots,
+    },
+    {
+      label: "Engagement aligns with ledger",
+      equation: `${communityEngaged} engaged = ${voteResponseCount} voted-response lots`,
+      pass: communityEngaged === voteResponseCount,
+    },
+    {
+      label: "Portal totals align",
+      equation: `stats.votedLots (${stats.votedLots}) = engaged (${communityEngaged})`,
+      pass: stats.votedLots === communityEngaged,
+    },
+  ];
+  const integrityPass = integrityChecks.every((check) => check.pass);
   return (
     <div>
       <div style={{ background:`linear-gradient(135deg, ${C.forest} 0%, ${C.forestLight} 100%)`, borderRadius:10, padding:"28px 32px", marginBottom:20, color:C.white, position:"relative", overflow:"hidden" }}>
@@ -781,7 +1020,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have participated in the survey process</div>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{communityEngaged} of {totalLots} lots engaged</span><span>{engPct}%</span></div>
           <div style={S.meter}><div style={S.meterFill(engPct, C.forest)}/></div>
-          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {totalLots - communityEngaged} owners not yet reached</div>
+          <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {notVotedLots} owners not yet reached</div>
           <div style={{ marginTop:10, fontSize:12, color:C.muted, lineHeight:1.55 }}>
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
           </div>
@@ -789,18 +1028,47 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         <div style={S.card}>
           <div style={S.cardTitle}>STR vote progress</div>
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current STR policy preference within the one-community CC&R campaign</div>
-          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} not voted</span><span>{yesPct}% support elimination</span></div>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} undecided · {notVotedLots} not voted</span><span>{yesPct}% support elimination</span></div>
           <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
             <div style={{ width:`${(votes.eliminate/totalLots)*100}%`, background:C.danger, transition:"width 1s" }}/>
             <div style={{ width:`${(votes.permit/totalLots)*100}%`, background:C.stone, transition:"width 1s" }}/>
-            <div style={{ flex:1, background:C.parchmentDark }}/>
+            <div style={{ width:`${(votes.undecided/totalLots)*100}%`, background:"#3B82F6", transition:"width 1s" }}/>
+            <div style={{ width:`${(notVotedLots/totalLots)*100}%`, background:C.parchmentDark, transition:"width 1s" }}/>
           </div>
-          <div style={{ display:"flex", gap:14, fontSize:11, color:C.muted }}>
+          <div style={{ display:"flex", gap:14, flexWrap:"wrap", fontSize:11, color:C.muted }}>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate STRs ({votes.eliminate})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit STRs ({votes.permit})</span>
-            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({votes.undecided})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:"#3B82F6", borderRadius:2, display:"inline-block" }}/> Undecided ({votes.undecided})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({notVotedLots})</span>
           </div>
           <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {votesNeeded} votes to eliminate STRs. Currently {Math.max(votesNeeded - votes.eliminate, 0)} votes short.</div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, marginBottom:8, flexWrap:"wrap" }}>
+          <div style={S.cardTitle}>Data integrity check (live)</div>
+          <span style={S.badge(integrityPass ? C.success : C.danger, integrityPass ? C.successLight : C.dangerLight)}>
+            {integrityPass ? "PASS" : "REVIEW NEEDED"}
+          </span>
+        </div>
+        <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>
+          Calculated from current vote ledger and lot count in real time.
+        </div>
+        <div style={{ display:"grid", gap:8 }}>
+          {integrityChecks.map((check, idx) => (
+            <div key={idx} style={{ border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 10px", background:C.white }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                <div style={{ fontSize:12, fontWeight:600, color:C.forest }}>{check.label}</div>
+                <span style={S.badge(check.pass ? C.success : C.danger, check.pass ? C.successLight : C.dangerLight)}>
+                  {check.pass ? "OK" : "Mismatch"}
+                </span>
+              </div>
+              <div style={{ fontSize:12, color:C.muted, marginTop:6, fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                {check.equation}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -1506,6 +1774,7 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
   const allUnvoted = lotChoices.every((choice) => !choice);
   const uniformChoice = !allUnvoted && lotChoices.every((choice) => choice && choice === lotChoices[0]);
   const userVoted = allUnvoted ? null : uniformChoice ? lotChoices[0] : "mixed";
+  const notVotedLots = Math.max(totalLots - (votes.eliminate + votes.permit + votes.undecided), 0);
   const lotChoiceMap = votingLots.reduce((acc, lot, idx) => {
     acc[lot] = lotChoices[idx] || null;
     return acc;
@@ -1529,11 +1798,12 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
         <p style={{ fontSize:13, color:C.ink, lineHeight:1.7, margin:0 }}>This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. <strong>Every lot owner's voice matters — this is why we need 100% engagement.</strong></p>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12, marginBottom:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(190px, 1fr))", gap:12, marginBottom:20 }}>
         {[
           { label:"Eliminate STRs", count:votes.eliminate, pct:Math.round((votes.eliminate/totalLots)*100), color:C.danger, desc:"No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
           { label:"Permit with regulation", count:votes.permit, pct:Math.round((votes.permit/totalLots)*100), color:C.stone, desc:"7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
-          { label:"Not yet voted", count:votes.undecided, pct:Math.round((votes.undecided/totalLots)*100), color:C.parchmentDark, desc:"Owners who have not yet indicated a preference. Your voice is needed." },
+          { label:"Undecided response", count:votes.undecided, pct:Math.round((votes.undecided/totalLots)*100), color:"#3B82F6", desc:"Owners who participated but need more time or information before choosing eliminate/permit." },
+          { label:"Not yet voted", count:notVotedLots, pct:Math.round((notVotedLots/totalLots)*100), color:C.parchmentDark, desc:"Owners who have not yet submitted any preference. Your voice is needed." },
         ].map((v,i) => (
           <div key={i} style={{ background:C.white, border:`2px solid ${v.color}`, borderRadius:8, padding:"16px 20px" }}>
             <div style={{ fontSize:28, fontWeight:700, fontFamily:"Georgia,serif", color:v.color }}>{v.count}</div>
@@ -1931,6 +2201,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
 function AdminVotingPage({
+  comments,
   ownerActivity,
   voteLedger,
   primaryVoterRegistry,
@@ -1941,7 +2212,20 @@ function AdminVotingPage({
   adminAccessGrades,
   totalLots,
   votesNeeded,
+  lastBackupExportAt,
+  backupHealthThresholdDays,
+  dbApiBaseUrl,
   onImportCsv,
+  onExportBackup,
+  onRestoreBackup,
+  onRecordBackupExport,
+  onUpdateBackupHealthThresholdDays,
+  onUpdateDbApiBaseUrl,
+  onTestDbConnection,
+  onSyncToDb,
+  onRestoreFromDb,
+  onFetchDbSummary,
+  onFetchDbRecords,
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
@@ -1954,10 +2238,46 @@ function AdminVotingPage({
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importErr, setImportErr] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState("");
+  const [backupErr, setBackupErr] = useState("");
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [restoreMode, setRestoreMode] = useState("replace");
+  const [restoreScopes, setRestoreScopes] = useState(() => defaultBackupRestoreScopes());
   const [gradeMsg, setGradeMsg] = useState("");
   const [newAdminName, setNewAdminName] = useState("");
   const [newAdminGrade, setNewAdminGrade] = useState(DEFAULT_ADMIN_GRADE);
   const [gradeErr, setGradeErr] = useState("");
+  const [backupThresholdInput, setBackupThresholdInput] = useState(String(backupHealthThresholdDays));
+  const [backupThresholdMsg, setBackupThresholdMsg] = useState("");
+  const [backupThresholdErr, setBackupThresholdErr] = useState("");
+  const [dbApiInput, setDbApiInput] = useState(String(dbApiBaseUrl || ""));
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbMsg, setDbMsg] = useState("");
+  const [dbErr, setDbErr] = useState("");
+  const [dbSummary, setDbSummary] = useState(null);
+  const [dbRecordsTable, setDbRecordsTable] = useState("state_values");
+  const [dbRecords, setDbRecords] = useState([]);
+  const effectiveBackupHealthThresholdDays =
+    Number.isInteger(Number(backupHealthThresholdDays)) &&
+    Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
+    Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+      ? Number(backupHealthThresholdDays)
+      : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
+  const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
+  const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
+  const backupAgeDays = backupTimestampMs === null ? null : Math.floor((Date.now() - backupTimestampMs) / (1000 * 60 * 60 * 24));
+  const backupHealthLevel = backupTimestampMs === null ? "missing" : backupAgeDays > effectiveBackupHealthThresholdDays ? "stale" : "healthy";
+  const backupHealthText =
+    backupHealthLevel === "healthy"
+      ? `Last full backup export: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} day${backupAgeDays === 1 ? "" : "s"} ago).`
+      : backupHealthLevel === "stale"
+        ? `Last full backup export is stale: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} days ago).`
+        : "No recorded full backup export yet.";
+  const backupHealthGuidance =
+    backupHealthLevel === "healthy"
+      ? "Backup cadence is healthy."
+      : `Recommendation: export a full backup at least every ${effectiveBackupHealthThresholdDays} days and after each admin session.`;
   const lotLabels = buildLotLabels(totalLots);
   const directoryRows = Object.values(userDirectory || {})
     .sort((a, b) => {
@@ -1980,6 +2300,12 @@ function AdminVotingPage({
   useEffect(() => {
     setLotCountInput(String(totalLots));
   }, [totalLots]);
+  useEffect(() => {
+    setBackupThresholdInput(String(effectiveBackupHealthThresholdDays));
+  }, [effectiveBackupHealthThresholdDays]);
+  useEffect(() => {
+    setDbApiInput(String(dbApiBaseUrl || ""));
+  }, [dbApiBaseUrl]);
 
   const lotRows = lotLabels.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
@@ -2081,6 +2407,244 @@ function AdminVotingPage({
     URL.revokeObjectURL(url);
   };
 
+  const downloadCsvFile = (fileName, headers, rows) => {
+    const lines = [
+      headers.join(","),
+      ...rows.map((row) =>
+        row
+          .map((val) => `"${String(val ?? "").replaceAll('"', '""')}"`)
+          .join(",")
+      ),
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCsvBundle = async () => {
+    setBackupErr("");
+    setBackupMsg("");
+    setBundleBusy(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const nowIso = new Date().toISOString();
+      const lotRowsSorted = [...lotRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+      const storedCovenantDocs = store.get("fw_covenant_docs");
+      const covenantDocCount = Array.isArray(storedCovenantDocs) ? storedCovenantDocs.length : 0;
+
+      const storageKeys = [];
+      if (typeof localStorage !== "undefined") {
+        for (let idx = 0; idx < localStorage.length; idx += 1) {
+          const key = localStorage.key(idx);
+          if (key && (key.startsWith("fw_") || key.startsWith("vote_"))) {
+            storageKeys.push(key);
+          }
+        }
+      }
+      storageKeys.sort((a, b) => a.localeCompare(b));
+
+      const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+      const allRows = [];
+      const lotNameMap = new Map();
+      const addLotName = (lot, name) => {
+        const normalizedLot = normalizeLotLabel(lot);
+        const safeName = String(name || "").trim();
+        if (!normalizedLot || !safeName || normalizedLot === "ADMIN") return;
+        if (!lotNameMap.has(normalizedLot)) {
+          lotNameMap.set(normalizedLot, new Set());
+        }
+        lotNameMap.get(normalizedLot).add(safeName);
+      };
+      lotRowsSorted.forEach((row) => {
+        addLotName(row.lot, row.ownerName);
+        addLotName(row.lot, row.primaryVoter);
+      });
+      directoryRows.forEach((row) => {
+        if (!row || row.isAdmin || !Array.isArray(row.lots)) return;
+        row.lots.forEach((lot) => addLotName(lot, row.name));
+      });
+
+      const appendField = (section, rowId, field, value) => {
+        let printable = "";
+        let valueType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+        if (value === undefined) {
+          printable = "";
+          valueType = "undefined";
+        } else if (typeof value === "string") {
+          printable = value;
+        } else {
+          try {
+            printable = JSON.stringify(value);
+          } catch {
+            printable = String(value);
+          }
+        }
+        allRows.push([section, rowId, field, valueType, printable]);
+      };
+      const appendObject = (section, rowId, obj) => {
+        const safeObj = obj && typeof obj === "object" ? obj : {};
+        Object.entries(safeObj).forEach(([field, value]) => appendField(section, rowId, field, value));
+      };
+
+      lotRowsSorted.forEach((row) => {
+        const associatedNames = Array.from(lotNameMap.get(row.lot) || []);
+        const bestAvailableName = row.ownerName || row.primaryVoter || associatedNames[0] || "";
+        appendObject("votes", row.lot, {
+          lot: row.lot,
+          vote_choice: row.choice || null,
+          vote_choice_label: choiceLabel(row.choice),
+          has_voted: row.hasVoted,
+          status: row.status,
+          owner_name: row.ownerName || "",
+          primary_voter: row.primaryVoter || "",
+          associated_names: associatedNames,
+          best_available_name: bestAvailableName,
+        });
+        appendObject("eligibility", row.lot, {
+          vote_eligible: row.voteEligible,
+          ineligible_reason: row.ineligibleReason || "",
+          eligibility_updated_at: row.eligibilityUpdatedAt || "",
+          best_available_name: bestAvailableName,
+        });
+        appendObject("outreach", row.lot, {
+          contacted: row.contacted,
+          outreach_notes: row.outreachNotes || "",
+          last_contact: row.lastContact || "",
+          owner_name: row.ownerName || "",
+          primary_voter: row.primaryVoter || "",
+          associated_names: associatedNames,
+          best_available_name: bestAvailableName,
+        });
+      });
+
+      lotRowsSorted.forEach((row) => {
+        const associatedNames = Array.from(lotNameMap.get(row.lot) || []);
+        appendObject("lot_name_directory", row.lot, {
+          lot: row.lot,
+          owner_name: row.ownerName || "",
+          primary_voter: row.primaryVoter || "",
+          directory_names: associatedNames,
+          best_available_name: row.ownerName || row.primaryVoter || associatedNames[0] || "",
+        });
+      });
+
+      (Array.isArray(comments) ? comments : []).forEach((comment, idx) => {
+        appendObject("comments", `comment_${idx + 1}`, {
+          ts: comment?.ts || "",
+          name: comment?.name || "",
+          lot: comment?.lot || "",
+          lots: Array.isArray(comment?.lots) ? comment.lots : [],
+          topic: comment?.topic || "",
+          stance: comment?.stance || "",
+          text: comment?.text || "",
+        });
+      });
+
+      approvedAdminRows.forEach((row) => {
+        appendObject("admin_access", row.nameKey || row.name, {
+          approved_admin: row.name,
+          admin_grade: row.grade,
+          admin_grade_label: adminGradeLabel(row.grade),
+          grade_updated_at: row.gradeUpdatedAt || "",
+        });
+      });
+
+      directoryRows.forEach((row, idx) => {
+        const rowKey = row.userId || `user_${idx + 1}`;
+        appendObject("user_directory", rowKey, {
+          name: row.name || "",
+          is_admin: !!row.isAdmin,
+          admin_grade: row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "",
+          access_role: row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole),
+          lots: Array.isArray(row.lots) ? row.lots : [],
+          last_seen: row.lastSeen || "",
+        });
+      });
+
+      storageKeys.forEach((key) => {
+        const rawValue = typeof localStorage !== "undefined" ? String(localStorage.getItem(key) ?? "") : "";
+        let parsedValue = "";
+        try {
+          parsedValue = JSON.stringify(JSON.parse(rawValue));
+        } catch {
+          parsedValue = "";
+        }
+        appendObject("raw_storage", key, {
+          key,
+          key_type: key.startsWith("fw_") ? "portal" : "lot-vote",
+          parsed_json_value: parsedValue,
+          raw_storage_value: rawValue,
+        });
+      });
+
+      covenantAssetRecords.forEach((record) => {
+        appendObject("covenant_file_blobs", record.id || "", {
+          asset_id: record.id || "",
+          file_name: record.fileName || "",
+          file_type: record.fileType || "",
+          updated_at_ms: Number(record.updatedAt) || "",
+          blob_data_url: record.blobDataUrl || "",
+        });
+      });
+
+      const stateSnapshot = {
+        fw_user: store.get("fw_user"),
+        fw_votes: store.get("fw_votes"),
+        fw_comments: store.get("fw_comments"),
+        fw_comments_data_version: store.get("fw_comments_data_version"),
+        fw_covenant_docs: store.get("fw_covenant_docs"),
+        fw_owner_activity: store.get("fw_owner_activity"),
+        fw_vote_ledger: store.get("fw_vote_ledger"),
+        fw_primary_voter_registry: store.get("fw_primary_voter_registry"),
+        fw_outreach_state: store.get("fw_outreach_state"),
+        fw_user_directory: store.get("fw_user_directory"),
+        fw_admin_access_entries: store.get("fw_admin_access_entries"),
+        fw_admin_access_grades: store.get("fw_admin_access_grades"),
+        fw_total_lots: store.get("fw_total_lots"),
+        fw_vote_eligibility: store.get("fw_vote_eligibility"),
+      };
+      Object.entries(stateSnapshot).forEach(([key, value]) => {
+        appendField("portal_state_snapshot", key, "json_value", value);
+      });
+
+      appendObject("manifest", "summary", {
+        exported_at: nowIso,
+        total_lots: totalLots,
+        votes_needed: votesNeeded,
+        vote_records: Object.keys(voteLedger || {}).length,
+        comments_count: (Array.isArray(comments) ? comments : []).length,
+        owner_activity_records: Object.keys(ownerActivity || {}).length,
+        outreach_records: Object.keys(outreachState || {}).length,
+        eligibility_records: Object.keys(eligibilityState || {}).length,
+        primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
+        admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
+        user_directory_records: Object.keys(userDirectory || {}).length,
+        covenant_docs: covenantDocCount,
+        raw_storage_keys_exported: storageKeys.length,
+        covenant_blob_records_exported: covenantAssetRecords.length,
+      });
+
+      downloadCsvFile(
+        `fw-full-data-export-${stamp}.csv`,
+        ["Section", "Row Id", "Field", "Value Type", "Value"],
+        allRows
+      );
+
+      onRecordBackupExport?.(nowIso);
+      setBackupMsg("Full CSV export downloaded as a single file with all sections.");
+    } catch (err) {
+      setBackupErr(err?.message || "Could not export CSV bundle.");
+    } finally {
+      setBundleBusy(false);
+    }
+  };
+
   const toggleLotEligibility = (row) => {
     if (row.voteEligible) {
       onUpdateEligibility(row.lot, { eligible: false, reason: row.ineligibleReason || "Dues unpaid" });
@@ -2162,10 +2726,233 @@ function AdminVotingPage({
     }
   };
 
+  const handleBackupExport = async () => {
+    setBackupErr("");
+    setBackupMsg("");
+    setBackupBusy(true);
+    try {
+      const result = await onExportBackup?.();
+      if (result?.error) {
+        setBackupErr(result.error);
+      } else {
+        onRecordBackupExport?.(new Date().toISOString());
+        setBackupMsg(result?.message || "Backup exported.");
+      }
+    } catch (err) {
+      setBackupErr(err?.message || "Could not export backup JSON.");
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleBackupRestore = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+    if (!hasSelectedRestoreScope(normalizedScopes)) {
+      setBackupErr("Select at least one data scope before restoring.");
+      event.target.value = "";
+      return;
+    }
+    setBackupErr("");
+    setBackupMsg("");
+    setBackupBusy(true);
+    try {
+      const rawText = await readFileAsText(file);
+      const parsed = JSON.parse(rawText);
+      const result = await onRestoreBackup?.(parsed, { mode: restoreMode, scopes: normalizedScopes });
+      if (result?.error) {
+        setBackupErr(result.error);
+      } else {
+        setBackupMsg(result?.message || "Backup restored.");
+      }
+    } catch (err) {
+      setBackupErr(err?.message || "Could not restore backup JSON.");
+    } finally {
+      setBackupBusy(false);
+      event.target.value = "";
+    }
+  };
+
+  const setAllRestoreScopes = (value) => {
+    const next = {};
+    BACKUP_RESTORE_SCOPE_OPTIONS.forEach((scope) => {
+      next[scope.key] = value;
+    });
+    setRestoreScopes(next);
+  };
+
+  const toggleRestoreScope = (scopeKey) => {
+    setRestoreScopes((prev) => ({
+      ...normalizeRestoreScopes(prev),
+      [scopeKey]: !(normalizeRestoreScopes(prev)[scopeKey] !== false),
+    }));
+  };
+
+  const saveBackupHealthThreshold = (valueOverride = null) => {
+    setBackupThresholdErr("");
+    setBackupThresholdMsg("");
+    const candidate = valueOverride === null ? backupThresholdInput : valueOverride;
+    const parsed = Number.parseInt(String(candidate || "").trim(), 10);
+    if (
+      Number.isNaN(parsed)
+      || parsed < MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      || parsed > MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+    ) {
+      setBackupThresholdErr(
+        `Backup threshold must be between ${MIN_BACKUP_HEALTH_MAX_AGE_DAYS} and ${MAX_BACKUP_HEALTH_MAX_AGE_DAYS} days.`
+      );
+      return;
+    }
+    setBackupThresholdInput(String(parsed));
+    const result = onUpdateBackupHealthThresholdDays?.(parsed);
+    if (result?.error) {
+      setBackupThresholdErr(result.error);
+      return;
+    }
+    setBackupThresholdMsg(result?.message || `Backup health threshold set to ${parsed} days.`);
+    setTimeout(() => setBackupThresholdMsg(""), 3500);
+  };
+
+  const saveDbApiUrl = () => {
+    const safeUrl = String(dbApiInput || "").trim();
+    onUpdateDbApiBaseUrl?.(safeUrl);
+    setDbMsg(safeUrl ? `Database API URL saved: ${safeUrl}` : "Database API URL cleared (will use same-origin /api routes).");
+    setTimeout(() => setDbMsg(""), 3500);
+  };
+
+  const testDbConnection = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const result = await onTestDbConnection?.();
+      if (result?.error) {
+        setDbErr(result.error);
+      } else {
+        setDbMsg(result?.message || "PostgreSQL API connection is healthy.");
+      }
+    } catch (err) {
+      setDbErr(err?.message || "Could not reach PostgreSQL API.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const syncPortalToDb = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+      const result = await onSyncToDb?.({ mode: restoreMode, scopes: normalizedScopes });
+      if (result?.error) {
+        setDbErr(result.error);
+      } else {
+        setDbMsg(result?.message || "Portal data synced to PostgreSQL.");
+      }
+    } catch (err) {
+      setDbErr(err?.message || "Could not sync portal data to PostgreSQL.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const restoreFromDb = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+      const result = await onRestoreFromDb?.({ mode: restoreMode, scopes: normalizedScopes });
+      if (result?.error) {
+        setDbErr(result.error);
+      } else {
+        setDbMsg(result?.message || "Portal restored from PostgreSQL.");
+      }
+    } catch (err) {
+      setDbErr(err?.message || "Could not restore data from PostgreSQL.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const loadDbSummary = async () => {
+    setDbErr("");
+    setDbBusy(true);
+    try {
+      const result = await onFetchDbSummary?.();
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      setDbSummary(result?.summary || null);
+      setDbMsg("Database summary loaded.");
+    } catch (err) {
+      setDbErr(err?.message || "Could not load database summary.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
+  const loadDbRecords = async () => {
+    setDbErr("");
+    setDbBusy(true);
+    try {
+      const result = await onFetchDbRecords?.(dbRecordsTable, 200, 0);
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      setDbRecords(Array.isArray(result?.records) ? result.records : []);
+      setDbMsg(`Loaded ${Array.isArray(result?.records) ? result.records.length : 0} record(s) from "${dbRecordsTable}".`);
+    } catch (err) {
+      setDbErr(err?.message || "Could not load database records.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
         Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals.
+      </div>
+      <div style={S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger")}>
+        <strong>Backup health:</strong> {backupHealthText} {backupHealthGuidance}
+      </div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>Backup health policy</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Set how many days can pass before backup health is marked stale.
+        </div>
+        {backupThresholdErr && <div style={S.alert("danger")}>{backupThresholdErr}</div>}
+        {backupThresholdMsg && <div style={S.alert("success")}>{backupThresholdMsg}</div>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          <input
+            style={{ ...S.input, maxWidth: 180 }}
+            type="number"
+            min={MIN_BACKUP_HEALTH_MAX_AGE_DAYS}
+            max={MAX_BACKUP_HEALTH_MAX_AGE_DAYS}
+            value={backupThresholdInput}
+            onChange={(event) => setBackupThresholdInput(event.target.value)}
+          />
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={() => saveBackupHealthThreshold(null)}>
+            Save threshold
+          </button>
+          {[3, 7, 14].map((days) => (
+            <button
+              key={days}
+              style={{ ...S.btn(effectiveBackupHealthThresholdDays === days ? "primary" : "outline"), padding: "7px 12px" }}
+              onClick={() => saveBackupHealthThreshold(days)}
+            >
+              {days} days
+            </button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: C.muted }}>
+          Current stale threshold: <strong>{effectiveBackupHealthThresholdDays} days</strong>
+        </div>
       </div>
 
       <div style={S.card}>
@@ -2328,6 +3115,191 @@ function AdminVotingPage({
         <input style={{ ...S.input, padding: "7px 10px" }} type="file" accept=".csv,text/csv" onChange={handleImport} disabled={importing} />
       </div>
 
+      <div style={S.card}>
+        <div style={S.cardTitle}>Backup / Restore full portal data (JSON)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Export options: JSON for full-fidelity restore, plus a single-file full CSV export that includes reporting tables and raw stored portal records.
+        </div>
+        {backupErr && <div style={S.alert("danger")}>{backupErr}</div>}
+        {backupMsg && <div style={S.alert("success")}>{backupMsg}</div>}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button
+            style={{ ...S.btn("primary"), padding: "7px 12px" }}
+            onClick={handleBackupExport}
+            disabled={backupBusy || bundleBusy}
+          >
+            Export full backup JSON
+          </button>
+          <button
+            style={{ ...S.btn("stone"), padding: "7px 12px" }}
+            onClick={exportCsvBundle}
+            disabled={backupBusy || bundleBusy}
+          >
+            Export full CSV (all data)
+          </button>
+          <input
+            style={{ ...S.input, padding: "7px 10px", maxWidth: 320 }}
+            type="file"
+            accept=".json,application/json"
+            onChange={handleBackupRestore}
+            disabled={backupBusy || bundleBusy}
+          />
+        </div>
+        <div style={{ marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 12, color: C.forest, fontWeight: 700, marginBottom: 8 }}>Selective restore options</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+            <label style={{ fontSize: 12, color: C.muted }}>Mode</label>
+            <select
+              style={{ ...S.select, minWidth: 180, padding: "6px 8px" }}
+              value={restoreMode}
+              onChange={(event) => {
+                const nextMode = event.target.value;
+                setRestoreMode(nextMode === "merge" || nextMode === "missing" ? nextMode : "replace");
+              }}
+              disabled={backupBusy || dbBusy}
+            >
+              <option value="replace">Replace selected sections</option>
+              <option value="merge">Merge selected sections</option>
+              <option value="missing">Restore missing values only</option>
+            </select>
+            <button
+              style={{ ...S.btn("outline"), padding: "6px 10px", fontSize: 11 }}
+              onClick={() => setAllRestoreScopes(true)}
+              disabled={backupBusy || dbBusy}
+            >
+              Select all
+            </button>
+            <button
+              style={{ ...S.btn("outline"), padding: "6px 10px", fontSize: 11 }}
+              onClick={() => setAllRestoreScopes(false)}
+              disabled={backupBusy || dbBusy}
+            >
+              Clear all
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+            {BACKUP_RESTORE_SCOPE_OPTIONS.map((scope) => (
+              <label
+                key={scope.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  background: C.white,
+                  fontSize: 12,
+                  color: C.ink,
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={normalizeRestoreScopes(restoreScopes)[scope.key] !== false}
+                  onChange={() => toggleRestoreScope(scope.key)}
+                  disabled={backupBusy || dbBusy}
+                />
+                <span>{scope.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+          Restore applies only selected sections. Replace mode overwrites those sections; merge mode overlays backup values; missing-only mode fills blanks without replacing existing records.
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>PostgreSQL sync, restore, and record viewer</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Connect to your PostgreSQL API server, push current portal state, restore from database using selected scopes/mode, and inspect records.
+        </div>
+        {dbErr && <div style={S.alert("danger")}>{dbErr}</div>}
+        {dbMsg && <div style={S.alert("success")}>{dbMsg}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "1.4fr auto auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>Database API base URL</label>
+            <input
+              style={S.input}
+              value={dbApiInput}
+              onChange={(event) => setDbApiInput(event.target.value)}
+              placeholder="http://localhost:8787 (leave blank for same-origin /api)"
+            />
+          </div>
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={saveDbApiUrl} disabled={dbBusy}>
+            Save URL
+          </button>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={testDbConnection} disabled={dbBusy}>
+            Test connection
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={syncPortalToDb} disabled={dbBusy}>
+            Sync current portal to PostgreSQL
+          </button>
+          <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={restoreFromDb} disabled={dbBusy}>
+            Restore from PostgreSQL ({restoreMode})
+          </button>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={loadDbSummary} disabled={dbBusy}>
+            Load DB summary
+          </button>
+        </div>
+        {dbSummary && (
+          <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+            state_values: <strong>{dbSummary.state_values || 0}</strong> · covenant_assets: <strong>{dbSummary.covenant_assets || 0}</strong> · snapshots: <strong>{dbSummary.backup_snapshots || 0}</strong>
+          </div>
+        )}
+        {dbSummary?.scope_records?.length > 0 && (
+          <div style={{ overflowX: "auto", marginBottom: 12 }}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Scope</th>
+                  <th style={S.th}>Record count</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dbSummary.scope_records.map((row) => (
+                  <tr key={row.scope}>
+                    <td style={S.td}>{row.scope}</td>
+                    <td style={S.td}>{row.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
+          <select style={{ ...S.select, maxWidth: 260 }} value={dbRecordsTable} onChange={(event) => setDbRecordsTable(event.target.value)} disabled={dbBusy}>
+            {[
+              "state_values",
+              "comments",
+              "covenantDocs",
+              "ownerActivity",
+              "voteLedger",
+              "primaryVoters",
+              "outreach",
+              "userDirectory",
+              "adminAccess",
+              "adminAccessGrades",
+              "voteEligibility",
+              "legacyVoteEntries",
+              "covenant_assets",
+              "backup_snapshots",
+            ].map((tableName) => (
+              <option key={tableName} value={tableName}>{tableName}</option>
+            ))}
+          </select>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={loadDbRecords} disabled={dbBusy}>
+            Load records
+          </button>
+        </div>
+        <div style={{ maxHeight: 260, overflow: "auto", background: C.parchment, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10 }}>
+          <pre style={{ margin: 0, fontSize: 11, lineHeight: 1.45, color: C.ink }}>{JSON.stringify(dbRecords, null, 2)}</pre>
+        </div>
+      </div>
+
       <div style={S.statGrid}>
         {[
           { num: totalLots, label: "Total lots", accent: C.forest },
@@ -2439,7 +3411,7 @@ function AdminVotingPage({
 
 // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
 function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operationalStats }) {
-  const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
+  const surveyEngaged = operationalStats.votedLots;
   const notEngaged = Math.max(0, totalLots - surveyEngaged);
   const strComments = comments.filter(c => c.topic === "str");
   const restrictCount = comments.filter(c => c.stance === "restrict").length;
@@ -2657,7 +3629,33 @@ export default function App() {
     };
   });
   const [page, setPage] = useState("home");
-  const [votes, setVotes] = useState(() => store.get("fw_votes") || SEED_VOTES);
+  const [votes, setVotes] = useState(() => {
+    const savedTotalLots = Number(store.get("fw_total_lots"));
+    const effectiveTotalLots =
+      Number.isInteger(savedTotalLots) && savedTotalLots >= MIN_TOTAL_LOTS && savedTotalLots <= MAX_TOTAL_LOTS
+        ? savedTotalLots
+        : DEFAULT_TOTAL_LOTS;
+    const initialLotLabels = buildLotLabels(effectiveTotalLots);
+    const savedLedger = store.get("fw_vote_ledger");
+    if (savedLedger && typeof savedLedger === "object") {
+      return computeVoteTotalsFromLedger(savedLedger, initialLotLabels);
+    }
+    const savedVotes = store.get("fw_votes");
+    if (savedVotes && typeof savedVotes === "object") {
+      const eliminate = Math.max(0, Number(savedVotes.eliminate) || 0);
+      const permit = Math.max(0, Number(savedVotes.permit) || 0);
+      return {
+        eliminate,
+        permit,
+        undecided: Math.max(0, initialLotLabels.length - eliminate - permit),
+      };
+    }
+    return {
+      eliminate: 0,
+      permit: 0,
+      undecided: initialLotLabels.length,
+    };
+  });
   const [comments, setComments] = useState(() => {
     const savedComments = store.get("fw_comments");
     const safeSavedComments = Array.isArray(savedComments) ? savedComments : [];
@@ -2701,9 +3699,27 @@ export default function App() {
     const saved = store.get("fw_vote_eligibility");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [lastBackupExportAt, setLastBackupExportAt] = useState(() => {
+    const saved = store.get(LAST_BACKUP_EXPORT_KEY);
+    return typeof saved === "string" && saved.trim() ? saved : "";
+  });
+  const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
+    const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
+    if (
+      Number.isInteger(saved)
+      && saved >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      && saved <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+    ) {
+      return saved;
+    }
+    return DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
+  });
+  const [dbApiBaseUrl, setDbApiBaseUrl] = useState(() => {
+    const saved = store.get(DB_API_BASE_URL_KEY);
+    return typeof saved === "string" ? saved.trim() : "";
+  });
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
-  const previousTotalLotsRef = useRef(totalLots);
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
@@ -2717,6 +3733,9 @@ export default function App() {
   useEffect(() => { store.set("fw_admin_access_grades", adminAccessGrades); }, [adminAccessGrades]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
+  useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
+  useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
+  useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
     const result = consolidateCovenantDocs(covenantDocs);
     if (result.removedCount > 0) {
@@ -2941,26 +3960,23 @@ export default function App() {
     const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
     const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
     if (targetLots.length === 0) return;
-    const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
+    const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
     if (previousChoices.every((prevChoice) => prevChoice === choice)) return;
-
-    setVotes((priorVotes) => {
-      const nextVotes = { ...priorVotes };
-      targetLots.forEach((lot, idx) => {
-        const prevChoice = previousChoices[idx];
-        if (prevChoice) {
-          nextVotes[prevChoice] = Math.max(0, (nextVotes[prevChoice] || 0) - 1);
-        } else {
-          nextVotes.undecided = Math.max(0, (nextVotes.undecided || 0) - 1);
-        }
-        nextVotes[choice] = (nextVotes[choice] || 0) + 1;
-      });
-      return nextVotes;
-    });
 
     setVoteLedger((prevLedger) => {
       const nextLedger = { ...prevLedger };
       targetLots.forEach((lot) => { nextLedger[lot] = choice; });
+      setVotes((prevVotes) => {
+        const recomputed = recomputeVotesFromLedger(nextLedger);
+        if (
+          prevVotes.eliminate === recomputed.eliminate &&
+          prevVotes.permit === recomputed.permit &&
+          prevVotes.undecided === recomputed.undecided
+        ) {
+          return prevVotes;
+        }
+        return recomputed;
+      });
       return nextLedger;
     });
     targetLots.forEach((lot) => {
@@ -3024,23 +4040,10 @@ export default function App() {
   };
 
   const recomputeVotesFromLedger = (ledger, lotLabels = allLotLabels) => {
-    let eliminate = 0;
-    let permit = 0;
-    lotLabels.forEach((lot) => {
-      const choice = ledger[lot];
-      if (choice === "eliminate") eliminate += 1;
-      if (choice === "permit") permit += 1;
-    });
-    return {
-      eliminate,
-      permit,
-      undecided: Math.max(0, lotLabels.length - eliminate - permit),
-    };
+    return computeVoteTotalsFromLedger(ledger, lotLabels);
   };
 
   useEffect(() => {
-    if (previousTotalLotsRef.current === totalLots) return;
-    previousTotalLotsRef.current = totalLots;
     setVotes((prev) => {
       const recomputed = recomputeVotesFromLedger(voteLedger, allLotLabels);
       if (
@@ -3052,7 +4055,7 @@ export default function App() {
       }
       return recomputed;
     });
-  }, [totalLots]);
+  }, [totalLots, voteLedger]);
 
   const handleImportCsv = (rows) => {
     if (!Array.isArray(rows) || rows.length === 0) {
@@ -3189,6 +4192,362 @@ export default function App() {
     };
   };
 
+  const buildPortalBackupPayload = async () => {
+    const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+    return {
+      backupType: PORTAL_BACKUP_TYPE,
+      version: PORTAL_BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      payload: {
+        fw_user: user,
+        fw_votes: votes,
+        fw_comments: comments,
+        fw_comments_data_version: COMMENTS_DATA_VERSION,
+        fw_covenant_docs: covenantDocs,
+        fw_owner_activity: ownerActivity,
+        fw_vote_ledger: voteLedger,
+        fw_primary_voter_registry: primaryVoterRegistry,
+        fw_outreach_state: outreachState,
+        fw_user_directory: userDirectory,
+        fw_admin_access_entries: adminAccessEntries,
+        fw_admin_access_grades: adminAccessGrades,
+        fw_total_lots: totalLots,
+        fw_vote_eligibility: eligibilityState,
+        fw_last_backup_export_at: lastBackupExportAt || null,
+        fw_backup_health_threshold_days: backupHealthThresholdDays,
+        legacy_vote_entries: collectLegacyVoteEntries(),
+        covenant_asset_records: covenantAssetRecords,
+      },
+    };
+  };
+
+  const handleExportBackup = async () => {
+    const backup = await buildPortalBackupPayload();
+
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `fw-full-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return {
+      message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${covenantAssetRecords.length} stored covenant attachments).`,
+    };
+  };
+
+  const handleRestoreBackup = async (rawBackup, restoreOptions = {}) => {
+    const candidate = rawBackup?.payload && typeof rawBackup.payload === "object" ? rawBackup.payload : rawBackup;
+    if (!candidate || typeof candidate !== "object") {
+      return { error: "Backup JSON format is invalid." };
+    }
+    if (rawBackup?.backupType && rawBackup.backupType !== PORTAL_BACKUP_TYPE) {
+      return { error: `Unsupported backup type "${rawBackup.backupType}".` };
+    }
+    if (rawBackup?.version && Number(rawBackup.version) > PORTAL_BACKUP_VERSION) {
+      return { error: `Backup version ${rawBackup.version} is newer than this portal supports.` };
+    }
+    const restoreMode =
+      restoreOptions?.mode === "merge" || restoreOptions?.mode === "missing"
+        ? restoreOptions.mode
+        : "replace";
+    const scopeFlags = normalizeRestoreScopes(restoreOptions?.scopes);
+    if (!hasSelectedRestoreScope(scopeFlags)) {
+      return { error: "Select at least one section to restore." };
+    }
+
+    const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
+    const mergeObjectState = (currentState, incomingState) => {
+      if (restoreMode === "replace") return sanitizeObj(incomingState);
+      if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+      const current = { ...sanitizeObj(currentState) };
+      const incoming = sanitizeObj(incomingState);
+      Object.entries(incoming).forEach(([key, value]) => {
+        const existing = current[key];
+        const isMissing = existing === undefined || existing === null || existing === "";
+        if (isMissing) current[key] = value;
+      });
+      return current;
+    };
+
+    const parsedTotalLots = Number(candidate.fw_total_lots);
+    const restoredTotalLots =
+      Number.isInteger(parsedTotalLots) && parsedTotalLots >= MIN_TOTAL_LOTS && parsedTotalLots <= MAX_TOTAL_LOTS
+        ? parsedTotalLots
+        : totalLots;
+    const parsedThreshold = Number(candidate.fw_backup_health_threshold_days);
+    const restoredThreshold =
+      Number.isInteger(parsedThreshold)
+      && parsedThreshold >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      && parsedThreshold <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+        ? parsedThreshold
+        : backupHealthThresholdDays;
+    const nextTotalLots = scopeFlags.lotSettings ? restoredTotalLots : totalLots;
+    const nextLotLabels = buildLotLabels(nextTotalLots);
+    const nextLotSet = new Set(nextLotLabels);
+
+    const importedLedgerRaw = sanitizeObj(candidate.fw_vote_ledger);
+    const importedVoteLedger = {};
+    Object.entries(importedLedgerRaw).forEach(([lotLabel, choice]) => {
+      const normalizedLot = normalizeLotLabel(lotLabel);
+      if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
+      if (!VALID_VOTE_CHOICES.has(choice)) return;
+      importedVoteLedger[normalizedLot] = choice;
+    });
+    const currentVoteLedgerForScope = {};
+    Object.entries(sanitizeObj(voteLedger)).forEach(([lotLabel, choice]) => {
+      const normalizedLot = normalizeLotLabel(lotLabel);
+      if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
+      if (!VALID_VOTE_CHOICES.has(choice)) return;
+      currentVoteLedgerForScope[normalizedLot] = choice;
+    });
+    const nextVoteLedger =
+      scopeFlags.votes
+        ? (() => {
+            if (restoreMode === "replace") return importedVoteLedger;
+            if (restoreMode === "merge") return { ...currentVoteLedgerForScope, ...importedVoteLedger };
+            const merged = { ...currentVoteLedgerForScope };
+            Object.entries(importedVoteLedger).forEach(([lotLabel, choice]) => {
+              if (!merged[lotLabel]) merged[lotLabel] = choice;
+            });
+            return merged;
+          })()
+        : currentVoteLedgerForScope;
+
+    if (scopeFlags.votes) {
+      const importedLegacyVotes = sanitizeObj(candidate.legacy_vote_entries);
+      if (restoreMode === "replace") {
+        clearLegacyVoteEntries();
+      }
+      Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
+        if (!String(key).startsWith("vote_")) return;
+        if (!VALID_VOTE_CHOICES.has(choice)) return;
+        if (restoreMode === "missing" && store.get(key)) return;
+        store.set(key, choice);
+      });
+      Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
+        store.set(`vote_${lotLabel}`, choice);
+      });
+    }
+
+    const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
+    const nextComments =
+      scopeFlags.comments
+        ? (restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments))
+        : comments;
+
+    const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
+    const nextCovenantDocsRaw =
+      scopeFlags.covenantDocs
+        ? (restoreMode === "replace" ? importedCovenantDocs : mergeCovenantDocsById(covenantDocs, importedCovenantDocs))
+        : covenantDocs;
+    const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
+
+    const nextOwnerActivity = scopeFlags.ownerActivity
+      ? mergeObjectState(ownerActivity, candidate.fw_owner_activity)
+      : ownerActivity;
+    const nextPrimaryRegistry = scopeFlags.primaryVoters
+      ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)
+      : primaryVoterRegistry;
+    const nextOutreach = scopeFlags.outreach
+      ? mergeObjectState(outreachState, candidate.fw_outreach_state)
+      : outreachState;
+    const nextUserDirectory = scopeFlags.userDirectory
+      ? mergeObjectState(userDirectory, candidate.fw_user_directory)
+      : userDirectory;
+    const nextEligibility = scopeFlags.eligibility
+      ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)
+      : eligibilityState;
+    const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
+    const effectiveAdminEntries = scopeFlags.adminAccess
+      ? (() => {
+          if (restoreMode === "merge" || restoreMode === "missing") {
+            const mergedEntries = normalizeAdminAccessEntries([...adminAccessEntries, ...nextAdminEntries]);
+            return mergedEntries.length > 0 ? mergedEntries : adminAccessEntries;
+          }
+          return nextAdminEntries.length > 0 ? nextAdminEntries : adminAccessEntries;
+        })()
+      : adminAccessEntries;
+    const nextAdminGrades = scopeFlags.adminAccess
+      ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades)
+      : adminAccessGrades;
+    const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
+    if (scopeFlags.covenantFiles) {
+      if (restoreMode === "merge" || restoreMode === "missing") {
+        const existingAssets = await listCovenantAssetRecords().catch(() => []);
+        const assetMap = new Map();
+        existingAssets.forEach((record) => assetMap.set(record.id, record));
+        restoredAssets.forEach((record) => {
+          const id = String(record?.id || "").trim();
+          if (!id) return;
+          if (restoreMode === "missing" && assetMap.has(id)) return;
+          assetMap.set(id, record);
+        });
+        await replaceCovenantAssetRecords(Array.from(assetMap.values()));
+      } else {
+        await replaceCovenantAssetRecords(restoredAssets);
+      }
+    }
+
+    if (scopeFlags.lotSettings) {
+      setTotalLots(nextTotalLots);
+      setBackupHealthThresholdDays(restoredThreshold);
+    }
+    if (scopeFlags.votes) setVoteLedger(nextVoteLedger);
+    setVotes(computeVoteTotalsFromLedger(nextVoteLedger, nextLotLabels));
+    if (scopeFlags.comments) {
+      setComments(nextComments);
+      store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
+    }
+    if (scopeFlags.covenantDocs) setCovenantDocs(nextCovenantDocs);
+    if (scopeFlags.ownerActivity) setOwnerActivity(nextOwnerActivity);
+    if (scopeFlags.primaryVoters) setPrimaryVoterRegistry(nextPrimaryRegistry);
+    if (scopeFlags.outreach) setOutreachState(nextOutreach);
+    if (scopeFlags.userDirectory) setUserDirectory(nextUserDirectory);
+    if (scopeFlags.eligibility) setEligibilityState(nextEligibility);
+    if (scopeFlags.adminAccess) {
+      setAdminAccessEntries(effectiveAdminEntries);
+      setAdminAccessGrades(nextAdminGrades);
+    }
+
+    const restoredUserRaw = candidate.fw_user;
+    const restoredUser =
+      scopeFlags.sessionUser && restoredUserRaw && typeof restoredUserRaw === "object"
+        ? (() => {
+            const lots = normalizeUserLots(restoredUserRaw);
+            const hasAdminApproval = isAdminUserAllowed(restoredUserRaw.name, effectiveAdminEntries);
+            const requestedAdmin = !!restoredUserRaw.isAdmin || (lots.length === 1 && lots[0] === "ADMIN");
+            if (requestedAdmin && !hasAdminApproval) return null;
+            if (!hasAdminApproval && lots.length === 0) return null;
+            const isAdmin = hasAdminApproval || requestedAdmin;
+            const effectiveLots = isAdmin ? ["ADMIN"] : lots;
+            return {
+              ...restoredUserRaw,
+              isAdmin,
+              accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(restoredUserRaw.accessRole),
+              userId: restoredUserRaw.userId || generateUserId(restoredUserRaw.name),
+              lots: effectiveLots,
+              lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
+            };
+          })()
+        : user;
+    if (scopeFlags.sessionUser) {
+      store.set("fw_user", restoredUser);
+      setUser(restoredUser);
+      setPage(restoredUser?.isAdmin ? "admin-votes" : "home");
+      if (candidate.fw_last_backup_export_at && !Number.isNaN(Date.parse(String(candidate.fw_last_backup_export_at)))) {
+        setLastBackupExportAt(new Date(String(candidate.fw_last_backup_export_at)).toISOString());
+      }
+    }
+    const appliedScopeLabels = BACKUP_RESTORE_SCOPE_OPTIONS
+      .filter((scope) => scopeFlags[scope.key] !== false)
+      .map((scope) => scope.label);
+
+    return {
+      message: `Backup restored (${restoreMode}): ${appliedScopeLabels.join(", ")}. Vote records now ${Object.keys(nextVoteLedger).length}; comments ${nextComments.length}.`,
+    };
+  };
+
+  const handleRecordBackupExport = (isoTimestamp = new Date().toISOString()) => {
+    const safeIso = String(isoTimestamp || "").trim();
+    const parsed = Date.parse(safeIso);
+    if (Number.isNaN(parsed)) return;
+    setLastBackupExportAt(new Date(parsed).toISOString());
+  };
+
+  const handleUpdateBackupHealthThresholdDays = (nextDays) => {
+    const parsed = Number.parseInt(String(nextDays || "").trim(), 10);
+    if (
+      Number.isNaN(parsed)
+      || parsed < MIN_BACKUP_HEALTH_MAX_AGE_DAYS
+      || parsed > MAX_BACKUP_HEALTH_MAX_AGE_DAYS
+    ) {
+      return {
+        error: `Backup threshold must be between ${MIN_BACKUP_HEALTH_MAX_AGE_DAYS} and ${MAX_BACKUP_HEALTH_MAX_AGE_DAYS} days.`,
+      };
+    }
+    setBackupHealthThresholdDays(parsed);
+    return { message: `Backup health threshold set to ${parsed} days.` };
+  };
+
+  const handleUpdateDbApiBaseUrl = (nextUrl = "") => {
+    setDbApiBaseUrl(String(nextUrl || "").trim());
+    return { message: "Database API URL updated." };
+  };
+
+  const resolveDbApiUrl = (path) => {
+    const safePath = String(path || "");
+    const base = String(dbApiBaseUrl || "").trim();
+    if (!base) return safePath;
+    return `${base.replace(/\/+$/, "")}${safePath}`;
+  };
+
+  const callDbApi = async (path, options = {}) => {
+    const response = await fetch(resolveDbApiUrl(path), {
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+      ...options,
+    });
+    const text = await response.text();
+    let parsed = {};
+    try {
+      parsed = text ? JSON.parse(text) : {};
+    } catch {
+      parsed = {};
+    }
+    if (!response.ok || parsed?.ok === false) {
+      throw new Error(parsed?.error || `Database API request failed (${response.status}).`);
+    }
+    return parsed;
+  };
+
+  const handleTestDbConnection = async () => {
+    const result = await callDbApi("/api/db/health", { method: "GET" });
+    return {
+      message: `Connected to PostgreSQL API. Server time: ${result?.now || "unknown"}`,
+    };
+  };
+
+  const handleSyncToDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
+    const backup = await buildPortalBackupPayload();
+    const result = await callDbApi("/api/db/sync", {
+      method: "POST",
+      body: JSON.stringify({
+        backup,
+        mode,
+        scopes,
+      }),
+    });
+    return {
+      message: result?.message || "PostgreSQL sync completed.",
+    };
+  };
+
+  const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
+    const result = await callDbApi("/api/db/export", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return handleRestoreBackup(result?.backup || {}, { mode, scopes });
+  };
+
+  const handleFetchDbSummary = async () => {
+    const result = await callDbApi("/api/db/summary", { method: "GET" });
+    return { summary: result?.summary || null };
+  };
+
+  const handleFetchDbRecords = async (table, limit = 200, offset = 0) => {
+    const safeTable = encodeURIComponent(String(table || "state_values"));
+    const result = await callDbApi(`/api/db/records/${safeTable}?limit=${Number(limit) || 200}&offset=${Number(offset) || 0}`, {
+      method: "GET",
+    });
+    return { records: Array.isArray(result?.records) ? result.records : [] };
+  };
+
   const activityRows = Object.values(ownerActivity);
   const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
   const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -3288,7 +4647,7 @@ export default function App() {
         <div style={S.content}>
           {user.isAdmin && (
             <div style={S.alert("warn")}>
-              <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, and CSV import/export.
+              <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore.
             </div>
           )}
           {page === "home" && <HomePage votes={votes} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
@@ -3311,6 +4670,7 @@ export default function App() {
           )}
           {page === "admin-votes" && user.isAdmin && (
             <AdminVotingPage
+              comments={comments}
               ownerActivity={ownerActivity}
               voteLedger={voteLedger}
               primaryVoterRegistry={primaryVoterRegistry}
@@ -3321,7 +4681,20 @@ export default function App() {
               adminAccessGrades={adminAccessGrades}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
+              lastBackupExportAt={lastBackupExportAt}
+              backupHealthThresholdDays={backupHealthThresholdDays}
+              dbApiBaseUrl={dbApiBaseUrl}
               onImportCsv={handleImportCsv}
+              onExportBackup={handleExportBackup}
+              onRestoreBackup={handleRestoreBackup}
+              onRecordBackupExport={handleRecordBackupExport}
+              onUpdateBackupHealthThresholdDays={handleUpdateBackupHealthThresholdDays}
+              onUpdateDbApiBaseUrl={handleUpdateDbApiBaseUrl}
+              onTestDbConnection={handleTestDbConnection}
+              onSyncToDb={handleSyncToDb}
+              onRestoreFromDb={handleRestoreFromDb}
+              onFetchDbSummary={handleFetchDbSummary}
+              onFetchDbRecords={handleFetchDbRecords}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
