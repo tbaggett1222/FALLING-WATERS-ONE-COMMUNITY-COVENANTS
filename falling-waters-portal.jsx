@@ -763,6 +763,26 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
   const notVotedLots = Math.max(totalLots - communityEngaged, 0);
   const engPct = Math.round((communityEngaged / totalLots) * 100);
   const yesPct = Math.round((votes.eliminate / totalLots) * 100);
+  const voteResponseCount = votes.eliminate + votes.permit + votes.undecided;
+  const totalCoverage = voteResponseCount + notVotedLots;
+  const integrityChecks = [
+    {
+      label: "Vote response buckets",
+      equation: `${votes.eliminate} + ${votes.permit} + ${votes.undecided} + ${notVotedLots} = ${totalCoverage} of ${totalLots}`,
+      pass: totalCoverage === totalLots,
+    },
+    {
+      label: "Engagement aligns with ledger",
+      equation: `${communityEngaged} engaged = ${voteResponseCount} voted-response lots`,
+      pass: communityEngaged === voteResponseCount,
+    },
+    {
+      label: "Portal totals align",
+      equation: `stats.votedLots (${stats.votedLots}) = engaged (${communityEngaged})`,
+      pass: stats.votedLots === communityEngaged,
+    },
+  ];
+  const integrityPass = integrityChecks.every((check) => check.pass);
   return (
     <div>
       <div style={{ background:`linear-gradient(135deg, ${C.forest} 0%, ${C.forestLight} 100%)`, borderRadius:10, padding:"28px 32px", marginBottom:20, color:C.white, position:"relative", overflow:"hidden" }}>
@@ -820,6 +840,33 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({notVotedLots})</span>
           </div>
           <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {votesNeeded} votes to eliminate STRs. Currently {Math.max(votesNeeded - votes.eliminate, 0)} votes short.</div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, marginBottom:8, flexWrap:"wrap" }}>
+          <div style={S.cardTitle}>Data integrity check (live)</div>
+          <span style={S.badge(integrityPass ? C.success : C.danger, integrityPass ? C.successLight : C.dangerLight)}>
+            {integrityPass ? "PASS" : "REVIEW NEEDED"}
+          </span>
+        </div>
+        <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>
+          Calculated from current vote ledger and lot count in real time.
+        </div>
+        <div style={{ display:"grid", gap:8 }}>
+          {integrityChecks.map((check, idx) => (
+            <div key={idx} style={{ border:`1px solid ${C.border}`, borderRadius:8, padding:"8px 10px", background:C.white }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+                <div style={{ fontSize:12, fontWeight:600, color:C.forest }}>{check.label}</div>
+                <span style={S.badge(check.pass ? C.success : C.danger, check.pass ? C.successLight : C.dangerLight)}>
+                  {check.pass ? "OK" : "Mismatch"}
+                </span>
+              </div>
+              <div style={{ fontSize:12, color:C.muted, marginTop:6, fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                {check.equation}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
