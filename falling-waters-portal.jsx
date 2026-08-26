@@ -79,6 +79,12 @@ const ADMIN_ALLOWED_ALIASES = [
   // Add explicit admin name variants here when needed.
 ];
 const ADMIN_ACCESS_ENTRIES = [...ADMIN_ALLOWED_USERS, ...ADMIN_ALLOWED_ALIASES];
+const ADMIN_GRADE_OPTIONS = [
+  { value: "full_admin", label: "Full admin" },
+  { value: "operations_admin", label: "Operations admin" },
+  { value: "read_only_admin", label: "Read-only admin" },
+];
+const DEFAULT_ADMIN_GRADE = "full_admin";
 
 // ── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const store = {
@@ -161,6 +167,12 @@ const isPrimaryVoter = (user) =>
 
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const normalizeAdminGrade = (grade) =>
+  ADMIN_GRADE_OPTIONS.some((option) => option.value === grade) ? grade : DEFAULT_ADMIN_GRADE;
+
+const adminGradeLabel = (grade) =>
+  ADMIN_GRADE_OPTIONS.find((option) => option.value === normalizeAdminGrade(grade))?.label || "Full admin";
 
 const isAdminUserAllowed = (name) => {
   const candidate = normalizeNameKey(name);
@@ -1855,11 +1867,13 @@ function AdminVotingPage({
   outreachState,
   eligibilityState,
   userDirectory,
+  adminAccessGrades,
   totalLots,
   votesNeeded,
   onImportCsv,
   onUpdateEligibility,
   onUpdateTotalLots,
+  onSetAdminAccessGrade,
 }) {
   const [filter, setFilter] = useState("all");
   const [lotQuery, setLotQuery] = useState("");
@@ -1867,6 +1881,7 @@ function AdminVotingPage({
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importErr, setImportErr] = useState("");
+  const [gradeMsg, setGradeMsg] = useState("");
   const lotLabels = buildLotLabels(totalLots);
   const directoryRows = Object.values(userDirectory || {})
     .sort((a, b) => {
@@ -1874,6 +1889,17 @@ function AdminVotingPage({
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
   const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
+  const approvedAdminRows = ADMIN_ACCESS_ENTRIES.map((entry) => {
+    const nameKey = normalizeNameKey(entry);
+    const gradeRecord = adminAccessGrades?.[nameKey] || {};
+    const grade = normalizeAdminGrade(gradeRecord.grade || DEFAULT_ADMIN_GRADE);
+    return {
+      name: entry,
+      nameKey,
+      grade,
+      gradeUpdatedAt: gradeRecord.updatedAt || "",
+    };
+  });
 
   useEffect(() => {
     setLotCountInput(String(totalLots));
@@ -1998,6 +2024,12 @@ function AdminVotingPage({
     onUpdateTotalLots(parsed);
   };
 
+  const updateAdminGrade = (name, grade) => {
+    const result = onSetAdminAccessGrade?.(name, grade);
+    setGradeMsg(result?.message || `Updated admin grade for ${name}.`);
+    setTimeout(() => setGradeMsg(""), 3500);
+  };
+
   const handleImport = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -2055,17 +2087,43 @@ function AdminVotingPage({
       <div style={S.card}>
         <div style={S.cardTitle}>Admin access roster</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
-          These names are currently approved for admin access in this portal.
+          These names are currently approved for admin access in this portal. Assign an access grade for governance and internal control tracking.
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {ADMIN_ACCESS_ENTRIES.length === 0 && (
-            <span style={S.badge(C.danger, C.dangerLight)}>No admin names configured</span>
-          )}
-          {ADMIN_ACCESS_ENTRIES.map((entry) => (
-            <span key={entry} style={S.badge(C.forest, C.parchmentDark)}>
-              {entry}
-            </span>
-          ))}
+        {gradeMsg && <div style={S.alert("success")}>{gradeMsg}</div>}
+        <div style={{ overflowX: "auto" }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Approved admin</th>
+                <th style={S.th}>Access grade</th>
+                <th style={S.th}>Last updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {approvedAdminRows.length === 0 && (
+                <tr>
+                  <td style={S.td} colSpan={3}>No admin names configured.</td>
+                </tr>
+              )}
+              {approvedAdminRows.map((row) => (
+                <tr key={row.nameKey}>
+                  <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.name}</td>
+                  <td style={S.td}>
+                    <select
+                      style={{ ...S.select, minWidth: 180, padding: "6px 8px" }}
+                      value={row.grade}
+                      onChange={(event) => updateAdminGrade(row.name, event.target.value)}
+                    >
+                      {ADMIN_GRADE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td style={S.td}>{row.gradeUpdatedAt || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -2084,6 +2142,7 @@ function AdminVotingPage({
               <tr>
                 <th style={S.th}>Name</th>
                 <th style={S.th}>Admin rights</th>
+                <th style={S.th}>Admin grade</th>
                 <th style={S.th}>Access role</th>
                 <th style={S.th}>Lots</th>
                 <th style={S.th}>Last seen</th>
@@ -2092,7 +2151,7 @@ function AdminVotingPage({
             <tbody>
               {directoryRows.length === 0 && (
                 <tr>
-                  <td style={S.td} colSpan={5}>No users recorded yet. Users appear after they log in or save profile changes.</td>
+                  <td style={S.td} colSpan={6}>No users recorded yet. Users appear after they log in or save profile changes.</td>
                 </tr>
               )}
               {directoryRows.map((row) => (
@@ -2102,6 +2161,11 @@ function AdminVotingPage({
                     <span style={S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark)}>
                       {row.isAdmin ? "Admin" : "Resident"}
                     </span>
+                  </td>
+                  <td style={S.td}>
+                    {row.isAdmin
+                      ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE)
+                      : "—"}
                   </td>
                   <td style={S.td}>{row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)}</td>
                   <td style={S.td}>{Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "—"}</td>
@@ -2432,6 +2496,10 @@ export default function App() {
     const saved = store.get("fw_user_directory");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [adminAccessGrades, setAdminAccessGrades] = useState(() => {
+    const saved = store.get("fw_admin_access_grades");
+    return saved && typeof saved === "object" ? saved : {};
+  });
   const [totalLots, setTotalLots] = useState(() => {
     const saved = Number(store.get("fw_total_lots"));
     if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
@@ -2453,6 +2521,7 @@ export default function App() {
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
   useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
   useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
+  useEffect(() => { store.set("fw_admin_access_grades", adminAccessGrades); }, [adminAccessGrades]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => {
@@ -2507,6 +2576,22 @@ export default function App() {
     const parsed = Number(nextTotalLots);
     if (!Number.isInteger(parsed) || parsed < MIN_TOTAL_LOTS || parsed > MAX_TOTAL_LOTS) return;
     setTotalLots(parsed);
+  };
+
+  const handleSetAdminAccessGrade = (name, grade) => {
+    const safeName = String(name || "").trim();
+    if (!safeName) return { error: "Admin name is required." };
+    const key = normalizeNameKey(safeName);
+    const normalizedGrade = normalizeAdminGrade(grade);
+    setAdminAccessGrades((prev) => ({
+      ...prev,
+      [key]: {
+        name: safeName,
+        grade: normalizedGrade,
+        updatedAt: todayLabel(),
+      },
+    }));
+    return { message: `${safeName} grade set to ${adminGradeLabel(normalizedGrade)}.` };
   };
 
   const trackUserAccess = (profile) => {
@@ -2969,11 +3054,13 @@ export default function App() {
               outreachState={outreachState}
               eligibilityState={eligibilityState}
               userDirectory={userDirectory}
+              adminAccessGrades={adminAccessGrades}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
               onImportCsv={handleImportCsv}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
+              onSetAdminAccessGrade={handleSetAdminAccessGrade}
             />
           )}
           {page === "admin-docs" && user.isAdmin && (
