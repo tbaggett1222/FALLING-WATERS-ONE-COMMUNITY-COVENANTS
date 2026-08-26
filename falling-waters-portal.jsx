@@ -369,20 +369,22 @@ function LoginScreen({ onLogin }) {
   const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary); const [err, setErr] = useState("");
   const handle = (e) => {
     e.preventDefault();
-    const lots = parseLotsInput(lot);
-    if (lots.length === 0 || !name.trim() || pw.length < 4) {
-      setErr('Please enter your lot number(s), name, and a password (min 4 characters).');
+    const trimmedName = name.trim();
+    const hasAdminApproval = isAdminUserAllowed(trimmedName);
+    const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
+    if ((!hasAdminApproval && lots.length === 0) || !trimmedName || pw.length < 4) {
+      setErr('Please enter your name, lot number(s), and a password (min 4 characters).');
       return;
     }
     const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
-    if (isAdmin && !isAdminUserAllowed(name.trim())) {
+    if (isAdmin && !hasAdminApproval) {
       setErr("This account is not authorized for admin access. Contact the HOA administrator.");
       return;
     }
     const user = {
       lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
       lots,
-      name: name.trim(),
+      name: trimmedName,
       accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole),
       isAdmin,
     };
@@ -399,12 +401,12 @@ function LoginScreen({ onLogin }) {
           <div style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest, lineHeight:1.2 }}>Falling Waters</div>
           <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Community Covenant Portal</div>
         </div>
-        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Admin pages are restricted to approved users only.</div>
+        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Approved admin names receive admin access automatically.</div>
         {err && <div style={S.alert("danger")}>{err}</div>}
         <form onSubmit={handle}>
           <div style={{ marginBottom:14 }}>
-            <label style={S.label}>Lot number(s) or "ADMIN"</label>
-            <input style={S.input} placeholder="e.g. Lot 36, Lot 37" value={lot} onChange={e=>setLot(e.target.value)}/>
+            <label style={S.label}>Lot number(s)</label>
+            <input style={S.input} placeholder="e.g. Lot 36, Lot 37 (admins can leave blank)" value={lot} onChange={e=>setLot(e.target.value)}/>
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Your name</label>
@@ -1874,17 +1876,19 @@ export default function App() {
     const saved = store.get("fw_user");
     if (!saved) return null;
     const lots = normalizeUserLots(saved);
-    if (lots.length === 0) return null;
-    const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
-    if (requestedAdmin && !isAdminUserAllowed(saved.name)) return null;
-    const isAdmin = requestedAdmin;
+    const hasAdminApproval = isAdminUserAllowed(saved.name);
+    const requestedAdmin = !!saved.isAdmin || (lots.length === 1 && lots[0] === "ADMIN");
+    if (requestedAdmin && !hasAdminApproval) return null;
+    if (!hasAdminApproval && lots.length === 0) return null;
+    const isAdmin = hasAdminApproval || requestedAdmin;
+    const effectiveLots = isAdmin ? ["ADMIN"] : lots;
     return {
       ...saved,
       isAdmin,
       accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(saved.accessRole),
       userId: saved.userId || generateUserId(saved.name),
-      lots,
-      lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
+      lots: effectiveLots,
+      lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
     };
   });
   const [page, setPage] = useState("home");
@@ -2037,17 +2041,20 @@ export default function App() {
 
   const handleLogin = (u) => {
     const lots = normalizeUserLots(u);
-    const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
-    if (isAdmin && !isAdminUserAllowed(u.name)) {
+    const hasAdminApproval = isAdminUserAllowed(u.name);
+    const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    if (requestedAdmin && !hasAdminApproval) {
       return "This account is not authorized for admin access. Contact the HOA administrator.";
     }
+    const isAdmin = hasAdminApproval || requestedAdmin;
+    const effectiveLots = isAdmin ? ["ADMIN"] : lots;
     const normalizedUser = {
       ...u,
       isAdmin,
       accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(u.accessRole),
       userId: u.userId || generateUserId(u.name),
-      lots,
-      lot: isAdmin ? "ADMIN" : lots.length === 1 ? lots[0] : lots.join(", "),
+      lots: effectiveLots,
+      lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
     };
     if (!isAdmin) {
       const check = reconcilePrimaryVoterRegistry(normalizedUser, null);
