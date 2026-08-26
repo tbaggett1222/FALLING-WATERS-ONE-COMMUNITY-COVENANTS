@@ -21618,6 +21618,33 @@ var FallingWatersPortal = (() => {
   };
   var buildLotLabels = (totalLots) => Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
   var votesNeededForLots = (totalLots) => Math.ceil(Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2 / 3);
+  var sanitizeDbApiBaseUrl = (inputValue, { allowEmpty = true } = {}) => {
+    const raw = String(inputValue || "").trim();
+    if (!raw) {
+      if (allowEmpty) return { value: "" };
+      return { error: "Enter a Database API URL like http://localhost:8787." };
+    }
+    if (/^postgres(ql)?:\/\//i.test(raw)) {
+      return {
+        error: "This field expects the API URL (for example http://localhost:8787), not DATABASE_URL."
+      };
+    }
+    if (/\bnpm\s+run\b/i.test(raw) || /\bexport\b/i.test(raw) || /\s/.test(raw)) {
+      const urlMatch = raw.match(/https?:\/\/[^\s"'`]+/i);
+      if (urlMatch) return sanitizeDbApiBaseUrl(urlMatch[0], { allowEmpty });
+      return {
+        error: "Paste only the API URL, not a terminal command. Example: http://localhost:8787"
+      };
+    }
+    if (!/^https?:\/\//i.test(raw)) {
+      return { error: "Database API URL must start with http:// or https://." };
+    }
+    let value = raw.replace(/\/+$/, "");
+    if (value.endsWith("/api")) {
+      value = value.slice(0, -4);
+    }
+    return { value };
+  };
   var computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
     let eliminate = 0;
     let permit = 0;
@@ -23386,9 +23413,18 @@ var FallingWatersPortal = (() => {
       setTimeout(() => setBackupThresholdMsg(""), 3500);
     };
     const saveDbApiUrl = () => {
-      const safeUrl = String(dbApiInput || "").trim();
-      onUpdateDbApiBaseUrl?.(safeUrl);
-      setDbMsg(safeUrl ? `Database API URL saved: ${safeUrl}` : "Database API URL cleared (will use same-origin /api routes).");
+      setDbErr("");
+      setDbMsg("");
+      const result = onUpdateDbApiBaseUrl?.(dbApiInput);
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      const safeUrl = String(result?.value || "").trim();
+      setDbApiInput(safeUrl);
+      setDbMsg(
+        safeUrl ? `Database API URL saved: ${safeUrl}` : "Database API URL cleared (will use same-origin /api routes)."
+      );
       setTimeout(() => setDbMsg(""), 3500);
     };
     const testDbConnection = async () => {
@@ -23626,9 +23662,9 @@ var FallingWatersPortal = (() => {
         style: S.input,
         value: dbApiInput,
         onChange: (event) => setDbApiInput(event.target.value),
-        placeholder: "http://localhost:8787 (leave blank for same-origin /api)"
+        placeholder: "http://localhost:8787"
       }
-    )), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: saveDbApiUrl, disabled: dbBusy }, "Save URL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: testDbConnection, disabled: dbBusy }, "Test connection")), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: syncPortalToDb, disabled: dbBusy }, "Sync current portal to PostgreSQL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: restoreFromDb, disabled: dbBusy }, "Restore from PostgreSQL (", restoreMode, ")"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: loadDbSummary, disabled: dbBusy }, "Load DB summary")), dbSummary && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "state_values: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.state_values || 0), " \xB7 covenant_assets: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.covenant_assets || 0), " \xB7 snapshots: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.backup_snapshots || 0)), dbSummary?.scope_records?.length > 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Scope"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Record count"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, dbSummary.scope_records.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.scope }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.scope), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.count)))))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement("select", { style: { ...S.select, maxWidth: 260 }, value: dbRecordsTable, onChange: (event) => setDbRecordsTable(event.target.value), disabled: dbBusy }, [
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Enter only the API host URL (not DATABASE_URL or terminal commands). Leave blank only when the API is same-origin.")), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: saveDbApiUrl, disabled: dbBusy }, "Save URL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: testDbConnection, disabled: dbBusy }, "Test connection")), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: syncPortalToDb, disabled: dbBusy }, "Sync current portal to PostgreSQL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: restoreFromDb, disabled: dbBusy }, "Restore from PostgreSQL (", restoreMode, ")"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: loadDbSummary, disabled: dbBusy }, "Load DB summary")), dbSummary && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "state_values: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.state_values || 0), " \xB7 covenant_assets: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.covenant_assets || 0), " \xB7 snapshots: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.backup_snapshots || 0)), dbSummary?.scope_records?.length > 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Scope"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Record count"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, dbSummary.scope_records.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.scope }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.scope), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.count)))))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement("select", { style: { ...S.select, maxWidth: 260 }, value: dbRecordsTable, onChange: (event) => setDbRecordsTable(event.target.value), disabled: dbBusy }, [
       "state_values",
       "comments",
       "covenantDocs",
@@ -23848,7 +23884,8 @@ var FallingWatersPortal = (() => {
     });
     const [dbApiBaseUrl, setDbApiBaseUrl] = (0, import_react.useState)(() => {
       const saved = store.get(DB_API_BASE_URL_KEY);
-      return typeof saved === "string" ? saved.trim() : "";
+      const normalized = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
+      return normalized?.value || "";
     });
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
@@ -24521,8 +24558,15 @@ var FallingWatersPortal = (() => {
       return { message: `Backup health threshold set to ${parsed} days.` };
     };
     const handleUpdateDbApiBaseUrl = (nextUrl = "") => {
-      setDbApiBaseUrl(String(nextUrl || "").trim());
-      return { message: "Database API URL updated." };
+      const normalized = sanitizeDbApiBaseUrl(nextUrl, { allowEmpty: true });
+      if (normalized.error) {
+        return { error: normalized.error };
+      }
+      setDbApiBaseUrl(normalized.value);
+      return {
+        value: normalized.value,
+        message: normalized.value ? "Database API URL updated." : "Database API URL cleared (same-origin /api will be used)."
+      };
     };
     const resolveDbApiUrl = (path) => {
       const safePath = String(path || "");
@@ -24531,7 +24575,8 @@ var FallingWatersPortal = (() => {
       return `${base.replace(/\/+$/, "")}${safePath}`;
     };
     const callDbApi = async (path, options = {}) => {
-      const response = await fetch(resolveDbApiUrl(path), {
+      const requestUrl = resolveDbApiUrl(path);
+      const response = await fetch(requestUrl, {
         headers: {
           "Content-Type": "application/json",
           ...options.headers || {}
@@ -24546,7 +24591,15 @@ var FallingWatersPortal = (() => {
         parsed = {};
       }
       if (!response.ok || parsed?.ok === false) {
-        throw new Error(parsed?.error || `Database API request failed (${response.status}).`);
+        if (parsed?.error) {
+          throw new Error(parsed.error);
+        }
+        if (response.status === 404) {
+          throw new Error(
+            `Database API request failed (404). Check that the saved API URL is only the API host (example: http://localhost:8787), not a command, and that the server is running. Request URL: ${requestUrl}`
+          );
+        }
+        throw new Error(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
       }
       return parsed;
     };

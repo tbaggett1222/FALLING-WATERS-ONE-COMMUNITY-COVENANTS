@@ -161,6 +161,40 @@ const buildLotLabels = (totalLots) =>
 const votesNeededForLots = (totalLots) =>
   Math.ceil((Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2) / 3);
 
+const sanitizeDbApiBaseUrl = (inputValue, { allowEmpty = true } = {}) => {
+  const raw = String(inputValue || "").trim();
+  if (!raw) {
+    if (allowEmpty) return { value: "" };
+    return { error: "Enter a Database API URL like http://localhost:8787." };
+  }
+
+  if (/^postgres(ql)?:\/\//i.test(raw)) {
+    return {
+      error:
+        "This field expects the API URL (for example http://localhost:8787), not DATABASE_URL.",
+    };
+  }
+
+  if (/\bnpm\s+run\b/i.test(raw) || /\bexport\b/i.test(raw) || /\s/.test(raw)) {
+    const urlMatch = raw.match(/https?:\/\/[^\s"'`]+/i);
+    if (urlMatch) return sanitizeDbApiBaseUrl(urlMatch[0], { allowEmpty });
+    return {
+      error:
+        "Paste only the API URL, not a terminal command. Example: http://localhost:8787",
+    };
+  }
+
+  if (!/^https?:\/\//i.test(raw)) {
+    return { error: "Database API URL must start with http:// or https://." };
+  }
+
+  let value = raw.replace(/\/+$/, "");
+  if (value.endsWith("/api")) {
+    value = value.slice(0, -4);
+  }
+  return { value };
+};
+
 const computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
   let eliminate = 0;
   let permit = 0;
@@ -2815,9 +2849,20 @@ function AdminVotingPage({
   };
 
   const saveDbApiUrl = () => {
-    const safeUrl = String(dbApiInput || "").trim();
-    onUpdateDbApiBaseUrl?.(safeUrl);
-    setDbMsg(safeUrl ? `Database API URL saved: ${safeUrl}` : "Database API URL cleared (will use same-origin /api routes).");
+    setDbErr("");
+    setDbMsg("");
+    const result = onUpdateDbApiBaseUrl?.(dbApiInput);
+    if (result?.error) {
+      setDbErr(result.error);
+      return;
+    }
+    const safeUrl = String(result?.value || "").trim();
+    setDbApiInput(safeUrl);
+    setDbMsg(
+      safeUrl
+        ? `Database API URL saved: ${safeUrl}`
+        : "Database API URL cleared (will use same-origin /api routes)."
+    );
     setTimeout(() => setDbMsg(""), 3500);
   };
 
@@ -3224,8 +3269,11 @@ function AdminVotingPage({
               style={S.input}
               value={dbApiInput}
               onChange={(event) => setDbApiInput(event.target.value)}
-              placeholder="http://localhost:8787 (leave blank for same-origin /api)"
+              placeholder="http://localhost:8787"
             />
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+              Enter only the API host URL (not DATABASE_URL or terminal commands). Leave blank only when the API is same-origin.
+            </div>
           </div>
           <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={saveDbApiUrl} disabled={dbBusy}>
             Save URL
@@ -3716,7 +3764,8 @@ export default function App() {
   });
   const [dbApiBaseUrl, setDbApiBaseUrl] = useState(() => {
     const saved = store.get(DB_API_BASE_URL_KEY);
-    return typeof saved === "string" ? saved.trim() : "";
+    const normalized = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
+    return normalized?.value || "";
   });
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
@@ -4473,8 +4522,17 @@ export default function App() {
   };
 
   const handleUpdateDbApiBaseUrl = (nextUrl = "") => {
-    setDbApiBaseUrl(String(nextUrl || "").trim());
-    return { message: "Database API URL updated." };
+    const normalized = sanitizeDbApiBaseUrl(nextUrl, { allowEmpty: true });
+    if (normalized.error) {
+      return { error: normalized.error };
+    }
+    setDbApiBaseUrl(normalized.value);
+    return {
+      value: normalized.value,
+      message: normalized.value
+        ? "Database API URL updated."
+        : "Database API URL cleared (same-origin /api will be used).",
+    };
   };
 
   const resolveDbApiUrl = (path) => {
@@ -4485,7 +4543,8 @@ export default function App() {
   };
 
   const callDbApi = async (path, options = {}) => {
-    const response = await fetch(resolveDbApiUrl(path), {
+    const requestUrl = resolveDbApiUrl(path);
+    const response = await fetch(requestUrl, {
       headers: {
         "Content-Type": "application/json",
         ...(options.headers || {}),
@@ -4500,7 +4559,15 @@ export default function App() {
       parsed = {};
     }
     if (!response.ok || parsed?.ok === false) {
-      throw new Error(parsed?.error || `Database API request failed (${response.status}).`);
+      if (parsed?.error) {
+        throw new Error(parsed.error);
+      }
+      if (response.status === 404) {
+        throw new Error(
+          `Database API request failed (404). Check that the saved API URL is only the API host (example: http://localhost:8787), not a command, and that the server is running. Request URL: ${requestUrl}`
+        );
+      }
+      throw new Error(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
     }
     return parsed;
   };
