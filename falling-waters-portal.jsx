@@ -2398,6 +2398,25 @@ function AdminVotingPage({
 
       const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
       const allRows = [];
+      const lotNameMap = new Map();
+      const addLotName = (lot, name) => {
+        const normalizedLot = normalizeLotLabel(lot);
+        const safeName = String(name || "").trim();
+        if (!normalizedLot || !safeName || normalizedLot === "ADMIN") return;
+        if (!lotNameMap.has(normalizedLot)) {
+          lotNameMap.set(normalizedLot, new Set());
+        }
+        lotNameMap.get(normalizedLot).add(safeName);
+      };
+      lotRowsSorted.forEach((row) => {
+        addLotName(row.lot, row.ownerName);
+        addLotName(row.lot, row.primaryVoter);
+      });
+      directoryRows.forEach((row) => {
+        if (!row || row.isAdmin || !Array.isArray(row.lots)) return;
+        row.lots.forEach((lot) => addLotName(lot, row.name));
+      });
+
       const appendField = (section, rowId, field, value) => {
         let printable = "";
         let valueType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
@@ -2421,17 +2440,24 @@ function AdminVotingPage({
       };
 
       lotRowsSorted.forEach((row) => {
+        const associatedNames = Array.from(lotNameMap.get(row.lot) || []);
+        const bestAvailableName = row.ownerName || row.primaryVoter || associatedNames[0] || "";
         appendObject("votes", row.lot, {
           lot: row.lot,
           vote_choice: row.choice || null,
           vote_choice_label: choiceLabel(row.choice),
           has_voted: row.hasVoted,
           status: row.status,
+          owner_name: row.ownerName || "",
+          primary_voter: row.primaryVoter || "",
+          associated_names: associatedNames,
+          best_available_name: bestAvailableName,
         });
         appendObject("eligibility", row.lot, {
           vote_eligible: row.voteEligible,
           ineligible_reason: row.ineligibleReason || "",
           eligibility_updated_at: row.eligibilityUpdatedAt || "",
+          best_available_name: bestAvailableName,
         });
         appendObject("outreach", row.lot, {
           contacted: row.contacted,
@@ -2439,6 +2465,19 @@ function AdminVotingPage({
           last_contact: row.lastContact || "",
           owner_name: row.ownerName || "",
           primary_voter: row.primaryVoter || "",
+          associated_names: associatedNames,
+          best_available_name: bestAvailableName,
+        });
+      });
+
+      lotRowsSorted.forEach((row) => {
+        const associatedNames = Array.from(lotNameMap.get(row.lot) || []);
+        appendObject("lot_name_directory", row.lot, {
+          lot: row.lot,
+          owner_name: row.ownerName || "",
+          primary_voter: row.primaryVoter || "",
+          directory_names: associatedNames,
+          best_available_name: row.ownerName || row.primaryVoter || associatedNames[0] || "",
         });
       });
 
