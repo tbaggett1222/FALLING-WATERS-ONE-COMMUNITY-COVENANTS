@@ -95,6 +95,15 @@ const getUserLotDisplay = (user) => {
   return lots.join(", ");
 };
 
+const choiceLabel = (choice) =>
+  choice === "eliminate"
+    ? "Eliminate STRs"
+    : choice === "permit"
+      ? "Permit with regulation"
+      : choice === "undecided"
+        ? "Undecided"
+        : "Not voted";
+
 const readFileAsDataUrl = (file) =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -879,10 +888,14 @@ function ProposedCovenantPage() {
 // ── STR PAGE ─────────────────────────────────────────────────────────────────
 function STRPage({ user, votes, voteLedger, onVote }) {
   const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
-  const lotChoices = votingLots
-    .map((lot) => voteLedger[lot] || store.get(`vote_${lot}`))
-    .filter(Boolean);
-  const userVoted = lotChoices.length === 0 ? null : lotChoices.every((choice) => choice === lotChoices[0]) ? lotChoices[0] : "mixed";
+  const lotChoices = votingLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
+  const allUnvoted = lotChoices.every((choice) => !choice);
+  const uniformChoice = !allUnvoted && lotChoices.every((choice) => choice && choice === lotChoices[0]);
+  const userVoted = allUnvoted ? null : uniformChoice ? lotChoices[0] : "mixed";
+  const lotChoiceMap = votingLots.reduce((acc, lot, idx) => {
+    acc[lot] = lotChoices[idx] || null;
+    return acc;
+  }, {});
   const reasons = [
     { icon:"🚗", title:"Increased traffic and parking", text:"Short-term rental guests unfamiliar with private mountain roads park on roadways, block shared driveways, and generate traffic volumes the infrastructure was not designed for. Our private roads — maintained at owner expense — experience accelerated wear." },
     { icon:"🔊", title:"Noise, parties, and disturbances", text:"Vacation renters operate on a different code of conduct than permanent residents and long-term tenants. Late-night parties, amplified music, and large gatherings that violate our nuisance provisions are consistently reported near STR properties. Enforcement is difficult when the owner isn't present." },
@@ -932,7 +945,7 @@ function STRPage({ user, votes, voteLedger, onVote }) {
         <div style={S.cardTitle}>Cast your vote on short-term rentals</div>
         {votingLots.length > 1 && (
           <div style={S.alert("info")}>
-            You are currently voting for <strong>{votingLots.length} lots</strong> ({votingLots.join(", ")}). Each vote selection applies one vote per listed lot.
+            You are currently voting for <strong>{votingLots.length} lots</strong> ({votingLots.join(", ")}). Use per-lot controls below for separate votes, or quick actions to apply one choice across all listed lots.
           </div>
         )}
         {userVoted ? (
@@ -947,15 +960,52 @@ function STRPage({ user, votes, voteLedger, onVote }) {
         ) : (
           <div style={S.alert("info")}>This is a preliminary preference survey — not the formal legal vote. Results inform the working group's drafting process. The formal certified-mail ballot will follow attorney review and draft completion.</div>
         )}
+        {votingLots.length > 1 && (
+          <div style={{ marginTop: 10, marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Per-lot voting status</div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {votingLots.map((lot) => (
+                <div key={lot} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", background: C.white }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 10 }}>
+                    <div style={{ fontWeight: 700, color: C.forest, fontSize: 13 }}>{lot}</div>
+                    <span style={S.badge(lotChoiceMap[lot] ? C.success : C.muted, lotChoiceMap[lot] ? C.successLight : C.parchmentDark)}>
+                      {choiceLabel(lotChoiceMap[lot])}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      style={{ ...S.btn(lotChoiceMap[lot] === "eliminate" ? "danger" : "outline"), padding: "6px 10px", fontSize: 12 }}
+                      onClick={() => onVote("eliminate", lot)}
+                    >
+                      Eliminate
+                    </button>
+                    <button
+                      style={{ ...S.btn(lotChoiceMap[lot] === "permit" ? "stone" : "outline"), padding: "6px 10px", fontSize: 12 }}
+                      onClick={() => onVote("permit", lot)}
+                    >
+                      Permit
+                    </button>
+                    <button
+                      style={{ ...S.btn(lotChoiceMap[lot] === "undecided" ? "ghost" : "outline"), padding: "6px 10px", fontSize: 12 }}
+                      onClick={() => onVote("undecided", lot)}
+                    >
+                      Undecided
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div style={{ display:"flex", gap:12, marginTop:16, flexWrap:"wrap" }}>
           <button style={{ ...S.btn(userVoted==="eliminate" ? "danger" : "outline"), borderColor: userVoted==="eliminate" ? C.danger : C.forest, color: userVoted==="eliminate" ? C.white : C.forest, background: userVoted==="eliminate" ? C.danger : "transparent" }} onClick={() => onVote("eliminate")}>
-            🚫 Eliminate STRs — prohibit rentals under 12 months
+            🚫 {votingLots.length > 1 ? "Apply to all lots: eliminate STRs" : "Eliminate STRs — prohibit rentals under 12 months"}
           </button>
           <button style={{ ...S.btn("outline"), borderColor: userVoted==="permit" ? C.stoneDark : C.border, background: userVoted==="permit" ? C.stone : "transparent", color: userVoted==="permit" ? C.white : C.ink }} onClick={() => onVote("permit")}>
-            📋 Permit with regulation — 7-night minimum + rules
+            📋 {votingLots.length > 1 ? "Apply to all lots: permit with regulation" : "Permit with regulation — 7-night minimum + rules"}
           </button>
           <button style={{ ...S.btn("ghost"), background: userVoted==="undecided" ? C.parchmentDark : "transparent", border:`1px solid ${C.border}` }} onClick={() => onVote("undecided")}>
-            ❓ Undecided — need more information
+            ❓ {votingLots.length > 1 ? "Apply to all lots: undecided" : "Undecided — need more information"}
           </button>
         </div>
       </div>
@@ -1109,6 +1159,81 @@ function CommentsPage({ user, comments, onAdd }) {
                   </div>
                 </div>
                 <div style={{ fontSize:13, color:C.ink, lineHeight:1.7 }}>{c.text}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── PROFILE PAGE ──────────────────────────────────────────────────────────────
+function ProfilePage({ user, voteLedger, onUpdateProfile }) {
+  const [name, setName] = useState(user.name || "");
+  const [lotsInput, setLotsInput] = useState(normalizeUserLots(user).filter((lot) => lot !== "ADMIN").join(", "));
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const lots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+
+  const save = (e) => {
+    e.preventDefault();
+    const parsedLots = parseLotsInput(lotsInput).filter((lot) => lot !== "ADMIN");
+    if (parsedLots.length === 0) {
+      setErr("Please include at least one valid lot number.");
+      setMsg("");
+      return;
+    }
+    if (!name.trim()) {
+      setErr("Please include your name.");
+      setMsg("");
+      return;
+    }
+    onUpdateProfile({ name: name.trim(), lots: parsedLots });
+    setErr("");
+    setMsg(`Profile saved. Voting rights are now tied to ${parsedLots.length} lot${parsedLots.length === 1 ? "" : "s"}.`);
+  };
+
+  return (
+    <div>
+      <div style={S.alert("info")}>
+        Keep your profile current. Each non-combined lot in your profile receives its own vote.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+        <div style={S.card}>
+          <div style={S.cardTitle}>Resident profile</div>
+          {err && <div style={S.alert("danger")}>{err}</div>}
+          {msg && <div style={S.alert("success")}>{msg}</div>}
+          <form onSubmit={save}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={S.label}>Name</label>
+              <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={S.label}>Lot numbers</label>
+              <input
+                style={S.input}
+                value={lotsInput}
+                onChange={(e) => setLotsInput(e.target.value)}
+                placeholder="e.g. Lot 36, Lot 37"
+              />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+                Separate multiple lots with commas. Example: Lot 36, Lot 37.
+              </div>
+            </div>
+            <button type="submit" style={S.btn("primary")}>Save profile</button>
+          </form>
+        </div>
+
+        <div style={S.card}>
+          <div style={S.cardTitle}>Current lot voting status</div>
+          {lots.length === 0 && <div style={{ fontSize: 12, color: C.muted }}>No lots assigned.</div>}
+          {lots.map((lot) => {
+            const currentChoice = voteLedger[lot] || store.get(`vote_${lot}`) || null;
+            return (
+              <div key={lot} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, color: C.forest, fontSize: 13 }}>{lot}</div>
+                <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Vote: {choiceLabel(currentChoice)}</div>
               </div>
             );
           })}
@@ -1337,15 +1462,16 @@ export default function App() {
   };
   const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
 
-  const handleVote = (choice) => {
+  const handleVote = (choice, lotOverride = null) => {
     const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
-    if (votingLots.length === 0) return;
-    const previousChoices = votingLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
+    const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
+    if (targetLots.length === 0) return;
+    const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
     if (previousChoices.every((prevChoice) => prevChoice === choice)) return;
 
     setVotes((priorVotes) => {
       const nextVotes = { ...priorVotes };
-      votingLots.forEach((lot, idx) => {
+      targetLots.forEach((lot, idx) => {
         const prevChoice = previousChoices[idx];
         if (prevChoice) {
           nextVotes[prevChoice] = Math.max(0, (nextVotes[prevChoice] || 0) - 1);
@@ -1359,10 +1485,10 @@ export default function App() {
 
     setVoteLedger((prevLedger) => {
       const nextLedger = { ...prevLedger };
-      votingLots.forEach((lot) => { nextLedger[lot] = choice; });
+      targetLots.forEach((lot) => { nextLedger[lot] = choice; });
       return nextLedger;
     });
-    votingLots.forEach((lot) => {
+    targetLots.forEach((lot) => {
       store.set(`vote_${lot}`, choice);
       trackOwner(lot, { voteChoice: choice, votedAt: todayLabel(), name: user.name });
     });
@@ -1375,6 +1501,21 @@ export default function App() {
   };
   const handleAddDocument = (doc) => setCovenantDocs((prev) => [doc, ...prev]);
   const handleDeleteDocument = (docId) => setCovenantDocs((prev) => prev.filter((doc) => doc.id !== docId));
+  const handleUpdateProfile = ({ name, lots }) => {
+    const isAdmin = user.isAdmin;
+    const normalizedLots = isAdmin ? ["ADMIN"] : [...new Set((lots || []).map((lot) => normalizeLotLabel(lot)).filter(Boolean))];
+    if (!isAdmin) {
+      normalizedLots.forEach((lot) => trackOwner(lot, { name }));
+    }
+    const updatedUser = {
+      ...user,
+      name: name || user.name,
+      lots: normalizedLots,
+      lot: isAdmin ? "ADMIN" : normalizedLots.join(", "),
+    };
+    store.set("fw_user", updatedUser);
+    setUser(updatedUser);
+  };
 
   const activityRows = Object.values(ownerActivity);
   const stats = {
@@ -1392,6 +1533,7 @@ export default function App() {
     { id:"proposed", label:"Proposed One CC&R", icon:<Icon.star/> },
     { id:"risks", label:"Risks of inaction", icon:<Icon.home2/> },
     { id:"str", label:"STR — key issue", icon:<Icon.vote/> },
+    ...(!user.isAdmin ? [{ id:"profile", label:"My profile", icon:<Icon.user/> }] : []),
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
     ...(user.isAdmin ? [{ id:"admin-docs", label:"Admin document tools", icon:<Icon.doc/> }] : []),
@@ -1404,6 +1546,7 @@ export default function App() {
     proposed:"Proposed One Community CC&R",
     risks:"Risks of inaction",
     str:"Short-term rentals",
+    profile:"Resident profile",
     comments:"Community comments",
     dashboard:"Campaign dashboard",
     "admin-docs":"Admin document upload",
@@ -1450,6 +1593,7 @@ export default function App() {
           {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
           {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote}/>}
+          {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
           {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats}/>}
           {page === "admin-docs" && user.isAdmin && (
