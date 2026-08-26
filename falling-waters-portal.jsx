@@ -2438,12 +2438,42 @@ function AdminVotingPage({
 }
 
 // ── DASHBOARD PAGE ───────────────────────────────────────────────────────────
-function DashboardPage({ votes, comments, stats, totalLots, votesNeeded }) {
+function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operationalStats }) {
   const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
   const notEngaged = Math.max(0, totalLots - surveyEngaged);
   const strComments = comments.filter(c => c.topic === "str");
   const restrictCount = comments.filter(c => c.stance === "restrict").length;
   const permitCount = comments.filter(c => c.stance === "permit").length;
+  const outreachRows = [
+    {
+      group: "Lots contacted",
+      lots: operationalStats.contactedLots,
+      status: operationalStats.contactedLots > 0 ? "In progress" : "Not started",
+      posture: `${Math.round((operationalStats.contactedLots / Math.max(totalLots, 1)) * 100)}% reached`,
+      action: "Continue follow-ups to reach remaining lots",
+    },
+    {
+      group: "Lots not yet contacted",
+      lots: operationalStats.uncontactedLots,
+      status: operationalStats.uncontactedLots > 0 ? "Not started" : "Complete",
+      posture: `${Math.round((operationalStats.uncontactedLots / Math.max(totalLots, 1)) * 100)}% pending`,
+      action: "Door-to-door / certified mail outreach",
+    },
+    {
+      group: "Lots with recorded vote",
+      lots: operationalStats.votedLots,
+      status: operationalStats.votedLots > 0 ? "In progress" : "Not started",
+      posture: `${Math.round((operationalStats.votedLots / Math.max(totalLots, 1)) * 100)}% voted`,
+      action: "Target non-voted lots for preference capture",
+    },
+    {
+      group: "Lots marked non-eligible",
+      lots: operationalStats.nonEligibleLots,
+      status: operationalStats.nonEligibleLots > 0 ? "Review needed" : "Clear",
+      posture: `${operationalStats.nonEligibleVotedLots} non-eligible ballots flagged`,
+      action: "Verify dues/legal status and update eligibility",
+    },
+  ];
   const phases = [
     { num:1, label:"Legal foundation", status:"active", detail:"Attorney engaged, STR analysis complete, written opinion on adoption process in progress" },
     { num:2, label:"Listening tour", status:"pending", detail:"Door-to-door with all 50 homeowners · Certified mail to 150 vacant lot owners" },
@@ -2555,23 +2585,42 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded }) {
       </div>
 
       <div style={S.card}>
-        <div style={S.cardTitle}>Outreach targets</div>
+        <div style={S.cardTitle}>Outreach targets (live portal data)</div>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+          This table is calculated from current portal records (contacted flags, vote ledger, and eligibility markers).
+        </div>
         <div style={{ overflowX:"auto" }}>
           <table style={S.table}>
             <thead><tr>
               <th style={S.th}>Owner group</th><th style={S.th}>Est. lots</th><th style={S.th}>Engagement status</th><th style={S.th}>STR posture</th><th style={S.th}>Priority action</th>
             </tr></thead>
             <tbody>
-              {[
-                { group:"Resident homeowners", lots:50, status:"In progress", posture:"Mixed", action:"Door-to-door personal outreach" },
-                { group:"Vacant lots — future builders", lots:40, status:"Not started", posture:"Flexible", action:"Certified mail + one-page summary" },
-                { group:"Vacant lots — absentee investors", lots:90, status:"Not started", posture:"Watch STR rules closely", action:"Certified mail + proxy ballot info" },
-                { group:"Active STR operators", lots:20, status:"Not started", posture:"Oppose outright ban", action:"Personal call — Option 2 conversation" },
-              ].map((r,i) => (
+              {outreachRows.map((r,i) => (
                 <tr key={i} style={{ background: i%2===0 ? C.white : C.parchment }}>
                   <td style={{ ...S.td, fontWeight:600 }}>{r.group}</td>
                   <td style={S.td}>{r.lots}</td>
-                  <td style={S.td}><span style={S.pill(r.status==="In progress" ? C.amber : C.muted, r.status==="In progress" ? C.amberLight : C.parchmentDark)}>{r.status}</span></td>
+                  <td style={S.td}>
+                    <span
+                      style={S.pill(
+                        r.status === "In progress"
+                          ? C.amber
+                          : r.status === "Review needed"
+                            ? C.danger
+                            : r.status === "Complete" || r.status === "Clear"
+                              ? C.success
+                              : C.muted,
+                        r.status === "In progress"
+                          ? C.amberLight
+                          : r.status === "Review needed"
+                            ? C.dangerLight
+                            : r.status === "Complete" || r.status === "Clear"
+                              ? C.successLight
+                              : C.parchmentDark
+                      )}
+                    >
+                      {r.status}
+                    </span>
+                  </td>
                   <td style={{ ...S.td, fontSize:12, color:C.muted }}>{r.posture}</td>
                   <td style={{ ...S.td, fontSize:12, color:C.forest, fontWeight:500 }}>{r.action}</td>
                 </tr>
@@ -3141,10 +3190,24 @@ export default function App() {
   };
 
   const activityRows = Object.values(ownerActivity);
+  const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
+  const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
+  const contactedLotsFromOutreach = allLotLabels.filter((lot) => !!outreachState?.[lot]?.contacted).length;
+  const nonEligibleLotsCount = allLotLabels.filter((lot) => eligibilityState?.[lot]?.eligible === false).length;
+  const nonEligibleVotedLotsCount = allLotLabels.filter(
+    (lot) => eligibilityState?.[lot]?.eligible === false && !!(voteLedger[lot] || store.get(`vote_${lot}`))
+  ).length;
   const stats = {
     loggedInLots: activityRows.length,
-    commentedLots: activityRows.filter((row) => row.commented).length,
-    votedLots: activityRows.filter((row) => row.voteChoice).length,
+    commentedLots: commentedLotsFromActivity,
+    votedLots: votedLotsFromLedger,
+  };
+  const operationalStats = {
+    contactedLots: contactedLotsFromOutreach,
+    uncontactedLots: Math.max(totalLots - contactedLotsFromOutreach, 0),
+    votedLots: votedLotsFromLedger,
+    nonEligibleLots: nonEligibleLotsCount,
+    nonEligibleVotedLots: nonEligibleVotedLotsCount,
   };
 
   if (!user) return <LoginScreen onLogin={handleLogin} adminAccessEntries={adminAccessEntries}/>;
@@ -3236,7 +3299,16 @@ export default function App() {
           {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
-          {page === "dashboard" && <DashboardPage votes={votes} comments={comments} stats={stats} totalLots={totalLots} votesNeeded={votesNeeded}/>}
+          {page === "dashboard" && (
+            <DashboardPage
+              votes={votes}
+              comments={comments}
+              stats={stats}
+              totalLots={totalLots}
+              votesNeeded={votesNeeded}
+              operationalStats={operationalStats}
+            />
+          )}
           {page === "admin-votes" && user.isAdmin && (
             <AdminVotingPage
               ownerActivity={ownerActivity}
