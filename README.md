@@ -45,6 +45,7 @@ For each lot:
 - the first successful **Primary voter** sign-in establishes the lot's voting identity
 - future primary-voter sign-ins for that lot must match the registered primary voter identity and password
 - other household users can still use **Comment-only** access without receiving vote authority
+- admins can intentionally reassign a lot's primary voter in the Admin roster using **Primary voter transfer** with a required audit note
 
 This prevents alternate IDs from taking over the same lot's official vote.
 

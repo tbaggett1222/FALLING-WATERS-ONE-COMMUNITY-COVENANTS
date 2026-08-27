@@ -44,6 +44,7 @@ const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
+const PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
 const DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
@@ -226,6 +227,44 @@ const formatIsoDateTime = (isoValue) => {
   const parsed = new Date(String(isoValue));
   if (Number.isNaN(parsed.getTime())) return "";
   return parsed.toLocaleString();
+};
+
+const normalizePrimaryVoterTransferAuditEntries = (entries) => {
+  const list = Array.isArray(entries) ? entries : [];
+  return list
+    .map((entry, idx) => {
+      const lot = normalizeLotLabel(entry?.lot);
+      const toName = String(entry?.toName || "").trim();
+      const fromName = String(entry?.fromName || "").trim();
+      const note = String(entry?.note || "").trim();
+      const byName = String(entry?.byName || "").trim();
+      const tsIsoRaw = String(entry?.tsIso || "").trim();
+      const tsIso = tsIsoRaw && !Number.isNaN(Date.parse(tsIsoRaw)) ? new Date(tsIsoRaw).toISOString() : null;
+      if (!lot || lot === "ADMIN" || !toName || !note || !byName || !tsIso) return null;
+      return {
+        id: String(entry?.id || `pvt_${lot.replace(/\s+/g, "_")}_${idx}`).trim(),
+        lot,
+        fromName,
+        toName,
+        note,
+        byName,
+        tsIso,
+        tsLabel: String(entry?.tsLabel || formatIsoDateTime(tsIso)).trim() || formatIsoDateTime(tsIso),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Date.parse(b.tsIso) - Date.parse(a.tsIso));
+};
+
+const mergePrimaryVoterTransferAuditEntries = (currentEntries, incomingEntries) => {
+  const merged = [...normalizePrimaryVoterTransferAuditEntries(currentEntries)];
+  const seenIds = new Set(merged.map((entry) => entry.id));
+  normalizePrimaryVoterTransferAuditEntries(incomingEntries).forEach((entry) => {
+    if (seenIds.has(entry.id)) return;
+    seenIds.add(entry.id);
+    merged.push(entry);
+  });
+  return merged.sort((a, b) => Date.parse(b.tsIso) - Date.parse(a.tsIso));
 };
 
 const computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
@@ -2457,6 +2496,7 @@ function AdminVotingPage({
   ownerActivity,
   voteLedger,
   primaryVoterRegistry,
+  primaryVoterTransferAudit,
   outreachState,
   eligibilityState,
   userDirectory,
@@ -2486,6 +2526,7 @@ function AdminVotingPage({
   onSetAdminAccessGrade,
   onGrantAdminAccess,
   onRevokeAdminAccess,
+  onTransferPrimaryVoter,
 }) {
   const [filter, setFilter] = useState("all");
   const [lotQuery, setLotQuery] = useState("");
@@ -2514,6 +2555,11 @@ function AdminVotingPage({
   const [dbRecordsTable, setDbRecordsTable] = useState("state_values");
   const [dbRecords, setDbRecords] = useState([]);
   const [dbChecklist, setDbChecklist] = useState(null);
+  const [transferLot, setTransferLot] = useState("");
+  const [transferPrimaryName, setTransferPrimaryName] = useState("");
+  const [transferNote, setTransferNote] = useState("");
+  const [transferMsg, setTransferMsg] = useState("");
+  const [transferErr, setTransferErr] = useState("");
   const effectiveBackupHealthThresholdDays =
     Number.isInteger(Number(backupHealthThresholdDays)) &&
     Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
@@ -2562,6 +2608,11 @@ function AdminVotingPage({
   useEffect(() => {
     setDbApiInput(String(dbApiBaseUrl || ""));
   }, [dbApiBaseUrl]);
+  useEffect(() => {
+    if (!lotLabels.includes(transferLot)) {
+      setTransferLot(lotLabels[0] || "");
+    }
+  }, [lotLabels, transferLot]);
 
   const checklistRows = dbChecklist?.rows || [
     { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
@@ -2629,6 +2680,7 @@ function AdminVotingPage({
     })
     : filteredByStatus;
   const sortedFilteredRows = [...filteredRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+  const transferAuditRows = normalizePrimaryVoterTransferAuditEntries(primaryVoterTransferAudit);
 
   const exportCsv = () => {
     const headers = [
@@ -2827,6 +2879,18 @@ function AdminVotingPage({
         });
       });
 
+      transferAuditRows.forEach((entry) => {
+        appendObject("primary_voter_transfers", entry.id || `${entry.lot}_${entry.tsIso}`, {
+          lot: entry.lot,
+          from_name: entry.fromName || "",
+          to_name: entry.toName || "",
+          audit_note: entry.note || "",
+          changed_by: entry.byName || "",
+          changed_at_iso: entry.tsIso || "",
+          changed_at_label: entry.tsLabel || "",
+        });
+      });
+
       directoryRows.forEach((row, idx) => {
         const rowKey = row.userId || `user_${idx + 1}`;
         appendObject("user_directory", rowKey, {
@@ -2895,6 +2959,7 @@ function AdminVotingPage({
         outreach_records: Object.keys(outreachState || {}).length,
         eligibility_records: Object.keys(eligibilityState || {}).length,
         primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
+        primary_voter_transfer_audit_records: transferAuditRows.length,
         admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
         user_directory_records: Object.keys(userDirectory || {}).length,
         covenant_docs: covenantDocCount,
@@ -3217,6 +3282,39 @@ function AdminVotingPage({
     }
   };
 
+  const submitPrimaryVoterTransfer = () => {
+    setTransferErr("");
+    setTransferMsg("");
+    const safeLot = normalizeLotLabel(transferLot);
+    const safeName = String(transferPrimaryName || "").trim();
+    const safeNote = String(transferNote || "").trim();
+    if (!safeLot || !lotLabels.includes(safeLot)) {
+      setTransferErr("Select a valid lot for primary voter transfer.");
+      return;
+    }
+    if (!safeName) {
+      setTransferErr("Enter the new primary voter full name.");
+      return;
+    }
+    if (safeNote.length < 10) {
+      setTransferErr("Audit note must be at least 10 characters.");
+      return;
+    }
+    const result = onTransferPrimaryVoter?.({
+      lot: safeLot,
+      toName: safeName,
+      note: safeNote,
+    });
+    if (result?.error) {
+      setTransferErr(result.error);
+      return;
+    }
+    setTransferPrimaryName("");
+    setTransferNote("");
+    setTransferMsg(result?.message || "Primary voter transfer recorded.");
+    setTimeout(() => setTransferMsg(""), 4500);
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
@@ -3356,6 +3454,79 @@ function AdminVotingPage({
                       Revoke
                     </button>
                   </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Primary voter transfer (admin only)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Reassign official voting authority for a lot when ownership or household primary contact changes. An audit note is required and stored.
+        </div>
+        {transferErr && <div style={S.alert("danger")}>{transferErr}</div>}
+        {transferMsg && <div style={S.alert("success")}>{transferMsg}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>Lot</label>
+            <select style={S.select} value={transferLot} onChange={(event) => setTransferLot(event.target.value)}>
+              {lotLabels.map((lotLabel) => (
+                <option key={lotLabel} value={lotLabel}>{lotLabel}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>New primary voter name</label>
+            <input
+              style={S.input}
+              value={transferPrimaryName}
+              onChange={(event) => setTransferPrimaryName(event.target.value)}
+              placeholder="Full legal name"
+              autoCapitalize="words"
+              autoCorrect="on"
+            />
+          </div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={S.label}>Audit note (required)</label>
+          <textarea
+            style={S.textarea}
+            value={transferNote}
+            onChange={(event) => setTransferNote(event.target.value)}
+            placeholder="Explain why this transfer is needed (ownership change, household update, etc.)"
+          />
+        </div>
+        <button style={{ ...S.btn("primary"), padding: "8px 12px" }} onClick={submitPrimaryVoterTransfer}>
+          Record transfer
+        </button>
+        <div style={{ overflowX: "auto", marginTop: 12 }}>
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>When</th>
+                <th style={S.th}>Lot</th>
+                <th style={S.th}>From</th>
+                <th style={S.th}>To</th>
+                <th style={S.th}>By</th>
+                <th style={S.th}>Audit note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transferAuditRows.length === 0 && (
+                <tr>
+                  <td style={S.td} colSpan={6}>No primary voter transfers recorded yet.</td>
+                </tr>
+              )}
+              {transferAuditRows.map((entry) => (
+                <tr key={entry.id}>
+                  <td style={S.td}>{entry.tsLabel || formatIsoDateTime(entry.tsIso) || "—"}</td>
+                  <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{entry.lot}</td>
+                  <td style={S.td}>{entry.fromName || "—"}</td>
+                  <td style={S.td}>{entry.toName || "—"}</td>
+                  <td style={S.td}>{entry.byName || "—"}</td>
+                  <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{entry.note || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -4094,6 +4265,9 @@ export default function App() {
     const saved = store.get("fw_primary_voter_registry");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [primaryVoterTransferAudit, setPrimaryVoterTransferAudit] = useState(() =>
+    normalizePrimaryVoterTransferAuditEntries(store.get(PRIMARY_VOTER_TRANSFER_AUDIT_KEY))
+  );
   const [outreachState, setOutreachState] = useState(() => {
     const saved = store.get("fw_outreach_state");
     return saved && typeof saved === "object" ? saved : {};
@@ -4153,6 +4327,7 @@ export default function App() {
   useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
   useEffect(() => { store.set("fw_primary_voter_registry", primaryVoterRegistry); }, [primaryVoterRegistry]);
+  useEffect(() => { store.set(PRIMARY_VOTER_TRANSFER_AUDIT_KEY, primaryVoterTransferAudit); }, [primaryVoterTransferAudit]);
   useEffect(() => { store.set("fw_outreach_state", outreachState); }, [outreachState]);
   useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
   useEffect(() => { store.set("fw_admin_access_entries", adminAccessEntries); }, [adminAccessEntries]);
@@ -4293,6 +4468,78 @@ export default function App() {
       return next;
     });
     return { message: `${safeName} admin rights revoked.` };
+  };
+
+  const handleTransferPrimaryVoter = ({ lot, toName, note }) => {
+    if (!user?.isAdmin) {
+      return { error: "Only admins can transfer primary voter authority." };
+    }
+    const normalizedLot = normalizeLotLabel(lot);
+    const safeName = String(toName || "").trim();
+    const safeNote = String(note || "").trim();
+    if (!normalizedLot || !allLotLabels.includes(normalizedLot)) {
+      return { error: "Select a valid lot number before transferring primary voter authority." };
+    }
+    if (!safeName) {
+      return { error: "New primary voter name is required." };
+    }
+    if (safeNote.length < 10) {
+      return { error: "Audit note must be at least 10 characters." };
+    }
+
+    const previousRecord = primaryVoterRegistry?.[normalizedLot] || null;
+    const previousName = String(previousRecord?.name || "").trim();
+    const nextUserId = `usr_transfer_${normalizeNameKey(safeName).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
+    const nowIso = new Date().toISOString();
+    const nowLabel = todayLabel();
+
+    setPrimaryVoterRegistry((prev) => ({
+      ...prev,
+      [normalizedLot]: {
+        name: safeName,
+        nameKey: normalizeNameKey(safeName),
+        userId: nextUserId,
+        assignedAt: nowLabel,
+        credentialHash: null,
+      },
+    }));
+    setOwnerActivity((prev) => ({
+      ...prev,
+      [normalizedLot]: {
+        ...(prev[normalizedLot] || {}),
+        hasLoggedIn: prev?.[normalizedLot]?.hasLoggedIn || false,
+        name: safeName,
+        lastActive: prev?.[normalizedLot]?.lastActive || nowLabel,
+      },
+    }));
+    setUserDirectory((prev) => ({
+      ...prev,
+      [nextUserId]: {
+        userId: nextUserId,
+        name: safeName,
+        nameKey: normalizeNameKey(safeName),
+        isAdmin: false,
+        accessRole: ACCESS_ROLES.primary,
+        lots: [normalizedLot],
+        lastSeen: nowLabel,
+      },
+    }));
+
+    const auditEntry = {
+      id: `pvt_${normalizedLot.replace(/\s+/g, "_")}_${Date.now()}`,
+      lot: normalizedLot,
+      fromName: previousName,
+      toName: safeName,
+      note: safeNote,
+      byName: user.name,
+      tsIso: nowIso,
+      tsLabel: formatIsoDateTime(nowIso),
+    };
+    setPrimaryVoterTransferAudit((prev) => mergePrimaryVoterTransferAuditEntries([auditEntry], prev));
+
+    return {
+      message: `${normalizedLot} primary voter transferred to ${safeName}. New voter must sign in using this name and create their password for future lot votes.`,
+    };
   };
 
   const trackUserAccess = (profile) => {
@@ -4656,11 +4903,15 @@ export default function App() {
       if (hasColumn(primaryAliases)) {
         const primaryName = String(pick(primaryAliases) || "").trim();
         if (primaryName) {
+          const existingPrimary = nextPrimaryRegistry[lot] || {};
+          const existingNameKey = normalizeNameKey(existingPrimary.nameKey || existingPrimary.name);
+          const nextNameKey = normalizeNameKey(primaryName);
           nextPrimaryRegistry[lot] = {
             name: primaryName,
-            nameKey: normalizeNameKey(primaryName),
-            userId: nextPrimaryRegistry[lot]?.userId || generateUserId(primaryName),
+            nameKey: nextNameKey,
+            userId: existingPrimary.userId || generateUserId(primaryName),
             assignedAt: todayLabel(),
+            credentialHash: existingNameKey === nextNameKey ? existingPrimary.credentialHash || null : null,
           };
         } else {
           delete nextPrimaryRegistry[lot];
@@ -4744,6 +4995,7 @@ export default function App() {
         fw_owner_activity: ownerActivity,
         fw_vote_ledger: voteLedger,
         fw_primary_voter_registry: primaryVoterRegistry,
+        fw_primary_voter_transfer_audit: primaryVoterTransferAudit,
         fw_outreach_state: outreachState,
         fw_user_directory: userDirectory,
         fw_admin_access_entries: adminAccessEntries,
@@ -4888,6 +5140,14 @@ export default function App() {
     const nextPrimaryRegistry = scopeFlags.primaryVoters
       ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)
       : primaryVoterRegistry;
+    const importedTransferAudit = normalizePrimaryVoterTransferAuditEntries(candidate.fw_primary_voter_transfer_audit);
+    const nextPrimaryTransferAudit = scopeFlags.primaryVoters
+      ? (
+        restoreMode === "replace"
+          ? importedTransferAudit
+          : mergePrimaryVoterTransferAuditEntries(primaryVoterTransferAudit, importedTransferAudit)
+      )
+      : primaryVoterTransferAudit;
     const nextOutreach = scopeFlags.outreach
       ? mergeObjectState(outreachState, candidate.fw_outreach_state)
       : outreachState;
@@ -4940,7 +5200,10 @@ export default function App() {
     }
     if (scopeFlags.covenantDocs) setCovenantDocs(nextCovenantDocs);
     if (scopeFlags.ownerActivity) setOwnerActivity(nextOwnerActivity);
-    if (scopeFlags.primaryVoters) setPrimaryVoterRegistry(nextPrimaryRegistry);
+    if (scopeFlags.primaryVoters) {
+      setPrimaryVoterRegistry(nextPrimaryRegistry);
+      setPrimaryVoterTransferAudit(nextPrimaryTransferAudit);
+    }
     if (scopeFlags.outreach) setOutreachState(nextOutreach);
     if (scopeFlags.userDirectory) setUserDirectory(nextUserDirectory);
     if (scopeFlags.eligibility) setEligibilityState(nextEligibility);
@@ -5452,6 +5715,7 @@ export default function App() {
               ownerActivity={ownerActivity}
               voteLedger={voteLedger}
               primaryVoterRegistry={primaryVoterRegistry}
+              primaryVoterTransferAudit={primaryVoterTransferAudit}
               outreachState={outreachState}
               eligibilityState={eligibilityState}
               userDirectory={userDirectory}
@@ -5481,6 +5745,7 @@ export default function App() {
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
               onGrantAdminAccess={handleGrantAdminAccess}
               onRevokeAdminAccess={handleRevokeAdminAccess}
+              onTransferPrimaryVoter={handleTransferPrimaryVoter}
             />
           )}
           {page === "admin-docs" && user.isAdmin && (

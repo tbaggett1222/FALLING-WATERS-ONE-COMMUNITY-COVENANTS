@@ -21499,6 +21499,7 @@ var FallingWatersPortal = (() => {
   var BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
   var DB_API_BASE_URL_KEY = "fw_db_api_base_url";
   var LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
+  var PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
   var DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
@@ -21666,6 +21667,39 @@ var FallingWatersPortal = (() => {
     const parsed = new Date(String(isoValue));
     if (Number.isNaN(parsed.getTime())) return "";
     return parsed.toLocaleString();
+  };
+  var normalizePrimaryVoterTransferAuditEntries = (entries) => {
+    const list = Array.isArray(entries) ? entries : [];
+    return list.map((entry, idx) => {
+      const lot = normalizeLotLabel(entry?.lot);
+      const toName = String(entry?.toName || "").trim();
+      const fromName = String(entry?.fromName || "").trim();
+      const note = String(entry?.note || "").trim();
+      const byName = String(entry?.byName || "").trim();
+      const tsIsoRaw = String(entry?.tsIso || "").trim();
+      const tsIso = tsIsoRaw && !Number.isNaN(Date.parse(tsIsoRaw)) ? new Date(tsIsoRaw).toISOString() : null;
+      if (!lot || lot === "ADMIN" || !toName || !note || !byName || !tsIso) return null;
+      return {
+        id: String(entry?.id || `pvt_${lot.replace(/\s+/g, "_")}_${idx}`).trim(),
+        lot,
+        fromName,
+        toName,
+        note,
+        byName,
+        tsIso,
+        tsLabel: String(entry?.tsLabel || formatIsoDateTime(tsIso)).trim() || formatIsoDateTime(tsIso)
+      };
+    }).filter(Boolean).sort((a, b) => Date.parse(b.tsIso) - Date.parse(a.tsIso));
+  };
+  var mergePrimaryVoterTransferAuditEntries = (currentEntries, incomingEntries) => {
+    const merged = [...normalizePrimaryVoterTransferAuditEntries(currentEntries)];
+    const seenIds = new Set(merged.map((entry) => entry.id));
+    normalizePrimaryVoterTransferAuditEntries(incomingEntries).forEach((entry) => {
+      if (seenIds.has(entry.id)) return;
+      seenIds.add(entry.id);
+      merged.push(entry);
+    });
+    return merged.sort((a, b) => Date.parse(b.tsIso) - Date.parse(a.tsIso));
   };
   var computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
     let eliminate = 0;
@@ -23036,6 +23070,7 @@ var FallingWatersPortal = (() => {
     ownerActivity,
     voteLedger,
     primaryVoterRegistry,
+    primaryVoterTransferAudit,
     outreachState,
     eligibilityState,
     userDirectory,
@@ -23064,7 +23099,8 @@ var FallingWatersPortal = (() => {
     onUpdateTotalLots,
     onSetAdminAccessGrade,
     onGrantAdminAccess,
-    onRevokeAdminAccess
+    onRevokeAdminAccess,
+    onTransferPrimaryVoter
   }) {
     const [filter, setFilter] = (0, import_react.useState)("all");
     const [lotQuery, setLotQuery] = (0, import_react.useState)("");
@@ -23093,6 +23129,11 @@ var FallingWatersPortal = (() => {
     const [dbRecordsTable, setDbRecordsTable] = (0, import_react.useState)("state_values");
     const [dbRecords, setDbRecords] = (0, import_react.useState)([]);
     const [dbChecklist, setDbChecklist] = (0, import_react.useState)(null);
+    const [transferLot, setTransferLot] = (0, import_react.useState)("");
+    const [transferPrimaryName, setTransferPrimaryName] = (0, import_react.useState)("");
+    const [transferNote, setTransferNote] = (0, import_react.useState)("");
+    const [transferMsg, setTransferMsg] = (0, import_react.useState)("");
+    const [transferErr, setTransferErr] = (0, import_react.useState)("");
     const effectiveBackupHealthThresholdDays = Number.isInteger(Number(backupHealthThresholdDays)) && Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS ? Number(backupHealthThresholdDays) : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
     const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
     const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
@@ -23126,6 +23167,11 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       setDbApiInput(String(dbApiBaseUrl || ""));
     }, [dbApiBaseUrl]);
+    (0, import_react.useEffect)(() => {
+      if (!lotLabels.includes(transferLot)) {
+        setTransferLot(lotLabels[0] || "");
+      }
+    }, [lotLabels, transferLot]);
     const checklistRows = dbChecklist?.rows || [
       { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
       { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
@@ -23179,6 +23225,7 @@ var FallingWatersPortal = (() => {
       return lotLabel.includes(normalizedLotQuery) || lotNum.includes(normalizedLotQuery);
     }) : filteredByStatus;
     const sortedFilteredRows = [...filteredRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+    const transferAuditRows = normalizePrimaryVoterTransferAuditEntries(primaryVoterTransferAudit);
     const exportCsv = () => {
       const headers = [
         "Lot",
@@ -23362,6 +23409,17 @@ var FallingWatersPortal = (() => {
             grade_updated_at: row.gradeUpdatedAt || ""
           });
         });
+        transferAuditRows.forEach((entry) => {
+          appendObject("primary_voter_transfers", entry.id || `${entry.lot}_${entry.tsIso}`, {
+            lot: entry.lot,
+            from_name: entry.fromName || "",
+            to_name: entry.toName || "",
+            audit_note: entry.note || "",
+            changed_by: entry.byName || "",
+            changed_at_iso: entry.tsIso || "",
+            changed_at_label: entry.tsLabel || ""
+          });
+        });
         directoryRows.forEach((row, idx) => {
           const rowKey = row.userId || `user_${idx + 1}`;
           appendObject("user_directory", rowKey, {
@@ -23426,6 +23484,7 @@ var FallingWatersPortal = (() => {
           outreach_records: Object.keys(outreachState || {}).length,
           eligibility_records: Object.keys(eligibilityState || {}).length,
           primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
+          primary_voter_transfer_audit_records: transferAuditRows.length,
           admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
           user_directory_records: Object.keys(userDirectory || {}).length,
           covenant_docs: covenantDocCount,
@@ -23721,6 +23780,38 @@ var FallingWatersPortal = (() => {
         setDbBusy(false);
       }
     };
+    const submitPrimaryVoterTransfer = () => {
+      setTransferErr("");
+      setTransferMsg("");
+      const safeLot = normalizeLotLabel(transferLot);
+      const safeName = String(transferPrimaryName || "").trim();
+      const safeNote = String(transferNote || "").trim();
+      if (!safeLot || !lotLabels.includes(safeLot)) {
+        setTransferErr("Select a valid lot for primary voter transfer.");
+        return;
+      }
+      if (!safeName) {
+        setTransferErr("Enter the new primary voter full name.");
+        return;
+      }
+      if (safeNote.length < 10) {
+        setTransferErr("Audit note must be at least 10 characters.");
+        return;
+      }
+      const result = onTransferPrimaryVoter?.({
+        lot: safeLot,
+        toName: safeName,
+        note: safeNote
+      });
+      if (result?.error) {
+        setTransferErr(result.error);
+        return;
+      }
+      setTransferPrimaryName("");
+      setTransferNote("");
+      setTransferMsg(result?.message || "Primary voter transfer recorded.");
+      setTimeout(() => setTransferMsg(""), 4500);
+    };
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Backup health:"), " ", backupHealthText, " ", backupHealthGuidance), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup health policy"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many days can pass before backup health is marked stale."), backupThresholdErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupThresholdErr), backupThresholdMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupThresholdMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
@@ -23785,7 +23876,25 @@ var FallingWatersPortal = (() => {
         onClick: () => revokeAdminAccess(row.name)
       },
       "Revoke"
-    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Export options: JSON for full-fidelity restore, plus a single-file full CSV export that includes reporting tables and raw stored portal records."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
+    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Primary voter transfer (admin only)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Reassign official voting authority for a lot when ownership or household primary contact changes. An audit note is required and stored."), transferErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, transferErr), transferMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, transferMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: transferLot, onChange: (event) => setTransferLot(event.target.value) }, lotLabels.map((lotLabel) => /* @__PURE__ */ import_react.default.createElement("option", { key: lotLabel, value: lotLabel }, lotLabel)))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "New primary voter name"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        value: transferPrimaryName,
+        onChange: (event) => setTransferPrimaryName(event.target.value),
+        placeholder: "Full legal name",
+        autoCapitalize: "words",
+        autoCorrect: "on"
+      }
+    ))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Audit note (required)"), /* @__PURE__ */ import_react.default.createElement(
+      "textarea",
+      {
+        style: S.textarea,
+        value: transferNote,
+        onChange: (event) => setTransferNote(event.target.value),
+        placeholder: "Explain why this transfer is needed (ownership change, household update, etc.)"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px" }, onClick: submitPrimaryVoterTransfer }, "Record transfer"), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "When"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "From"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "To"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "By"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Audit note"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, transferAuditRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No primary voter transfers recorded yet.")), transferAuditRows.map((entry) => /* @__PURE__ */ import_react.default.createElement("tr", { key: entry.id }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.tsLabel || formatIsoDateTime(entry.tsIso) || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, entry.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.fromName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.toName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.byName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontSize: 12, color: C.muted } }, entry.note || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Export options: JSON for full-fidelity restore, plus a single-file full CSV export that includes reporting tables and raw stored portal records."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         style: { ...S.btn("primary"), padding: "7px 12px" },
@@ -24100,6 +24209,9 @@ var FallingWatersPortal = (() => {
       const saved = store.get("fw_primary_voter_registry");
       return saved && typeof saved === "object" ? saved : {};
     });
+    const [primaryVoterTransferAudit, setPrimaryVoterTransferAudit] = (0, import_react.useState)(
+      () => normalizePrimaryVoterTransferAuditEntries(store.get(PRIMARY_VOTER_TRANSFER_AUDIT_KEY))
+    );
     const [outreachState, setOutreachState] = (0, import_react.useState)(() => {
       const saved = store.get("fw_outreach_state");
       return saved && typeof saved === "object" ? saved : {};
@@ -24166,6 +24278,9 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       store.set("fw_primary_voter_registry", primaryVoterRegistry);
     }, [primaryVoterRegistry]);
+    (0, import_react.useEffect)(() => {
+      store.set(PRIMARY_VOTER_TRANSFER_AUDIT_KEY, primaryVoterTransferAudit);
+    }, [primaryVoterTransferAudit]);
     (0, import_react.useEffect)(() => {
       store.set("fw_outreach_state", outreachState);
     }, [outreachState]);
@@ -24315,6 +24430,73 @@ var FallingWatersPortal = (() => {
         return next;
       });
       return { message: `${safeName} admin rights revoked.` };
+    };
+    const handleTransferPrimaryVoter = ({ lot, toName, note }) => {
+      if (!user?.isAdmin) {
+        return { error: "Only admins can transfer primary voter authority." };
+      }
+      const normalizedLot = normalizeLotLabel(lot);
+      const safeName = String(toName || "").trim();
+      const safeNote = String(note || "").trim();
+      if (!normalizedLot || !allLotLabels.includes(normalizedLot)) {
+        return { error: "Select a valid lot number before transferring primary voter authority." };
+      }
+      if (!safeName) {
+        return { error: "New primary voter name is required." };
+      }
+      if (safeNote.length < 10) {
+        return { error: "Audit note must be at least 10 characters." };
+      }
+      const previousRecord = primaryVoterRegistry?.[normalizedLot] || null;
+      const previousName = String(previousRecord?.name || "").trim();
+      const nextUserId = `usr_transfer_${normalizeNameKey(safeName).replace(/[^a-z0-9]+/g, "-") || "resident"}_${Date.now()}`;
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+      const nowLabel = todayLabel();
+      setPrimaryVoterRegistry((prev) => ({
+        ...prev,
+        [normalizedLot]: {
+          name: safeName,
+          nameKey: normalizeNameKey(safeName),
+          userId: nextUserId,
+          assignedAt: nowLabel,
+          credentialHash: null
+        }
+      }));
+      setOwnerActivity((prev) => ({
+        ...prev,
+        [normalizedLot]: {
+          ...prev[normalizedLot] || {},
+          hasLoggedIn: prev?.[normalizedLot]?.hasLoggedIn || false,
+          name: safeName,
+          lastActive: prev?.[normalizedLot]?.lastActive || nowLabel
+        }
+      }));
+      setUserDirectory((prev) => ({
+        ...prev,
+        [nextUserId]: {
+          userId: nextUserId,
+          name: safeName,
+          nameKey: normalizeNameKey(safeName),
+          isAdmin: false,
+          accessRole: ACCESS_ROLES.primary,
+          lots: [normalizedLot],
+          lastSeen: nowLabel
+        }
+      }));
+      const auditEntry = {
+        id: `pvt_${normalizedLot.replace(/\s+/g, "_")}_${Date.now()}`,
+        lot: normalizedLot,
+        fromName: previousName,
+        toName: safeName,
+        note: safeNote,
+        byName: user.name,
+        tsIso: nowIso,
+        tsLabel: formatIsoDateTime(nowIso)
+      };
+      setPrimaryVoterTransferAudit((prev) => mergePrimaryVoterTransferAuditEntries([auditEntry], prev));
+      return {
+        message: `${normalizedLot} primary voter transferred to ${safeName}. New voter must sign in using this name and create their password for future lot votes.`
+      };
     };
     const trackUserAccess = (profile) => {
       if (!profile?.name) return;
@@ -24635,11 +24817,15 @@ var FallingWatersPortal = (() => {
         if (hasColumn(primaryAliases)) {
           const primaryName = String(pick(primaryAliases) || "").trim();
           if (primaryName) {
+            const existingPrimary = nextPrimaryRegistry[lot] || {};
+            const existingNameKey = normalizeNameKey(existingPrimary.nameKey || existingPrimary.name);
+            const nextNameKey = normalizeNameKey(primaryName);
             nextPrimaryRegistry[lot] = {
               name: primaryName,
-              nameKey: normalizeNameKey(primaryName),
-              userId: nextPrimaryRegistry[lot]?.userId || generateUserId(primaryName),
-              assignedAt: todayLabel()
+              nameKey: nextNameKey,
+              userId: existingPrimary.userId || generateUserId(primaryName),
+              assignedAt: todayLabel(),
+              credentialHash: existingNameKey === nextNameKey ? existingPrimary.credentialHash || null : null
             };
           } else {
             delete nextPrimaryRegistry[lot];
@@ -24713,6 +24899,7 @@ var FallingWatersPortal = (() => {
           fw_owner_activity: ownerActivity,
           fw_vote_ledger: voteLedger,
           fw_primary_voter_registry: primaryVoterRegistry,
+          fw_primary_voter_transfer_audit: primaryVoterTransferAudit,
           fw_outreach_state: outreachState,
           fw_user_directory: userDirectory,
           fw_admin_access_entries: adminAccessEntries,
@@ -24823,6 +25010,8 @@ var FallingWatersPortal = (() => {
       const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
       const nextOwnerActivity = scopeFlags.ownerActivity ? mergeObjectState(ownerActivity, candidate.fw_owner_activity) : ownerActivity;
       const nextPrimaryRegistry = scopeFlags.primaryVoters ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry) : primaryVoterRegistry;
+      const importedTransferAudit = normalizePrimaryVoterTransferAuditEntries(candidate.fw_primary_voter_transfer_audit);
+      const nextPrimaryTransferAudit = scopeFlags.primaryVoters ? restoreMode === "replace" ? importedTransferAudit : mergePrimaryVoterTransferAuditEntries(primaryVoterTransferAudit, importedTransferAudit) : primaryVoterTransferAudit;
       const nextOutreach = scopeFlags.outreach ? mergeObjectState(outreachState, candidate.fw_outreach_state) : outreachState;
       const nextUserDirectory = scopeFlags.userDirectory ? mergeObjectState(userDirectory, candidate.fw_user_directory) : userDirectory;
       const nextEligibility = scopeFlags.eligibility ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility) : eligibilityState;
@@ -24864,7 +25053,10 @@ var FallingWatersPortal = (() => {
       }
       if (scopeFlags.covenantDocs) setCovenantDocs(nextCovenantDocs);
       if (scopeFlags.ownerActivity) setOwnerActivity(nextOwnerActivity);
-      if (scopeFlags.primaryVoters) setPrimaryVoterRegistry(nextPrimaryRegistry);
+      if (scopeFlags.primaryVoters) {
+        setPrimaryVoterRegistry(nextPrimaryRegistry);
+        setPrimaryVoterTransferAudit(nextPrimaryTransferAudit);
+      }
       if (scopeFlags.outreach) setOutreachState(nextOutreach);
       if (scopeFlags.userDirectory) setUserDirectory(nextUserDirectory);
       if (scopeFlags.eligibility) setEligibilityState(nextEligibility);
@@ -25283,6 +25475,7 @@ var FallingWatersPortal = (() => {
         ownerActivity,
         voteLedger,
         primaryVoterRegistry,
+        primaryVoterTransferAudit,
         outreachState,
         eligibilityState,
         userDirectory,
@@ -25311,7 +25504,8 @@ var FallingWatersPortal = (() => {
         onUpdateTotalLots: handleUpdateTotalLots,
         onSetAdminAccessGrade: handleSetAdminAccessGrade,
         onGrantAdminAccess: handleGrantAdminAccess,
-        onRevokeAdminAccess: handleRevokeAdminAccess
+        onRevokeAdminAccess: handleRevokeAdminAccess,
+        onTransferPrimaryVoter: handleTransferPrimaryVoter
       }
     ), page === "admin-docs" && user.isAdmin && /* @__PURE__ */ import_react.default.createElement(
       AdminDocumentsPage,
