@@ -36,6 +36,7 @@ const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
 const MOBILE_BREAKPOINT_PX = 920;
+const MIN_LOGIN_SECRET_LENGTH = 4;
 const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
 const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
 const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -165,6 +166,20 @@ const normalizeLotLabel = (value) => {
   if (!stripped) return null;
   return `Lot ${stripped}`;
 };
+
+const normalizeLoginSecret = (value) => String(value || "").trim();
+
+const hashString = (value) => {
+  let hash = 5381;
+  const input = String(value || "");
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ input.charCodeAt(i);
+  }
+  return `h${(hash >>> 0).toString(16).padStart(8, "0")}`;
+};
+
+const buildPrimaryCredentialHash = (lotLabel, secret) =>
+  hashString(`${normalizeLotLabel(lotLabel) || String(lotLabel || "")}|${normalizeLoginSecret(secret)}`);
 
 const buildLotLabels = (totalLots) =>
   Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
@@ -945,8 +960,8 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
     const trimmedName = name.trim();
     const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
     const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
-    if ((!hasAdminApproval && lots.length === 0) || !trimmedName || pw.length < 4) {
-      setErr('Please enter your name, lot number(s), and a password (min 4 characters).');
+    if ((!hasAdminApproval && lots.length === 0) || !trimmedName || pw.length < MIN_LOGIN_SECRET_LENGTH) {
+      setErr(`Please enter your name, lot number(s), and a password (min ${MIN_LOGIN_SECRET_LENGTH} characters).`);
       return;
     }
     const isAdmin = lots.length === 1 && lots[0] === "ADMIN";
@@ -960,6 +975,7 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
       name: trimmedName,
       accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole),
       isAdmin,
+      loginSecret: pw,
     };
     const loginError = onLogin(user);
     if (loginError) {
@@ -974,7 +990,10 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
           <div style={{ fontFamily:"Georgia,serif", fontSize:22, fontWeight:"bold", color:C.forest, lineHeight:1.2 }}>Falling Waters</div>
           <div style={{ fontSize:13, color:C.muted, marginTop:4 }}>Community Covenant Portal</div>
         </div>
-        <div style={S.alert("info")}>Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Approved admin names receive admin access automatically.</div>
+        <div style={S.alert("info")}>
+          Enter your lot number(s), name, and password to access the portal. Primary voter logins lock voting rights by lot to the registered primary voter identity, preventing duplicate voting from alternate IDs.
+          Approved admin names receive admin access automatically.
+        </div>
         {err && <div style={S.alert("danger")}>{err}</div>}
         <form onSubmit={handle}>
           <div style={{ marginBottom:14 }}>
@@ -1011,7 +1030,7 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
             <input
               style={S.input}
               type="password"
-              placeholder="Min 4 characters"
+              placeholder={`Min ${MIN_LOGIN_SECRET_LENGTH} characters`}
               value={pw}
               onChange={e=>setPw(e.target.value)}
               autoCapitalize="none"
@@ -4294,11 +4313,24 @@ export default function App() {
     }));
   };
 
-  const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null) => {
+  const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null, options = {}) => {
     const nextRegistry = { ...primaryVoterRegistry };
     const candidateRole = normalizeAccessRole(candidateUser.accessRole);
     const candidateLots = normalizeUserLots(candidateUser).filter((lot) => lot !== "ADMIN");
     const candidateNameKey = normalizeNameKey(candidateUser.name);
+    const enforceExistingIdentity = !!options.enforceExistingIdentity;
+    const loginSecret = normalizeLoginSecret(candidateUser.loginSecret);
+    const credentialHashesByLot = {};
+    if (enforceExistingIdentity && candidateRole === ACCESS_ROLES.primary) {
+      if (loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+        return {
+          error: `Primary voter sign-in requires a password of at least ${MIN_LOGIN_SECRET_LENGTH} characters.`,
+        };
+      }
+      candidateLots.forEach((lot) => {
+        credentialHashesByLot[lot] = buildPrimaryCredentialHash(lot, loginSecret);
+      });
+    }
 
     if (previousUser && normalizeAccessRole(previousUser.accessRole) === ACCESS_ROLES.primary) {
       const previousLots = normalizeUserLots(previousUser).filter((lot) => lot !== "ADMIN");
@@ -4319,11 +4351,27 @@ export default function App() {
     if (candidateRole === ACCESS_ROLES.primary) {
       for (const lot of candidateLots) {
         const existing = nextRegistry[lot];
+        const existingNameKey = normalizeNameKey(existing?.nameKey || existing?.name);
+        if (enforceExistingIdentity && existing) {
+          const credentialHash = credentialHashesByLot[lot];
+          const sameName = existingNameKey && existingNameKey === candidateNameKey;
+          const sameUser = candidateUser.userId && existing.userId && existing.userId === candidateUser.userId;
+          if (!sameName && !sameUser) {
+            return {
+              error: `${lot} voting rights are already assigned to "${existing.name}". Use comment-only access for other household users or ask an admin to update the primary voter record.`,
+            };
+          }
+          if (existing.credentialHash && credentialHash !== existing.credentialHash) {
+            return {
+              error: `Incorrect voting password for ${lot}.`,
+            };
+          }
+        }
         if (
           existing &&
           !(
             (candidateUser.userId && existing.userId === candidateUser.userId) ||
-            (existing.nameKey && existing.nameKey === candidateNameKey)
+            (existingNameKey && existingNameKey === candidateNameKey)
           )
         ) {
           return {
@@ -4333,11 +4381,13 @@ export default function App() {
       }
 
       candidateLots.forEach((lot) => {
+        const existing = nextRegistry[lot] || {};
         nextRegistry[lot] = {
           name: candidateUser.name,
           nameKey: candidateNameKey,
           userId: candidateUser.userId,
-          assignedAt: todayLabel(),
+          assignedAt: existing.assignedAt || todayLabel(),
+          credentialHash: existing.credentialHash || credentialHashesByLot[lot] || null,
         };
       });
     }
@@ -4349,10 +4399,14 @@ export default function App() {
     const lots = normalizeUserLots(u);
     const hasAdminApproval = isAdminUserAllowed(u.name, adminAccessEntries);
     const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
+    const loginSecret = normalizeLoginSecret(u.loginSecret);
     if (requestedAdmin && !hasAdminApproval) {
       return "This account is not authorized for admin access. Contact the HOA administrator.";
     }
     const isAdmin = hasAdminApproval || requestedAdmin;
+    if (!isAdmin && loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+      return `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`;
+    }
     const effectiveLots = isAdmin ? ["ADMIN"] : lots;
     const normalizedUser = {
       ...u,
@@ -4363,16 +4417,20 @@ export default function App() {
       lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
     };
     if (!isAdmin) {
-      const check = reconcilePrimaryVoterRegistry(normalizedUser, null);
+      const check = reconcilePrimaryVoterRegistry(normalizedUser, null, {
+        enforceExistingIdentity: true,
+      });
       if (check.error) return check.error;
       setPrimaryVoterRegistry(check.registry);
     }
-    store.set("fw_user", normalizedUser);
-    setUser(normalizedUser);
+    const persistedUser = { ...normalizedUser };
+    delete persistedUser.loginSecret;
+    store.set("fw_user", persistedUser);
+    setUser(persistedUser);
     setPage(isAdmin ? "admin-votes" : "home");
-    trackUserAccess(normalizedUser);
+    trackUserAccess(persistedUser);
     if (!isAdmin) {
-      lots.forEach((lot) => trackOwner(lot, { name: normalizedUser.name }));
+      lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
     }
     return null;
   };
@@ -4381,7 +4439,15 @@ export default function App() {
   const handleVote = (choice, lotOverride = null) => {
     if (!isPrimaryVoter(user)) return;
     const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
-    const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
+    const userNameKey = normalizeNameKey(user?.name);
+    const authorizedVotingLots = votingLots.filter((lot) => {
+      const registryEntry = primaryVoterRegistry?.[lot];
+      if (!registryEntry) return true;
+      const registryNameKey = normalizeNameKey(registryEntry.nameKey || registryEntry.name);
+      const sameUserId = !!(user?.userId && registryEntry.userId && user.userId === registryEntry.userId);
+      return sameUserId || (registryNameKey && registryNameKey === userNameKey);
+    });
+    const targetLots = lotOverride ? authorizedVotingLots.filter((lot) => lot === lotOverride) : authorizedVotingLots;
     if (targetLots.length === 0) return;
     const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
     if (previousChoices.every((prevChoice) => prevChoice === choice)) return;

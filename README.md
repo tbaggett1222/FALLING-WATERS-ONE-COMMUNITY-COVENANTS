@@ -39,6 +39,15 @@ Portal data is still cached per browser, but when a PostgreSQL API URL is config
 
 This keeps iPhone and desktop views aligned with the shared database.
 
+### Primary voter identity lock (duplicate-vote prevention)
+
+For each lot:
+- the first successful **Primary voter** sign-in establishes the lot's voting identity
+- future primary-voter sign-ins for that lot must match the registered primary voter identity and password
+- other household users can still use **Comment-only** access without receiving vote authority
+
+This prevents alternate IDs from taking over the same lot's official vote.
+
 ## PostgreSQL activation (all three steps)
 
 This repo now includes a PostgreSQL API so the portal can:
