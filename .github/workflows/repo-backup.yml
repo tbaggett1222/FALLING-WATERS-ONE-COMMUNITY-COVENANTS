@@ -1,0 +1,60 @@
+name: Repository backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 03:15 UTC
+    - cron: "15 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create backup artifacts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          DATE_UTC="$(date -u +%Y%m%d-%H%M%S)"
+          REPO_NAME="${GITHUB_REPOSITORY##*/}"
+          BACKUP_DIR="repo-backup-${DATE_UTC}"
+          mkdir -p "${BACKUP_DIR}"
+
+          # 1) Portable bundle (simple restore path)
+          git bundle create "${BACKUP_DIR}/${REPO_NAME}-${DATE_UTC}.bundle" --all
+
+          # 2) Full mirror clone (all refs + config)
+          MIRROR_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git clone --mirror "${MIRROR_URL}" "${BACKUP_DIR}/${REPO_NAME}.git"
+          tar -czf "${BACKUP_DIR}/${REPO_NAME}-mirror-${DATE_UTC}.tar.gz" -C "${BACKUP_DIR}" "${REPO_NAME}.git"
+          rm -rf "${BACKUP_DIR}/${REPO_NAME}.git"
+
+          # Checksums + metadata
+          (
+            cd "${BACKUP_DIR}"
+            sha256sum ./* > SHA256SUMS.txt
+          )
+
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "commit_sha=${GITHUB_SHA}"
+            echo "workflow_run_id=${GITHUB_RUN_ID}"
+            echo "created_at_utc=${DATE_UTC}"
+          } > "${BACKUP_DIR}/metadata.txt"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-backup-${{ github.run_id }}
+          path: repo-backup-*/
+          if-no-files-found: error
+          retention-days: 30

@@ -42,6 +42,18 @@ if (rootElement) {
         );
       }
     }, 2000);
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        const path = window.location.pathname || "/";
+        const base = path.endsWith("/") ? path : path.replace(/[^/]*$/, "/");
+        navigator.serviceWorker
+          .register(`${base}service-worker.js`, { scope: base })
+          .catch((error) => {
+            // eslint-disable-next-line no-console
+            console.warn("Service worker registration failed:", error);
+          });
+      });
+    }
   } catch (error) {
     showBootstrapError("React failed while mounting the app.", error?.stack || String(error));
   }

@@ -50,7 +50,7 @@ const SCOPE_CONFIG = {
     includesAssets: false,
   },
   primaryVoters: {
-    stateKeys: [],
+    stateKeys: ["fw_primary_voter_transfer_audit"],
     recordScopes: ["primaryVoters"],
     includesAssets: false,
   },
@@ -160,6 +160,9 @@ const serializeBackup = (backup) => {
     fw_total_lots: payload.fw_total_lots ?? null,
     fw_last_backup_export_at: payload.fw_last_backup_export_at ?? null,
     fw_backup_health_threshold_days: payload.fw_backup_health_threshold_days ?? null,
+    fw_primary_voter_transfer_audit: Array.isArray(payload.fw_primary_voter_transfer_audit)
+      ? payload.fw_primary_voter_transfer_audit
+      : [],
     fw_admin_access_entries: Array.isArray(payload.fw_admin_access_entries) ? payload.fw_admin_access_entries : [],
     fw_admin_access_grades: payload.fw_admin_access_grades ?? {},
   };
@@ -475,6 +478,9 @@ const buildBackupFromDatabase = async () => {
     fw_owner_activity: ownerActivity,
     fw_vote_ledger: voteLedger,
     fw_primary_voter_registry: primaryVoters,
+    fw_primary_voter_transfer_audit: Array.isArray(stateMap.fw_primary_voter_transfer_audit)
+      ? stateMap.fw_primary_voter_transfer_audit
+      : [],
     fw_outreach_state: outreach,
     fw_user_directory: userDirectory,
     fw_admin_access_entries: adminAccessEntries,
