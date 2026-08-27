@@ -22231,19 +22231,20 @@ var FallingWatersPortal = (() => {
       display: "inline-flex",
       alignItems: "center",
       gap: 6,
-      padding: "9px 20px",
-      borderRadius: 6,
-      fontSize: 13,
+      padding: "10px 20px",
+      borderRadius: 8,
+      fontSize: 14,
       fontWeight: 600,
       cursor: "pointer",
       border: "none",
       transition: "all .15s",
+      touchAction: "manipulation",
       ...variant === "primary" ? { background: C.forest, color: C.white } : variant === "stone" ? { background: C.stone, color: C.forest } : variant === "danger" ? { background: C.danger, color: C.white } : variant === "outline" ? { background: "transparent", color: C.forest, border: `1px solid ${C.forest}` } : { background: C.parchmentDark, color: C.ink, border: `1px solid ${C.border}` }
     }),
-    input: { width: "100%", padding: "9px 12px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none", boxSizing: "border-box" },
-    textarea: { width: "100%", padding: "9px 12px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none", resize: "vertical", minHeight: 90, boxSizing: "border-box" },
+    input: { width: "100%", padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 16, lineHeight: 1.3, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none", boxSizing: "border-box" },
+    textarea: { width: "100%", padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 16, lineHeight: 1.35, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none", resize: "vertical", minHeight: 100, boxSizing: "border-box" },
     label: { display: "block", fontSize: 12, fontWeight: 600, color: C.muted, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" },
-    select: { width: "100%", padding: "9px 12px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none" },
+    select: { width: "100%", padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 16, lineHeight: 1.3, fontFamily: "inherit", background: C.white, color: C.ink, outline: "none" },
     alert: (type) => ({ padding: "12px 16px", borderRadius: 6, fontSize: 13, lineHeight: 1.6, marginBottom: 12, border: `1px solid`, ...type === "warn" ? { background: C.amberLight, color: C.amber, borderColor: "#D97706" } : type === "danger" ? { background: C.dangerLight, color: C.danger, borderColor: C.danger } : type === "success" ? { background: C.successLight, color: C.success, borderColor: "#16A34A" } : { background: "#EFF6FF", color: "#1E40AF", borderColor: "#3B82F6" } }),
     table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
     th: { textAlign: "left", padding: "8px 12px", fontWeight: 600, background: C.forest, color: C.white, fontSize: 12, textTransform: "uppercase", letterSpacing: "0.05em" },
@@ -22288,7 +22289,41 @@ var FallingWatersPortal = (() => {
         setErr(loginError);
       }
     };
-    return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, placeholder: "e.g. Lot 36, Lot 37 (admins can leave blank)", value: lot, onChange: (e) => setLot(e.target.value) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your name"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, placeholder: "First and last name", value: name, onChange: (e) => setName(e.target.value) }), isAdminUserAllowed(name.trim(), adminAccessEntries) && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 } }, "Admin recognized. You will enter Admin Control Mode after sign in.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Create / enter a password"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, type: "password", placeholder: "Min 4 characters", value: pw, onChange: (e) => setPw(e.target.value) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 } }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
+    return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        placeholder: "e.g. Lot 36, Lot 37 (admins can leave blank)",
+        value: lot,
+        onChange: (e) => setLot(e.target.value),
+        inputMode: "text",
+        autoCapitalize: "none",
+        autoCorrect: "off"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your name"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        placeholder: "First and last name",
+        value: name,
+        onChange: (e) => setName(e.target.value),
+        autoCapitalize: "words",
+        autoCorrect: "on",
+        enterKeyHint: "next"
+      }
+    ), isAdminUserAllowed(name.trim(), adminAccessEntries) && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 } }, "Admin recognized. You will enter Admin Control Mode after sign in.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Create / enter a password"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        type: "password",
+        placeholder: "Min 4 characters",
+        value: pw,
+        onChange: (e) => setPw(e.target.value),
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        enterKeyHint: "go"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 } }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
   }
   function HomePage({ votes, stats, totalLots, votesNeeded }) {
     const communityEngaged = Math.min(totalLots, stats.votedLots);
@@ -22957,13 +22992,26 @@ var FallingWatersPortal = (() => {
         normalizeAccessRole(accessRole) === ACCESS_ROLES.commentOnly ? "Profile saved. This account is comment-only and cannot cast official votes." : `Profile saved. Voting rights are now tied to ${parsedLots.length} lot${parsedLots.length === 1 ? "" : "s"}.`
       );
     };
-    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Keep your profile current. Primary-voter accounts can cast one vote per non-combined lot; comment-only accounts can participate in discussion without casting official votes."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Resident profile"), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), msg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, msg), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: save }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Name"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot numbers"), /* @__PURE__ */ import_react.default.createElement(
+    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Keep your profile current. Primary-voter accounts can cast one vote per non-combined lot; comment-only accounts can participate in discussion without casting official votes."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Resident profile"), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), msg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, msg), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: save }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Name"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        value: name,
+        onChange: (e) => setName(e.target.value),
+        autoCapitalize: "words",
+        autoCorrect: "on",
+        enterKeyHint: "next"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot numbers"), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: S.input,
         value: lotsInput,
         onChange: (e) => setLotsInput(e.target.value),
-        placeholder: "e.g. Lot 36, Lot 37"
+        placeholder: "e.g. Lot 36, Lot 37",
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        inputMode: "text"
       }
     ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 6 } }, "Separate multiple lots with commas. Example: Lot 36, Lot 37.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (official lot voting)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: S.btn("primary") }, "Save profile"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Current lot voting status"), lots.length === 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, "No lots assigned."), lots.map((lot) => {
       const currentChoice = voteLedger[lot] || store.get(`vote_${lot}`) || null;
@@ -22982,6 +23030,7 @@ var FallingWatersPortal = (() => {
     adminAccessGrades,
     totalLots,
     votesNeeded,
+    isMobile,
     lastBackupExportAt,
     backupHealthThresholdDays,
     dbApiBaseUrl,
@@ -23116,6 +23165,7 @@ var FallingWatersPortal = (() => {
       const lotNum = String(row.lotNum || "");
       return lotLabel.includes(normalizedLotQuery) || lotNum.includes(normalizedLotQuery);
     }) : filteredByStatus;
+    const sortedFilteredRows = [...filteredRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
     const exportCsv = () => {
       const headers = [
         "Lot",
@@ -23666,7 +23716,8 @@ var FallingWatersPortal = (() => {
         min: MIN_BACKUP_HEALTH_MAX_AGE_DAYS,
         max: MAX_BACKUP_HEALTH_MAX_AGE_DAYS,
         value: backupThresholdInput,
-        onChange: (event) => setBackupThresholdInput(event.target.value)
+        onChange: (event) => setBackupThresholdInput(event.target.value),
+        inputMode: "numeric"
       }
     ), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: () => saveBackupHealthThreshold(null) }, "Save threshold"), [3, 7, 14].map((days) => /* @__PURE__ */ import_react.default.createElement(
       "button",
@@ -23685,7 +23736,8 @@ var FallingWatersPortal = (() => {
         min: MIN_TOTAL_LOTS,
         max: MAX_TOTAL_LOTS,
         value: lotCountInput,
-        onChange: (event) => setLotCountInput(event.target.value)
+        onChange: (event) => setLotCountInput(event.target.value),
+        inputMode: "numeric"
       }
     ), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: saveLotCount }, "Save lot count"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Current threshold: ", /* @__PURE__ */ import_react.default.createElement("strong", null, votesNeeded), " yes votes needed"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Admin access roster"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "These names are currently approved for admin access in this portal. Assign an access grade for governance and internal control tracking."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, alignItems: "end", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Grant admin rights (name)"), /* @__PURE__ */ import_react.default.createElement(
       "input",
@@ -23693,7 +23745,9 @@ var FallingWatersPortal = (() => {
         style: S.input,
         value: newAdminName,
         onChange: (event) => setNewAdminName(event.target.value),
-        placeholder: "Full name"
+        placeholder: "Full name",
+        autoCapitalize: "words",
+        autoCorrect: "on"
       }
     )), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement(
       "select",
@@ -23834,12 +23888,44 @@ var FallingWatersPortal = (() => {
     ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, "Official tally (eligible lots only): ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleEliminateVotes), " eliminate, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligiblePermitVotes), " permit, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleUndecidedVotes), " not voted."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-level voting roster"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, filteredRows.length, " lot records shown")), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
-        style: { ...S.input, width: 180, padding: "7px 10px" },
+        style: { ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 },
         placeholder: "Find lot # (e.g. 37)",
         value: lotQuery,
-        onChange: (event) => setLotQuery(event.target.value)
+        onChange: (event) => setLotQuery(event.target.value),
+        inputMode: "numeric",
+        enterKeyHint: "search"
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "all" ? "stone" : "outline"), padding: "7px 12px" }, onClick: () => setFilter("all") }, "All lots"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "7px 12px" }, onClick: () => setFilter("voted") }, "Voted only"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "not-voted" ? "stone" : "outline"), padding: "7px 12px" }, onClick: () => setFilter("not-voted") }, "Not voted only"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "ineligible" ? "stone" : "outline"), padding: "7px 12px" }, onClick: () => setFilter("ineligible") }, "Non-eligible only"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: exportCsv }, "Export CSV"))), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Status"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote choice"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote eligibility"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Primary voter"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Owner name (if known)"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Commented"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Contacted"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Outreach notes"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last contact"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last active"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, filteredRows.sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999)).map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.lot, style: { background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight) }, row.status)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 220 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", width: isMobile ? "100%" : "auto" } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "all" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }, onClick: () => setFilter("all") }, "All lots"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }, onClick: () => setFilter("voted") }, "Voted only"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "not-voted" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }, onClick: () => setFilter("not-voted") }, "Not voted only"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn(filter === "ineligible" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }, onClick: () => setFilter("ineligible") }, "Non-eligible only"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px", flex: isMobile ? "1 1 100%" : "0 0 auto" }, onClick: exportCsv }, "Export CSV"))), isMobile ? /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gap: 10, marginTop: 12 } }, sortedFilteredRows.map((row) => /* @__PURE__ */ import_react.default.createElement(
+      "div",
+      {
+        key: row.lot,
+        style: {
+          border: `1px solid ${C.border}`,
+          borderLeft: `4px solid ${!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger}`,
+          borderRadius: 8,
+          padding: "12px 12px",
+          background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED"
+        }
+      },
+      /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: C.forest } }, row.lot), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight) }, row.status)),
+      /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 8, fontSize: 13, color: C.ink } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Vote:"), " ", choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Primary voter:"), " ", row.primaryVoter || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Owner:"), " ", row.ownerName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Commented:"), " ", row.commented ? "Yes" : "No", " \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Contacted:"), " ", row.contacted ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Last contact:"), " ", row.lastContact || "\u2014", " \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Last active:"), " ", row.lastActive || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 4, color: C.muted } }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Outreach notes:"), " ", row.outreachNotes || "\u2014")),
+      /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          style: { ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "8px 12px" },
+          onClick: () => toggleLotEligibility(row)
+        },
+        row.voteEligible ? "Mark non-eligible" : "Restore eligibility"
+      ), !row.voteEligible && /* @__PURE__ */ import_react.default.createElement(import_react.default.Fragment, null, /* @__PURE__ */ import_react.default.createElement(
+        "input",
+        {
+          style: { ...S.input, padding: "8px 10px" },
+          value: row.ineligibleReason,
+          placeholder: "Reason (e.g. HOA dues unpaid)",
+          onChange: (event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })
+        }
+      ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, "Updated ", row.eligibilityUpdatedAt || "today")))
+    ))) : /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Status"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote choice"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote eligibility"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Primary voter"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Owner name (if known)"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Commented"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Contacted"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Outreach notes"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last contact"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last active"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, sortedFilteredRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.lot, style: { background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight) }, row.status)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 220 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         style: { ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "5px 8px", fontSize: 11 },
@@ -23903,7 +23989,7 @@ var FallingWatersPortal = (() => {
       { num: surveyEngaged, label: "Survey engaged", accent: "#2563EB" },
       { num: `${Math.round(surveyEngaged / totalLots * 100)}%`, label: "Engagement rate", accent: C.stone },
       { num: comments.length, label: "Comments posted", accent: "#7C3AED" }
-    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Owner engagement funnel (portal tracked)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginTop: 10 } }, [
+    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Owner engagement funnel (portal tracked)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 10 } }, [
       { label: "Logged in", value: stats.loggedInLots, color: C.forest },
       { label: "Commented", value: stats.commentedLots, color: "#7C3AED" },
       { label: "Voted", value: stats.votedLots, color: C.danger },
@@ -25084,6 +25170,7 @@ var FallingWatersPortal = (() => {
         adminAccessGrades,
         totalLots,
         votesNeeded,
+        isMobile,
         lastBackupExportAt,
         backupHealthThresholdDays,
         dbApiBaseUrl,

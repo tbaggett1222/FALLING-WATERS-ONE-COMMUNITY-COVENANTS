@@ -912,17 +912,17 @@ const S = {
   cardTitle: { fontFamily:"Georgia,serif", fontSize:17, fontWeight:"bold", color:C.forest, marginBottom:8 },
   badge: (color, bg) => ({ display:"inline-flex", alignItems:"center", gap:4, fontSize:11, padding:"3px 10px", borderRadius:20, background:bg, color:color, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em" }),
   btn: (variant="primary") => ({
-    display:"inline-flex", alignItems:"center", gap:6, padding:"9px 20px", borderRadius:6, fontSize:13, fontWeight:600, cursor:"pointer", border:"none", transition:"all .15s",
+    display:"inline-flex", alignItems:"center", gap:6, padding:"10px 20px", borderRadius:8, fontSize:14, fontWeight:600, cursor:"pointer", border:"none", transition:"all .15s", touchAction:"manipulation",
     ...(variant === "primary" ? { background:C.forest, color:C.white } :
        variant === "stone" ? { background:C.stone, color:C.forest } :
        variant === "danger" ? { background:C.danger, color:C.white } :
        variant === "outline" ? { background:"transparent", color:C.forest, border:`1px solid ${C.forest}` } :
        { background:C.parchmentDark, color:C.ink, border:`1px solid ${C.border}` })
   }),
-  input: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none", boxSizing:"border-box" },
-  textarea: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none", resize:"vertical", minHeight:90, boxSizing:"border-box" },
+  input: { width:"100%", padding:"10px 12px", border:`1px solid ${C.border}`, borderRadius:8, fontSize:16, lineHeight:1.3, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none", boxSizing:"border-box" },
+  textarea: { width:"100%", padding:"10px 12px", border:`1px solid ${C.border}`, borderRadius:8, fontSize:16, lineHeight:1.35, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none", resize:"vertical", minHeight:100, boxSizing:"border-box" },
   label: { display:"block", fontSize:12, fontWeight:600, color:C.muted, marginBottom:4, textTransform:"uppercase", letterSpacing:"0.05em" },
-  select: { width:"100%", padding:"9px 12px", border:`1px solid ${C.border}`, borderRadius:6, fontSize:13, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none" },
+  select: { width:"100%", padding:"10px 12px", border:`1px solid ${C.border}`, borderRadius:8, fontSize:16, lineHeight:1.3, fontFamily:"inherit", background:C.white, color:C.ink, outline:"none" },
   alert: (type) => ({ padding:"12px 16px", borderRadius:6, fontSize:13, lineHeight:1.6, marginBottom:12, border:`1px solid`, ...(type==="warn" ? { background:C.amberLight, color:C.amber, borderColor:"#D97706" } : type==="danger" ? { background:C.dangerLight, color:C.danger, borderColor:C.danger } : type==="success" ? { background:C.successLight, color:C.success, borderColor:"#16A34A" } : { background:"#EFF6FF", color:"#1E40AF", borderColor:"#3B82F6" }) }),
   table: { width:"100%", borderCollapse:"collapse", fontSize:13 },
   th: { textAlign:"left", padding:"8px 12px", fontWeight:600, background:C.forest, color:C.white, fontSize:12, textTransform:"uppercase", letterSpacing:"0.05em" },
@@ -978,11 +978,27 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
         <form onSubmit={handle}>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Lot number(s)</label>
-            <input style={S.input} placeholder="e.g. Lot 36, Lot 37 (admins can leave blank)" value={lot} onChange={e=>setLot(e.target.value)}/>
+            <input
+              style={S.input}
+              placeholder="e.g. Lot 36, Lot 37 (admins can leave blank)"
+              value={lot}
+              onChange={e=>setLot(e.target.value)}
+              inputMode="text"
+              autoCapitalize="none"
+              autoCorrect="off"
+            />
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={S.label}>Your name</label>
-            <input style={S.input} placeholder="First and last name" value={name} onChange={e=>setName(e.target.value)}/>
+            <input
+              style={S.input}
+              placeholder="First and last name"
+              value={name}
+              onChange={e=>setName(e.target.value)}
+              autoCapitalize="words"
+              autoCorrect="on"
+              enterKeyHint="next"
+            />
             {isAdminUserAllowed(name.trim(), adminAccessEntries) && (
               <div style={{ fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 }}>
                 Admin recognized. You will enter Admin Control Mode after sign in.
@@ -991,7 +1007,16 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Create / enter a password</label>
-            <input style={S.input} type="password" placeholder="Min 4 characters" value={pw} onChange={e=>setPw(e.target.value)}/>
+            <input
+              style={S.input}
+              type="password"
+              placeholder="Min 4 characters"
+              value={pw}
+              onChange={e=>setPw(e.target.value)}
+              autoCapitalize="none"
+              autoCorrect="off"
+              enterKeyHint="go"
+            />
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Access role</label>
@@ -2353,7 +2378,14 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
           <form onSubmit={save}>
             <div style={{ marginBottom: 12 }}>
               <label style={S.label}>Name</label>
-              <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} />
+              <input
+                style={S.input}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoCapitalize="words"
+                autoCorrect="on"
+                enterKeyHint="next"
+              />
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={S.label}>Lot numbers</label>
@@ -2362,6 +2394,9 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
                 value={lotsInput}
                 onChange={(e) => setLotsInput(e.target.value)}
                 placeholder="e.g. Lot 36, Lot 37"
+                autoCapitalize="none"
+                autoCorrect="off"
+                inputMode="text"
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
                 Separate multiple lots with commas. Example: Lot 36, Lot 37.
@@ -2409,6 +2444,7 @@ function AdminVotingPage({
   adminAccessGrades,
   totalLots,
   votesNeeded,
+  isMobile,
   lastBackupExportAt,
   backupHealthThresholdDays,
   dbApiBaseUrl,
@@ -2572,6 +2608,7 @@ function AdminVotingPage({
       return lotLabel.includes(normalizedLotQuery) || lotNum.includes(normalizedLotQuery);
     })
     : filteredByStatus;
+  const sortedFilteredRows = [...filteredRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
 
   const exportCsv = () => {
     const headers = [
@@ -3183,6 +3220,7 @@ function AdminVotingPage({
             max={MAX_BACKUP_HEALTH_MAX_AGE_DAYS}
             value={backupThresholdInput}
             onChange={(event) => setBackupThresholdInput(event.target.value)}
+            inputMode="numeric"
           />
           <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={() => saveBackupHealthThreshold(null)}>
             Save threshold
@@ -3215,6 +3253,7 @@ function AdminVotingPage({
             max={MAX_TOTAL_LOTS}
             value={lotCountInput}
             onChange={(event) => setLotCountInput(event.target.value)}
+            inputMode="numeric"
           />
           <button style={{ ...S.btn("stone"), padding: "7px 12px" }} onClick={saveLotCount}>Save lot count</button>
           <span style={{ fontSize: 12, color: C.muted }}>
@@ -3236,6 +3275,8 @@ function AdminVotingPage({
               value={newAdminName}
               onChange={(event) => setNewAdminName(event.target.value)}
               placeholder="Full name"
+              autoCapitalize="words"
+              autoCorrect="on"
             />
           </div>
           <div>
@@ -3618,85 +3659,143 @@ function AdminVotingPage({
             <div style={{ fontSize: 12, color: C.muted }}>{filteredRows.length} lot records shown</div>
           </div>
           <input
-            style={{ ...S.input, width: 180, padding: "7px 10px" }}
+            style={{ ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 }}
             placeholder="Find lot # (e.g. 37)"
             value={lotQuery}
             onChange={(event) => setLotQuery(event.target.value)}
+            inputMode="numeric"
+            enterKeyHint="search"
           />
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button style={{ ...S.btn(filter === "all" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("all")}>All lots</button>
-            <button style={{ ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("voted")}>Voted only</button>
-            <button style={{ ...S.btn(filter === "not-voted" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("not-voted")}>Not voted only</button>
-            <button style={{ ...S.btn(filter === "ineligible" ? "stone" : "outline"), padding: "7px 12px" }} onClick={() => setFilter("ineligible")}>Non-eligible only</button>
-            <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={exportCsv}>Export CSV</button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", width: isMobile ? "100%" : "auto" }}>
+            <button style={{ ...S.btn(filter === "all" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }} onClick={() => setFilter("all")}>All lots</button>
+            <button style={{ ...S.btn(filter === "voted" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }} onClick={() => setFilter("voted")}>Voted only</button>
+            <button style={{ ...S.btn(filter === "not-voted" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }} onClick={() => setFilter("not-voted")}>Not voted only</button>
+            <button style={{ ...S.btn(filter === "ineligible" ? "stone" : "outline"), padding: "8px 12px", flex: isMobile ? "1 1 46%" : "0 0 auto" }} onClick={() => setFilter("ineligible")}>Non-eligible only</button>
+            <button style={{ ...S.btn("primary"), padding: "8px 12px", flex: isMobile ? "1 1 100%" : "0 0 auto" }} onClick={exportCsv}>Export CSV</button>
           </div>
         </div>
 
-        <div style={{ overflowX: "auto", marginTop: 12 }}>
-          <table style={S.table}>
-            <thead>
-              <tr>
-                <th style={S.th}>Lot</th>
-                <th style={S.th}>Status</th>
-                <th style={S.th}>Vote choice</th>
-                <th style={S.th}>Vote eligibility</th>
-                <th style={S.th}>Primary voter</th>
-                <th style={S.th}>Owner name (if known)</th>
-                <th style={S.th}>Commented</th>
-                <th style={S.th}>Contacted</th>
-                <th style={S.th}>Outreach notes</th>
-                <th style={S.th}>Last contact</th>
-                <th style={S.th}>Last active</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredRows.sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999)).map((row) => (
-                <tr key={row.lot} style={{ background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" }}>
-                  <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.lot}</td>
-                  <td style={S.td}>
-                    <span style={S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight)}>
-                      {row.status}
-                    </span>
-                  </td>
-                  <td style={S.td}>{choiceLabel(row.choice)}</td>
-                  <td style={{ ...S.td, minWidth: 220 }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <span style={S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight)}>
-                        {row.voteEligible ? "Eligible" : "Non-eligible"}
-                      </span>
-                      <button
-                        style={{ ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "5px 8px", fontSize: 11 }}
-                        onClick={() => toggleLotEligibility(row)}
-                      >
-                        {row.voteEligible ? "Mark non-eligible" : "Restore eligibility"}
-                      </button>
-                      {!row.voteEligible && (
-                        <>
-                          <input
-                            style={{ ...S.input, padding: "6px 8px", fontSize: 11 }}
-                            value={row.ineligibleReason}
-                            placeholder="Reason (e.g. HOA dues unpaid)"
-                            onChange={(event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })}
-                          />
-                          <div style={{ fontSize: 10, color: C.muted }}>
-                            Updated {row.eligibilityUpdatedAt || "today"}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                  <td style={S.td}>{row.primaryVoter || "—"}</td>
-                  <td style={S.td}>{row.ownerName || "—"}</td>
-                  <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
-                  <td style={S.td}>{row.contacted ? "Yes" : "No"}</td>
-                  <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{row.outreachNotes || "—"}</td>
-                  <td style={S.td}>{row.lastContact || "—"}</td>
-                  <td style={S.td}>{row.lastActive || "—"}</td>
+        {isMobile ? (
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            {sortedFilteredRows.map((row) => (
+              <div
+                key={row.lot}
+                style={{
+                  border: `1px solid ${C.border}`,
+                  borderLeft: `4px solid ${!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger}`,
+                  borderRadius: 8,
+                  padding: "12px 12px",
+                  background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.forest }}>{row.lot}</div>
+                  <span style={S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight)}>
+                    {row.status}
+                  </span>
+                </div>
+                <div style={{ marginTop: 8, fontSize: 13, color: C.ink }}>
+                  <div><strong>Vote:</strong> {choiceLabel(row.choice)}</div>
+                  <div><strong>Primary voter:</strong> {row.primaryVoter || "—"}</div>
+                  <div><strong>Owner:</strong> {row.ownerName || "—"}</div>
+                  <div><strong>Commented:</strong> {row.commented ? "Yes" : "No"} · <strong>Contacted:</strong> {row.contacted ? "Yes" : "No"}</div>
+                  <div><strong>Last contact:</strong> {row.lastContact || "—"} · <strong>Last active:</strong> {row.lastActive || "—"}</div>
+                  <div style={{ marginTop: 4, color: C.muted }}><strong>Outreach notes:</strong> {row.outreachNotes || "—"}</div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                  <span style={S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight)}>
+                    {row.voteEligible ? "Eligible" : "Non-eligible"}
+                  </span>
+                  <button
+                    style={{ ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "8px 12px" }}
+                    onClick={() => toggleLotEligibility(row)}
+                  >
+                    {row.voteEligible ? "Mark non-eligible" : "Restore eligibility"}
+                  </button>
+                  {!row.voteEligible && (
+                    <>
+                      <input
+                        style={{ ...S.input, padding: "8px 10px" }}
+                        value={row.ineligibleReason}
+                        placeholder="Reason (e.g. HOA dues unpaid)"
+                        onChange={(event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })}
+                      />
+                      <div style={{ fontSize: 11, color: C.muted }}>
+                        Updated {row.eligibilityUpdatedAt || "today"}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto", marginTop: 12 }}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Lot</th>
+                  <th style={S.th}>Status</th>
+                  <th style={S.th}>Vote choice</th>
+                  <th style={S.th}>Vote eligibility</th>
+                  <th style={S.th}>Primary voter</th>
+                  <th style={S.th}>Owner name (if known)</th>
+                  <th style={S.th}>Commented</th>
+                  <th style={S.th}>Contacted</th>
+                  <th style={S.th}>Outreach notes</th>
+                  <th style={S.th}>Last contact</th>
+                  <th style={S.th}>Last active</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {sortedFilteredRows.map((row) => (
+                  <tr key={row.lot} style={{ background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" }}>
+                    <td style={{ ...S.td, fontWeight: 700, color: C.forest }}>{row.lot}</td>
+                    <td style={S.td}>
+                      <span style={S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight)}>
+                        {row.status}
+                      </span>
+                    </td>
+                    <td style={S.td}>{choiceLabel(row.choice)}</td>
+                    <td style={{ ...S.td, minWidth: 220 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <span style={S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight)}>
+                          {row.voteEligible ? "Eligible" : "Non-eligible"}
+                        </span>
+                        <button
+                          style={{ ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "5px 8px", fontSize: 11 }}
+                          onClick={() => toggleLotEligibility(row)}
+                        >
+                          {row.voteEligible ? "Mark non-eligible" : "Restore eligibility"}
+                        </button>
+                        {!row.voteEligible && (
+                          <>
+                            <input
+                              style={{ ...S.input, padding: "6px 8px", fontSize: 11 }}
+                              value={row.ineligibleReason}
+                              placeholder="Reason (e.g. HOA dues unpaid)"
+                              onChange={(event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })}
+                            />
+                            <div style={{ fontSize: 10, color: C.muted }}>
+                              Updated {row.eligibilityUpdatedAt || "today"}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                    <td style={S.td}>{row.primaryVoter || "—"}</td>
+                    <td style={S.td}>{row.ownerName || "—"}</td>
+                    <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
+                    <td style={S.td}>{row.contacted ? "Yes" : "No"}</td>
+                    <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{row.outreachNotes || "—"}</td>
+                    <td style={S.td}>{row.lastContact || "—"}</td>
+                    <td style={S.td}>{row.lastActive || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3758,7 +3857,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
 
       <div style={S.card}>
         <div style={S.cardTitle}>Owner engagement funnel (portal tracked)</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginTop: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 10 }}>
           {[
             { label: "Logged in", value: stats.loggedInLots, color: C.forest },
             { label: "Commented", value: stats.commentedLots, color: "#7C3AED" },
@@ -5224,6 +5323,7 @@ export default function App() {
               adminAccessGrades={adminAccessGrades}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
+              isMobile={isMobile}
               lastBackupExportAt={lastBackupExportAt}
               backupHealthThresholdDays={backupHealthThresholdDays}
               dbApiBaseUrl={dbApiBaseUrl}

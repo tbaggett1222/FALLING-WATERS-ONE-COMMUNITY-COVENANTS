@@ -42,6 +42,24 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  const isCoreDynamicAsset = ["/app.js", "/index.html", "/manifest.webmanifest"].some((suffix) =>
+    requestUrl.pathname.endsWith(suffix)
+  );
+  if (isCoreDynamicAsset) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === "basic") {
+            const responseClone = response.clone();
+            caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, responseClone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;

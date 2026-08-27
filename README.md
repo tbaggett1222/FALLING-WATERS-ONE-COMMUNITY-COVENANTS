@@ -22,6 +22,14 @@ The portal now includes:
 
 On iPhone, open the portal in Safari and use **Share → Add to Home Screen**.
 
+## Mobile + iPhone readiness (Phase 2)
+
+Additional mobile polish now includes:
+- iPhone-friendly form control sizing (16px inputs/selects to prevent Safari zoom-on-focus)
+- touch-optimized button sizing
+- admin lot roster mobile cards (replaces wide table on small screens)
+- mobile-friendly filter controls and search behavior in admin roster
+
 ## PostgreSQL activation (all three steps)
 
 This repo now includes a PostgreSQL API so the portal can:
