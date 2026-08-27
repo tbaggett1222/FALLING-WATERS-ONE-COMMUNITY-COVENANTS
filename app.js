@@ -21496,6 +21496,7 @@ var FallingWatersPortal = (() => {
   var LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
   var BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
   var DB_API_BASE_URL_KEY = "fw_db_api_base_url";
+  var LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
   var STR_CONCERN_OPTIONS = [
@@ -21644,6 +21645,12 @@ var FallingWatersPortal = (() => {
       value = value.slice(0, -4);
     }
     return { value };
+  };
+  var formatIsoDateTime = (isoValue) => {
+    if (!isoValue) return "";
+    const parsed = new Date(String(isoValue));
+    if (Number.isNaN(parsed.getTime())) return "";
+    return parsed.toLocaleString();
   };
   var computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
     let eliminate = 0;
@@ -22876,6 +22883,7 @@ var FallingWatersPortal = (() => {
     lastBackupExportAt,
     backupHealthThresholdDays,
     dbApiBaseUrl,
+    lastDbSyncAt,
     onImportCsv,
     onExportBackup,
     onRestoreBackup,
@@ -22887,6 +22895,7 @@ var FallingWatersPortal = (() => {
     onRestoreFromDb,
     onFetchDbSummary,
     onFetchDbRecords,
+    onRunDbChecklist,
     onUpdateEligibility,
     onUpdateTotalLots,
     onSetAdminAccessGrade,
@@ -22919,6 +22928,7 @@ var FallingWatersPortal = (() => {
     const [dbSummary, setDbSummary] = (0, import_react.useState)(null);
     const [dbRecordsTable, setDbRecordsTable] = (0, import_react.useState)("state_values");
     const [dbRecords, setDbRecords] = (0, import_react.useState)([]);
+    const [dbChecklist, setDbChecklist] = (0, import_react.useState)(null);
     const effectiveBackupHealthThresholdDays = Number.isInteger(Number(backupHealthThresholdDays)) && Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS ? Number(backupHealthThresholdDays) : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
     const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
     const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
@@ -22952,6 +22962,18 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       setDbApiInput(String(dbApiBaseUrl || ""));
     }, [dbApiBaseUrl]);
+    const checklistRows = dbChecklist?.rows || [
+      { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
+      { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
+      { key: "schema", label: "DB schema ready", status: "unknown", detail: "Run checklist to verify schema + summary query." },
+      {
+        key: "lastSync",
+        label: "Last DB sync",
+        status: lastDbSyncAt ? "pass" : "warn",
+        detail: lastDbSyncAt ? `Last successful sync: ${formatIsoDateTime(lastDbSyncAt)}` : "No successful sync recorded yet."
+      }
+    ];
+    const checklistCheckedAt = dbChecklist?.checkedAt ? formatIsoDateTime(dbChecklist.checkedAt) : "";
     const lotRows = lotLabels.map((lotLabel) => {
       const activity = ownerActivity[lotLabel] || null;
       const outreach = outreachState?.[lotLabel] || null;
@@ -23444,6 +23466,26 @@ var FallingWatersPortal = (() => {
         setDbBusy(false);
       }
     };
+    const runDbChecklist = async () => {
+      setDbErr("");
+      setDbMsg("");
+      setDbBusy(true);
+      try {
+        const result = await onRunDbChecklist?.();
+        if (result?.error) {
+          setDbErr(result.error);
+          return;
+        }
+        if (result?.checklist) {
+          setDbChecklist(result.checklist);
+        }
+        setDbMsg(result?.message || "Database connection checklist completed.");
+      } catch (err) {
+        setDbErr(err?.message || "Could not complete database checklist.");
+      } finally {
+        setDbBusy(false);
+      }
+    };
     const syncPortalToDb = async () => {
       setDbErr("");
       setDbMsg("");
@@ -23664,7 +23706,10 @@ var FallingWatersPortal = (() => {
         onChange: (event) => setDbApiInput(event.target.value),
         placeholder: "http://localhost:8787"
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Enter only the API host URL (not DATABASE_URL or terminal commands). Leave blank only when the API is same-origin.")), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: saveDbApiUrl, disabled: dbBusy }, "Save URL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: testDbConnection, disabled: dbBusy }, "Test connection")), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: syncPortalToDb, disabled: dbBusy }, "Sync current portal to PostgreSQL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: restoreFromDb, disabled: dbBusy }, "Restore from PostgreSQL (", restoreMode, ")"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: loadDbSummary, disabled: dbBusy }, "Load DB summary")), dbSummary && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "state_values: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.state_values || 0), " \xB7 covenant_assets: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.covenant_assets || 0), " \xB7 snapshots: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.backup_snapshots || 0)), dbSummary?.scope_records?.length > 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Scope"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Record count"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, dbSummary.scope_records.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.scope }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.scope), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.count)))))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement("select", { style: { ...S.select, maxWidth: 260 }, value: dbRecordsTable, onChange: (event) => setDbRecordsTable(event.target.value), disabled: dbBusy }, [
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Enter only the API host URL (not DATABASE_URL or terminal commands). Leave blank only when the API is same-origin.")), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: saveDbApiUrl, disabled: dbBusy }, "Save URL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: testDbConnection, disabled: dbBusy }, "Test connection")), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: syncPortalToDb, disabled: dbBusy }, "Sync current portal to PostgreSQL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: restoreFromDb, disabled: dbBusy }, "Restore from PostgreSQL (", restoreMode, ")"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: loadDbSummary, disabled: dbBusy }, "Load DB summary"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: runDbChecklist, disabled: dbBusy }, "Run checklist")), /* @__PURE__ */ import_react.default.createElement("div", { style: { border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, padding: 10, marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: C.forest } }, "Connection checklist"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, checklistCheckedAt ? `Last checked: ${checklistCheckedAt}` : "Not checked yet")), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Check"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Status"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Detail"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, checklistRows.map((row) => {
+      const palette = row.status === "pass" ? { text: C.success, bg: C.successLight, label: "PASS" } : row.status === "fail" ? { text: C.danger, bg: C.dangerLight, label: "FAIL" } : row.status === "warn" ? { text: C.amber, bg: C.amberLight, label: "WARN" } : { text: C.muted, bg: C.parchmentDark, label: "PENDING" };
+      return /* @__PURE__ */ import_react.default.createElement("tr", { key: row.key }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700 } }, row.label), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(palette.text, palette.bg) }, palette.label)), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontSize: 12, color: C.muted } }, row.detail || "\u2014"));
+    }))))), dbSummary && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "state_values: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.state_values || 0), " \xB7 covenant_assets: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.covenant_assets || 0), " \xB7 snapshots: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.backup_snapshots || 0)), dbSummary?.scope_records?.length > 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Scope"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Record count"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, dbSummary.scope_records.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.scope }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.scope), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.count)))))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement("select", { style: { ...S.select, maxWidth: 260 }, value: dbRecordsTable, onChange: (event) => setDbRecordsTable(event.target.value), disabled: dbBusy }, [
       "state_values",
       "comments",
       "covenantDocs",
@@ -23875,6 +23920,10 @@ var FallingWatersPortal = (() => {
       const saved = store.get(LAST_BACKUP_EXPORT_KEY);
       return typeof saved === "string" && saved.trim() ? saved : "";
     });
+    const [lastDbSyncAt, setLastDbSyncAt] = (0, import_react.useState)(() => {
+      const saved = store.get(LAST_DB_SYNC_AT_KEY);
+      return typeof saved === "string" && saved.trim() ? saved : "";
+    });
     const [backupHealthThresholdDays, setBackupHealthThresholdDays] = (0, import_react.useState)(() => {
       const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
       if (Number.isInteger(saved) && saved >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && saved <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS) {
@@ -23928,6 +23977,9 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || "");
     }, [lastBackupExportAt]);
+    (0, import_react.useEffect)(() => {
+      store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || "");
+    }, [lastDbSyncAt]);
     (0, import_react.useEffect)(() => {
       store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays);
     }, [backupHealthThresholdDays]);
@@ -24576,13 +24628,21 @@ var FallingWatersPortal = (() => {
     };
     const callDbApi = async (path, options = {}) => {
       const requestUrl = resolveDbApiUrl(path);
-      const response = await fetch(requestUrl, {
-        headers: {
-          "Content-Type": "application/json",
-          ...options.headers || {}
-        },
-        ...options
-      });
+      let response;
+      try {
+        response = await fetch(requestUrl, {
+          headers: {
+            "Content-Type": "application/json",
+            ...options.headers || {}
+          },
+          ...options
+        });
+      } catch (error) {
+        const message = error?.message || "Failed to fetch";
+        throw new Error(
+          `Could not reach Database API (${message}). confirm the API server is running; verify the saved API URL is reachable from this browser; the page is HTTPS and cannot call an HTTP API URL (mixed content); use an HTTPS API URL or open the portal over HTTP; localhost points to this browser machine; if your API runs elsewhere, replace localhost with that host. Request URL: ${requestUrl}`
+        );
+      }
       const text = await response.text();
       let parsed = {};
       try {
@@ -24619,8 +24679,11 @@ var FallingWatersPortal = (() => {
           scopes
         })
       });
+      const syncedAt = (/* @__PURE__ */ new Date()).toISOString();
+      setLastDbSyncAt(syncedAt);
       return {
-        message: result?.message || "PostgreSQL sync completed."
+        syncedAt,
+        message: result?.message || `PostgreSQL sync completed at ${formatIsoDateTime(syncedAt)}.`
       };
     };
     const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
@@ -24640,6 +24703,72 @@ var FallingWatersPortal = (() => {
         method: "GET"
       });
       return { records: Array.isArray(result?.records) ? result.records : [] };
+    };
+    const handleRunDbChecklist = async () => {
+      const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const buildLastSyncRow = () => ({
+        key: "lastSync",
+        label: "Last DB sync",
+        status: lastDbSyncAt ? "pass" : "warn",
+        detail: lastDbSyncAt ? `Last successful sync: ${formatIsoDateTime(lastDbSyncAt)}` : 'No successful sync recorded yet. Use "Sync current portal to PostgreSQL" after connection passes.'
+      });
+      const rows = [
+        { key: "api", label: "API reachable", status: "unknown", detail: "Checking API health endpoint..." },
+        { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Checking browser access from this page origin..." },
+        { key: "schema", label: "DB schema ready", status: "unknown", detail: "Checking schema summary endpoint..." },
+        buildLastSyncRow()
+      ];
+      try {
+        const health = await callDbApi("/api/db/health", { method: "GET" });
+        rows[0] = {
+          key: "api",
+          label: "API reachable",
+          status: "pass",
+          detail: `Health endpoint responded. Server time: ${health?.now || "unknown"}.`
+        };
+        rows[1] = {
+          key: "browser",
+          label: "Browser/CORS access",
+          status: "pass",
+          detail: "Browser request succeeded from this portal origin."
+        };
+      } catch (error) {
+        const message = error?.message || "Could not reach API.";
+        rows[0] = { key: "api", label: "API reachable", status: "fail", detail: message };
+        rows[1] = { key: "browser", label: "Browser/CORS access", status: "fail", detail: message };
+        rows[2] = {
+          key: "schema",
+          label: "DB schema ready",
+          status: "warn",
+          detail: "Skipped because API/CORS check failed."
+        };
+        return {
+          checklist: { checkedAt, rows },
+          message: "Checklist completed with blockers."
+        };
+      }
+      try {
+        const summaryResult = await callDbApi("/api/db/summary", { method: "GET" });
+        const summary = summaryResult?.summary || {};
+        rows[2] = {
+          key: "schema",
+          label: "DB schema ready",
+          status: "pass",
+          detail: `Summary loaded: ${summary.state_values || 0} state keys, ${summary.covenant_assets || 0} covenant assets, ${summary.backup_snapshots || 0} snapshots.`
+        };
+      } catch (error) {
+        rows[2] = {
+          key: "schema",
+          label: "DB schema ready",
+          status: "fail",
+          detail: error?.message || "Schema summary request failed."
+        };
+      }
+      rows[3] = buildLastSyncRow();
+      return {
+        checklist: { checkedAt, rows },
+        message: "Checklist completed."
+      };
     };
     const activityRows = Object.values(ownerActivity);
     const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
@@ -24724,6 +24853,7 @@ var FallingWatersPortal = (() => {
         lastBackupExportAt,
         backupHealthThresholdDays,
         dbApiBaseUrl,
+        lastDbSyncAt,
         onImportCsv: handleImportCsv,
         onExportBackup: handleExportBackup,
         onRestoreBackup: handleRestoreBackup,
@@ -24735,6 +24865,7 @@ var FallingWatersPortal = (() => {
         onRestoreFromDb: handleRestoreFromDb,
         onFetchDbSummary: handleFetchDbSummary,
         onFetchDbRecords: handleFetchDbRecords,
+        onRunDbChecklist: handleRunDbChecklist,
         onUpdateEligibility: handleUpdateEligibility,
         onUpdateTotalLots: handleUpdateTotalLots,
         onSetAdminAccessGrade: handleSetAdminAccessGrade,

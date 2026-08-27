@@ -41,6 +41,7 @@ const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
 const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
+const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
@@ -193,6 +194,13 @@ const sanitizeDbApiBaseUrl = (inputValue, { allowEmpty = true } = {}) => {
     value = value.slice(0, -4);
   }
   return { value };
+};
+
+const formatIsoDateTime = (isoValue) => {
+  if (!isoValue) return "";
+  const parsed = new Date(String(isoValue));
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleString();
 };
 
 const computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
@@ -2249,6 +2257,7 @@ function AdminVotingPage({
   lastBackupExportAt,
   backupHealthThresholdDays,
   dbApiBaseUrl,
+  lastDbSyncAt,
   onImportCsv,
   onExportBackup,
   onRestoreBackup,
@@ -2260,6 +2269,7 @@ function AdminVotingPage({
   onRestoreFromDb,
   onFetchDbSummary,
   onFetchDbRecords,
+  onRunDbChecklist,
   onUpdateEligibility,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
@@ -2292,6 +2302,7 @@ function AdminVotingPage({
   const [dbSummary, setDbSummary] = useState(null);
   const [dbRecordsTable, setDbRecordsTable] = useState("state_values");
   const [dbRecords, setDbRecords] = useState([]);
+  const [dbChecklist, setDbChecklist] = useState(null);
   const effectiveBackupHealthThresholdDays =
     Number.isInteger(Number(backupHealthThresholdDays)) &&
     Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
@@ -2340,6 +2351,21 @@ function AdminVotingPage({
   useEffect(() => {
     setDbApiInput(String(dbApiBaseUrl || ""));
   }, [dbApiBaseUrl]);
+
+  const checklistRows = dbChecklist?.rows || [
+    { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
+    { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
+    { key: "schema", label: "DB schema ready", status: "unknown", detail: "Run checklist to verify schema + summary query." },
+    {
+      key: "lastSync",
+      label: "Last DB sync",
+      status: lastDbSyncAt ? "pass" : "warn",
+      detail: lastDbSyncAt
+        ? `Last successful sync: ${formatIsoDateTime(lastDbSyncAt)}`
+        : "No successful sync recorded yet.",
+    },
+  ];
+  const checklistCheckedAt = dbChecklist?.checkedAt ? formatIsoDateTime(dbChecklist.checkedAt) : "";
 
   const lotRows = lotLabels.map((lotLabel) => {
     const activity = ownerActivity[lotLabel] || null;
@@ -2884,6 +2910,27 @@ function AdminVotingPage({
     }
   };
 
+  const runDbChecklist = async () => {
+    setDbErr("");
+    setDbMsg("");
+    setDbBusy(true);
+    try {
+      const result = await onRunDbChecklist?.();
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      if (result?.checklist) {
+        setDbChecklist(result.checklist);
+      }
+      setDbMsg(result?.message || "Database connection checklist completed.");
+    } catch (err) {
+      setDbErr(err?.message || "Could not complete database checklist.");
+    } finally {
+      setDbBusy(false);
+    }
+  };
+
   const syncPortalToDb = async () => {
     setDbErr("");
     setDbMsg("");
@@ -3292,6 +3339,49 @@ function AdminVotingPage({
           <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={loadDbSummary} disabled={dbBusy}>
             Load DB summary
           </button>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={runDbChecklist} disabled={dbBusy}>
+            Run checklist
+          </button>
+        </div>
+        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, background: C.white, padding: 10, marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.forest }}>Connection checklist</div>
+            <div style={{ fontSize: 11, color: C.muted }}>
+              {checklistCheckedAt ? `Last checked: ${checklistCheckedAt}` : "Not checked yet"}
+            </div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Check</th>
+                  <th style={S.th}>Status</th>
+                  <th style={S.th}>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {checklistRows.map((row) => {
+                  const palette =
+                    row.status === "pass"
+                      ? { text: C.success, bg: C.successLight, label: "PASS" }
+                      : row.status === "fail"
+                        ? { text: C.danger, bg: C.dangerLight, label: "FAIL" }
+                        : row.status === "warn"
+                          ? { text: C.amber, bg: C.amberLight, label: "WARN" }
+                          : { text: C.muted, bg: C.parchmentDark, label: "PENDING" };
+                  return (
+                    <tr key={row.key}>
+                      <td style={{ ...S.td, fontWeight: 700 }}>{row.label}</td>
+                      <td style={S.td}>
+                        <span style={S.badge(palette.text, palette.bg)}>{palette.label}</span>
+                      </td>
+                      <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{row.detail || "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
         {dbSummary && (
           <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
@@ -3751,6 +3841,10 @@ export default function App() {
     const saved = store.get(LAST_BACKUP_EXPORT_KEY);
     return typeof saved === "string" && saved.trim() ? saved : "";
   });
+  const [lastDbSyncAt, setLastDbSyncAt] = useState(() => {
+    const saved = store.get(LAST_DB_SYNC_AT_KEY);
+    return typeof saved === "string" && saved.trim() ? saved : "";
+  });
   const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
     const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
     if (
@@ -3783,6 +3877,7 @@ export default function App() {
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
+  useEffect(() => { store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || ""); }, [lastDbSyncAt]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
@@ -4544,13 +4639,21 @@ export default function App() {
 
   const callDbApi = async (path, options = {}) => {
     const requestUrl = resolveDbApiUrl(path);
-    const response = await fetch(requestUrl, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-      ...options,
-    });
+    let response;
+    try {
+      response = await fetch(requestUrl, {
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+        ...options,
+      });
+    } catch (error) {
+      const message = error?.message || "Failed to fetch";
+      throw new Error(
+        `Could not reach Database API (${message}). confirm the API server is running; verify the saved API URL is reachable from this browser; the page is HTTPS and cannot call an HTTP API URL (mixed content); use an HTTPS API URL or open the portal over HTTP; localhost points to this browser machine; if your API runs elsewhere, replace localhost with that host. Request URL: ${requestUrl}`
+      );
+    }
     const text = await response.text();
     let parsed = {};
     try {
@@ -4589,8 +4692,11 @@ export default function App() {
         scopes,
       }),
     });
+    const syncedAt = new Date().toISOString();
+    setLastDbSyncAt(syncedAt);
     return {
-      message: result?.message || "PostgreSQL sync completed.",
+      syncedAt,
+      message: result?.message || `PostgreSQL sync completed at ${formatIsoDateTime(syncedAt)}.`,
     };
   };
 
@@ -4613,6 +4719,79 @@ export default function App() {
       method: "GET",
     });
     return { records: Array.isArray(result?.records) ? result.records : [] };
+  };
+
+  const handleRunDbChecklist = async () => {
+    const checkedAt = new Date().toISOString();
+    const buildLastSyncRow = () => ({
+      key: "lastSync",
+      label: "Last DB sync",
+      status: lastDbSyncAt ? "pass" : "warn",
+      detail: lastDbSyncAt
+        ? `Last successful sync: ${formatIsoDateTime(lastDbSyncAt)}`
+        : "No successful sync recorded yet. Use \"Sync current portal to PostgreSQL\" after connection passes.",
+    });
+
+    const rows = [
+      { key: "api", label: "API reachable", status: "unknown", detail: "Checking API health endpoint..." },
+      { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Checking browser access from this page origin..." },
+      { key: "schema", label: "DB schema ready", status: "unknown", detail: "Checking schema summary endpoint..." },
+      buildLastSyncRow(),
+    ];
+
+    try {
+      const health = await callDbApi("/api/db/health", { method: "GET" });
+      rows[0] = {
+        key: "api",
+        label: "API reachable",
+        status: "pass",
+        detail: `Health endpoint responded. Server time: ${health?.now || "unknown"}.`,
+      };
+      rows[1] = {
+        key: "browser",
+        label: "Browser/CORS access",
+        status: "pass",
+        detail: "Browser request succeeded from this portal origin.",
+      };
+    } catch (error) {
+      const message = error?.message || "Could not reach API.";
+      rows[0] = { key: "api", label: "API reachable", status: "fail", detail: message };
+      rows[1] = { key: "browser", label: "Browser/CORS access", status: "fail", detail: message };
+      rows[2] = {
+        key: "schema",
+        label: "DB schema ready",
+        status: "warn",
+        detail: "Skipped because API/CORS check failed.",
+      };
+      return {
+        checklist: { checkedAt, rows },
+        message: "Checklist completed with blockers.",
+      };
+    }
+
+    try {
+      const summaryResult = await callDbApi("/api/db/summary", { method: "GET" });
+      const summary = summaryResult?.summary || {};
+      rows[2] = {
+        key: "schema",
+        label: "DB schema ready",
+        status: "pass",
+        detail: `Summary loaded: ${summary.state_values || 0} state keys, ${summary.covenant_assets || 0} covenant assets, ${summary.backup_snapshots || 0} snapshots.`,
+      };
+    } catch (error) {
+      rows[2] = {
+        key: "schema",
+        label: "DB schema ready",
+        status: "fail",
+        detail: error?.message || "Schema summary request failed.",
+      };
+    }
+
+    rows[3] = buildLastSyncRow();
+    return {
+      checklist: { checkedAt, rows },
+      message: "Checklist completed.",
+    };
   };
 
   const activityRows = Object.values(ownerActivity);
@@ -4751,6 +4930,7 @@ export default function App() {
               lastBackupExportAt={lastBackupExportAt}
               backupHealthThresholdDays={backupHealthThresholdDays}
               dbApiBaseUrl={dbApiBaseUrl}
+              lastDbSyncAt={lastDbSyncAt}
               onImportCsv={handleImportCsv}
               onExportBackup={handleExportBackup}
               onRestoreBackup={handleRestoreBackup}
@@ -4762,6 +4942,7 @@ export default function App() {
               onRestoreFromDb={handleRestoreFromDb}
               onFetchDbSummary={handleFetchDbSummary}
               onFetchDbRecords={handleFetchDbRecords}
+              onRunDbChecklist={handleRunDbChecklist}
               onUpdateEligibility={handleUpdateEligibility}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
