@@ -22012,24 +22012,35 @@ var FallingWatersPortal = (() => {
   };
   var mergeCommentsBySignature = (existingComments, incomingComments) => {
     const list = [];
-    const seen = /* @__PURE__ */ new Set();
-    const add = (comment) => {
-      if (!comment || typeof comment !== "object") return;
-      const key = [
-        comment.id || "",
-        comment.name || "",
-        comment.lot || "",
-        comment.topic || "",
-        comment.stance || "",
-        comment.ts || "",
-        comment.text || ""
+    const indexByKey = /* @__PURE__ */ new Map();
+    const buildKey = (comment, idx, source) => {
+      const rawId = comment?.id;
+      const normalizedId = rawId === 0 || rawId ? String(rawId).trim() : "";
+      if (normalizedId) return `id:${normalizedId}`;
+      return [
+        source,
+        idx,
+        comment?.name || "",
+        comment?.lot || "",
+        comment?.topic || "",
+        comment?.stance || "",
+        comment?.ts || "",
+        comment?.text || ""
       ].join("|");
-      if (seen.has(key)) return;
-      seen.add(key);
+    };
+    const add = (comment, idx, source) => {
+      if (!comment || typeof comment !== "object") return;
+      const key = buildKey(comment, idx, source);
+      const existingIdx = indexByKey.get(key);
+      if (Number.isInteger(existingIdx)) {
+        list[existingIdx] = comment;
+        return;
+      }
+      indexByKey.set(key, list.length);
       list.push(comment);
     };
-    (Array.isArray(existingComments) ? existingComments : []).forEach(add);
-    (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+    (Array.isArray(existingComments) ? existingComments : []).forEach((comment, idx) => add(comment, idx, "existing"));
+    (Array.isArray(incomingComments) ? incomingComments : []).forEach((comment, idx) => add(comment, idx, "incoming"));
     return list;
   };
   var mergeCovenantDocsById = (existingDocs, incomingDocs) => {
@@ -24314,6 +24325,7 @@ var FallingWatersPortal = (() => {
     const [sharedDataMsg, setSharedDataMsg] = (0, import_react.useState)("");
     const [sharedDataErr, setSharedDataErr] = (0, import_react.useState)("");
     const sharedSyncScopeQueueRef = (0, import_react.useRef)(/* @__PURE__ */ new Set());
+    const sharedSyncModeRef = (0, import_react.useRef)("merge");
     const [sharedSyncNonce, setSharedSyncNonce] = (0, import_react.useState)(0);
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
@@ -24322,6 +24334,12 @@ var FallingWatersPortal = (() => {
     }, [votes]);
     (0, import_react.useEffect)(() => {
       store.set("fw_comments", comments);
+    }, [comments]);
+    (0, import_react.useEffect)(() => {
+      const deduped = mergeCommentsBySignature([], comments);
+      if (deduped.length !== comments.length) {
+        setComments(deduped);
+      }
     }, [comments]);
     (0, import_react.useEffect)(() => {
       store.set("fw_covenant_docs", covenantDocs);
@@ -24722,7 +24740,7 @@ var FallingWatersPortal = (() => {
       setComments((prev) => [c, ...prev]);
       const commentLots = normalizeCommentLots(c);
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
-      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
     };
     const handleDeleteComment = (commentId) => {
       const targetId = String(commentId);
@@ -24751,7 +24769,7 @@ var FallingWatersPortal = (() => {
           return next;
         });
       }
-      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
       return { message: "Comment deleted." };
     };
     const handleUpdateComment = (commentId, updates = {}) => {
@@ -24796,7 +24814,7 @@ var FallingWatersPortal = (() => {
       }
       const commentLots = (Array.isArray(editedComment?.lots) ? editedComment.lots : [editedComment?.lot]).map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
-      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
       return { message: "Comment updated." };
     };
     const handleAddDocument = (doc) => setCovenantDocs((prev) => {
@@ -25378,18 +25396,23 @@ var FallingWatersPortal = (() => {
         return { error: message };
       }
     };
-    const queueSharedChangesSync = (scopeKeys = []) => {
+    const queueSharedChangesSync = (scopeKeys = [], { mode = "merge" } = {}) => {
       const keys = Array.isArray(scopeKeys) ? scopeKeys : [];
       if (keys.length === 0) return;
       keys.forEach((key) => sharedSyncScopeQueueRef.current.add(key));
+      if (mode === "replace") {
+        sharedSyncModeRef.current = "replace";
+      }
       setSharedSyncNonce((value) => value + 1);
     };
     (0, import_react.useEffect)(() => {
       if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
       const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
       if (queuedScopes.length === 0) return;
+      const queuedMode = sharedSyncModeRef.current === "replace" ? "replace" : "merge";
       sharedSyncScopeQueueRef.current.clear();
-      void pushSharedChangesToDb(queuedScopes, { mode: "merge" });
+      sharedSyncModeRef.current = "merge";
+      void pushSharedChangesToDb(queuedScopes, { mode: queuedMode });
     }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
     (0, import_react.useEffect)(() => {
       if (!user || !dbApiBaseUrl) return;

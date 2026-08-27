@@ -652,24 +652,35 @@ const buildScopedRestoreSelection = (enabledScopeKeys = [], defaultValue = false
 
 const mergeCommentsBySignature = (existingComments, incomingComments) => {
   const list = [];
-  const seen = new Set();
-  const add = (comment) => {
-    if (!comment || typeof comment !== "object") return;
-    const key = [
-      comment.id || "",
-      comment.name || "",
-      comment.lot || "",
-      comment.topic || "",
-      comment.stance || "",
-      comment.ts || "",
-      comment.text || "",
+  const indexByKey = new Map();
+  const buildKey = (comment, idx, source) => {
+    const rawId = comment?.id;
+    const normalizedId = rawId === 0 || rawId ? String(rawId).trim() : "";
+    if (normalizedId) return `id:${normalizedId}`;
+    return [
+      source,
+      idx,
+      comment?.name || "",
+      comment?.lot || "",
+      comment?.topic || "",
+      comment?.stance || "",
+      comment?.ts || "",
+      comment?.text || "",
     ].join("|");
-    if (seen.has(key)) return;
-    seen.add(key);
+  };
+  const add = (comment, idx, source) => {
+    if (!comment || typeof comment !== "object") return;
+    const key = buildKey(comment, idx, source);
+    const existingIdx = indexByKey.get(key);
+    if (Number.isInteger(existingIdx)) {
+      list[existingIdx] = comment;
+      return;
+    }
+    indexByKey.set(key, list.length);
     list.push(comment);
   };
-  (Array.isArray(existingComments) ? existingComments : []).forEach(add);
-  (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+  (Array.isArray(existingComments) ? existingComments : []).forEach((comment, idx) => add(comment, idx, "existing"));
+  (Array.isArray(incomingComments) ? incomingComments : []).forEach((comment, idx) => add(comment, idx, "incoming"));
   return list;
 };
 
@@ -4375,12 +4386,19 @@ export default function App() {
   const [sharedDataMsg, setSharedDataMsg] = useState("");
   const [sharedDataErr, setSharedDataErr] = useState("");
   const sharedSyncScopeQueueRef = useRef(new Set());
+  const sharedSyncModeRef = useRef("merge");
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+  useEffect(() => {
+    const deduped = mergeCommentsBySignature([], comments);
+    if (deduped.length !== comments.length) {
+      setComments(deduped);
+    }
+  }, [comments]);
   useEffect(() => { store.set("fw_covenant_docs", covenantDocs); }, [covenantDocs]);
   useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
@@ -4783,7 +4801,7 @@ export default function App() {
     setComments(prev => [c, ...prev]);
     const commentLots = normalizeCommentLots(c);
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
-    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
   };
   const handleDeleteComment = (commentId) => {
     const targetId = String(commentId);
@@ -4812,7 +4830,7 @@ export default function App() {
         return next;
       });
     }
-    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
     return { message: "Comment deleted." };
   };
   const handleUpdateComment = (commentId, updates = {}) => {
@@ -4866,7 +4884,7 @@ export default function App() {
       .map((lot) => normalizeLotLabel(lot))
       .filter((lot) => !!lot && lot !== "ADMIN");
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
-    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
     return { message: "Comment updated." };
   };
   const handleAddDocument = (doc) =>
@@ -5554,10 +5572,13 @@ export default function App() {
     }
   };
 
-  const queueSharedChangesSync = (scopeKeys = []) => {
+  const queueSharedChangesSync = (scopeKeys = [], { mode = "merge" } = {}) => {
     const keys = Array.isArray(scopeKeys) ? scopeKeys : [];
     if (keys.length === 0) return;
     keys.forEach((key) => sharedSyncScopeQueueRef.current.add(key));
+    if (mode === "replace") {
+      sharedSyncModeRef.current = "replace";
+    }
     setSharedSyncNonce((value) => value + 1);
   };
 
@@ -5565,8 +5586,10 @@ export default function App() {
     if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
     const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
     if (queuedScopes.length === 0) return;
+    const queuedMode = sharedSyncModeRef.current === "replace" ? "replace" : "merge";
     sharedSyncScopeQueueRef.current.clear();
-    void pushSharedChangesToDb(queuedScopes, { mode: "merge" });
+    sharedSyncModeRef.current = "merge";
+    void pushSharedChangesToDb(queuedScopes, { mode: queuedMode });
   }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
 
   useEffect(() => {
