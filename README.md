@@ -30,6 +30,15 @@ Additional mobile polish now includes:
 - admin lot roster mobile cards (replaces wide table on small screens)
 - mobile-friendly filter controls and search behavior in admin roster
 
+## Cross-device data consistency (desktop + iPhone)
+
+Portal data is still cached per browser, but when a PostgreSQL API URL is configured the app now:
+- defaults to the hosted API URL (`https://falling-waters-postgres-api.onrender.com`)
+- auto-refreshes shared data from PostgreSQL after sign-in
+- provides a top-bar **Refresh shared data** button for manual sync
+
+This keeps iPhone and desktop views aligned with the shared database.
+
 ## PostgreSQL activation (all three steps)
 
 This repo now includes a PostgreSQL API so the portal can:

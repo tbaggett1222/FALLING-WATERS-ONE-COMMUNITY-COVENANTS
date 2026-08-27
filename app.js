@@ -21498,6 +21498,7 @@ var FallingWatersPortal = (() => {
   var BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
   var DB_API_BASE_URL_KEY = "fw_db_api_base_url";
   var LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
+  var DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
   var STR_CONCERN_OPTIONS = [
@@ -24125,9 +24126,14 @@ var FallingWatersPortal = (() => {
     });
     const [dbApiBaseUrl, setDbApiBaseUrl] = (0, import_react.useState)(() => {
       const saved = store.get(DB_API_BASE_URL_KEY);
-      const normalized = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
-      return normalized?.value || "";
+      const normalizedSaved = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
+      if (normalizedSaved?.value) return normalizedSaved.value;
+      const normalizedDefault = sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true });
+      return normalizedDefault?.value || "";
     });
+    const [sharedDataBusy, setSharedDataBusy] = (0, import_react.useState)(false);
+    const [sharedDataMsg, setSharedDataMsg] = (0, import_react.useState)("");
+    const [sharedDataErr, setSharedDataErr] = (0, import_react.useState)("");
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
     (0, import_react.useEffect)(() => {
@@ -24949,6 +24955,53 @@ var FallingWatersPortal = (() => {
       });
       return { records: Array.isArray(result?.records) ? result.records : [] };
     };
+    const handleRefreshSharedData = async ({ silent = false, mode = "merge" } = {}) => {
+      if (!dbApiBaseUrl) {
+        return { error: "Database API URL is not configured for this device." };
+      }
+      const scopes = {
+        ...defaultBackupRestoreScopes(),
+        sessionUser: false
+      };
+      if (!silent) {
+        setSharedDataErr("");
+        setSharedDataMsg("");
+        setSharedDataBusy(true);
+      }
+      try {
+        const result = await handleRestoreFromDb({ mode, scopes });
+        if (result?.error) {
+          if (!silent) setSharedDataErr(result.error);
+          return result;
+        }
+        if (!silent) {
+          setSharedDataMsg(result?.message || "Shared portal data refreshed from PostgreSQL.");
+          setTimeout(() => setSharedDataMsg(""), 5e3);
+        }
+        return {
+          message: result?.message || "Shared portal data refreshed from PostgreSQL."
+        };
+      } catch (error) {
+        if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
+        return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
+      } finally {
+        if (!silent) setSharedDataBusy(false);
+      }
+    };
+    (0, import_react.useEffect)(() => {
+      if (!user || !dbApiBaseUrl) return;
+      let cancelled = false;
+      (async () => {
+        const result = await handleRefreshSharedData({ silent: true, mode: "merge" });
+        if (cancelled) return;
+        if (result?.error) {
+          setSharedDataErr(result.error);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }, [dbApiBaseUrl, user?.userId]);
     const handleRunDbChecklist = async () => {
       const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
       const buildLastSyncRow = () => ({
@@ -25146,7 +25199,15 @@ var FallingWatersPortal = (() => {
         "aria-label": mobileNavOpen ? "Close navigation menu" : "Open navigation menu"
       },
       mobileNavOpen ? /* @__PURE__ */ import_react.default.createElement(Icon.close, null) : /* @__PURE__ */ import_react.default.createElement(Icon.menu, null)
-    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.topbarTitle, fontSize: isMobile ? 18 : S.topbarTitle.fontSize } }, pageTitles[page])), /* @__PURE__ */ import_react.default.createElement("div", { style: topbarMetaStyle }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Need ", votesNeeded, " votes \xB7"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.danger } }, votes.eliminate, " votes to eliminate STRs so far"), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.topbarTitle, fontSize: isMobile ? 18 : S.topbarTitle.fontSize } }, pageTitles[page])), /* @__PURE__ */ import_react.default.createElement("div", { style: topbarMetaStyle }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Need ", votesNeeded, " votes \xB7"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.danger } }, votes.eliminate, " votes to eliminate STRs so far"), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("outline"), padding: "7px 10px" },
+        onClick: () => handleRefreshSharedData({ silent: false, mode: "merge" }),
+        disabled: sharedDataBusy
+      },
+      sharedDataBusy ? "Refreshing\u2026" : "Refresh shared data"
+    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
       DashboardPage,
       {
         votes,

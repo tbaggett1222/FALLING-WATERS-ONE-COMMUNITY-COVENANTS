@@ -43,6 +43,7 @@ const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
+const DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
 const STR_CONCERN_OPTIONS = [
@@ -4116,9 +4117,14 @@ export default function App() {
   });
   const [dbApiBaseUrl, setDbApiBaseUrl] = useState(() => {
     const saved = store.get(DB_API_BASE_URL_KEY);
-    const normalized = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
-    return normalized?.value || "";
+    const normalizedSaved = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
+    if (normalizedSaved?.value) return normalizedSaved.value;
+    const normalizedDefault = sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true });
+    return normalizedDefault?.value || "";
   });
+  const [sharedDataBusy, setSharedDataBusy] = useState(false);
+  const [sharedDataMsg, setSharedDataMsg] = useState("");
+  const [sharedDataErr, setSharedDataErr] = useState("");
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
@@ -5042,6 +5048,53 @@ export default function App() {
     return { records: Array.isArray(result?.records) ? result.records : [] };
   };
 
+  const handleRefreshSharedData = async ({ silent = false, mode = "merge" } = {}) => {
+    if (!dbApiBaseUrl) {
+      return { error: "Database API URL is not configured for this device." };
+    }
+    const scopes = {
+      ...defaultBackupRestoreScopes(),
+      sessionUser: false,
+    };
+    if (!silent) {
+      setSharedDataErr("");
+      setSharedDataMsg("");
+      setSharedDataBusy(true);
+    }
+    try {
+      const result = await handleRestoreFromDb({ mode, scopes });
+      if (result?.error) {
+        if (!silent) setSharedDataErr(result.error);
+        return result;
+      }
+      if (!silent) {
+        setSharedDataMsg(result?.message || "Shared portal data refreshed from PostgreSQL.");
+        setTimeout(() => setSharedDataMsg(""), 5000);
+      }
+      return {
+        message: result?.message || "Shared portal data refreshed from PostgreSQL.",
+      };
+    } catch (error) {
+      if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
+      return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
+    } finally {
+      if (!silent) setSharedDataBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user || !dbApiBaseUrl) return;
+    let cancelled = false;
+    (async () => {
+      const result = await handleRefreshSharedData({ silent: true, mode: "merge" });
+      if (cancelled) return;
+      if (result?.error) {
+        setSharedDataErr(result.error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dbApiBaseUrl, user?.userId]);
+
   const handleRunDbChecklist = async () => {
     const checkedAt = new Date().toISOString();
     const buildLastSyncRow = () => ({
@@ -5283,10 +5336,27 @@ export default function App() {
           <div style={topbarMetaStyle}>
             <span style={{ fontSize:12, color:C.muted }}>Need {votesNeeded} votes ·</span>
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
+            <button
+              style={{ ...S.btn("outline"), padding: "7px 10px" }}
+              onClick={() => handleRefreshSharedData({ silent: false, mode: "merge" })}
+              disabled={sharedDataBusy}
+            >
+              {sharedDataBusy ? "Refreshing…" : "Refresh shared data"}
+            </button>
             {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>STR & Unified CC&R vote →</button>}
           </div>
         </div>
         <div style={contentStyle}>
+          {sharedDataErr && (
+            <div style={S.alert("danger")}>
+              <strong>Shared data sync issue:</strong> {sharedDataErr}
+            </div>
+          )}
+          {sharedDataMsg && (
+            <div style={S.alert("success")}>
+              {sharedDataMsg}
+            </div>
+          )}
           {user.isAdmin && (
             <div style={S.alert("warn")}>
               <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore.
