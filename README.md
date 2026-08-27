@@ -143,3 +143,34 @@ Create an external uptime monitor (UptimeRobot/Better Stack/etc.) for:
 - `https://falling-waters-postgres-api.onrender.com/api/db/alert-status?strict=true`
 
 This alerts on outages **and** stale/low-data conditions, not just basic uptime.
+
+## Automated GitHub repository backups
+
+This repo now includes `.github/workflows/repo-backup.yml`:
+- runs nightly at **03:15 UTC**
+- can also run on demand via **Actions → Repository backup → Run workflow**
+- uploads backup artifacts (retained for 30 days)
+- nightly schedule runs from the repository default branch (`main`), so merge this workflow to `main` to activate scheduled backups
+
+Backup artifact contents:
+- `*.bundle` (portable git bundle)
+- `*-mirror-*.tar.gz` (full mirror archive)
+- `SHA256SUMS.txt`
+- `metadata.txt`
+
+### Restore from a backup bundle
+
+```bash
+git clone /path/to/your-backup.bundle restored-repo
+cd restored-repo
+git log --oneline -n 5
+```
+
+### Restore from a mirror archive
+
+```bash
+tar -xzf FALLING-WATERS-ONE-COMMUNITY-COVENANTS-mirror-<timestamp>.tar.gz
+git clone FALLING-WATERS-ONE-COMMUNITY-COVENANTS.git restored-repo
+cd restored-repo
+git log --oneline -n 5
+```
