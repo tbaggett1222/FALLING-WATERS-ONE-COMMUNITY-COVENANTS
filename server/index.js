@@ -15,10 +15,32 @@ const {
 } = require("./repository");
 
 const PORT = Number(process.env.PORT) || 8787;
+const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 const app = express();
-app.use(cors({ origin: true }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow non-browser requests (curl, server-to-server).
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.length === 0) return callback(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      return callback(new Error(`Origin not allowed: ${origin}`));
+    },
+  })
+);
 app.use(express.json({ limit: "100mb" }));
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "falling-waters-postgres-api",
+    health: "/api/db/health",
+  });
+});
 
 app.get("/api/db/health", async (_req, res) => {
   try {
@@ -95,6 +117,13 @@ app.post("/api/db/export", async (_req, res) => {
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message || "Could not export data from PostgreSQL." });
   }
+});
+
+app.use((error, _req, res, _next) => {
+  if (error?.message?.startsWith("Origin not allowed:")) {
+    return res.status(403).json({ ok: false, error: error.message });
+  }
+  return res.status(500).json({ ok: false, error: error?.message || "Unexpected server error." });
 });
 
 const start = async () => {

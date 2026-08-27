@@ -39,6 +39,9 @@ In **Admin voting roster** → **PostgreSQL sync, restore, and record viewer**:
 
 If your frontend and API are same-origin, leave URL blank and use `/api` routes directly.
 
+> If your portal is hosted on GitHub Pages (HTTPS), do **not** use `http://localhost:8787`.
+> Use a hosted **HTTPS** API URL instead (for example Render).
+
 ### 3) One-time migration import from latest full backup JSON
 
 Use either migration path:
@@ -72,3 +75,34 @@ Server endpoints:
 - `GET /api/db/records/:table`
 - `POST /api/db/sync`
 - `POST /api/db/export`
+
+## Deploy backend to Render (recommended for GitHub Pages)
+
+This repo includes `render.yaml` to deploy:
+- a Node web service for the API
+- a managed PostgreSQL database
+
+### Deploy steps
+
+1. Push latest repo changes to GitHub.
+2. In Render, create a new **Blueprint** and select this repo.
+3. Render will detect `render.yaml` and create:
+   - `falling-waters-postgres-api` (web service)
+   - `falling-waters-postgres` (PostgreSQL)
+4. In the Render web service settings, set:
+   - `ALLOWED_ORIGINS` = your portal origin(s), comma separated.
+     - Example: `https://tbaggett1222.github.io`
+5. Wait for deploy to finish.
+6. Copy the Render service URL (example: `https://falling-waters-postgres-api.onrender.com`).
+7. In portal admin, set **Database API base URL** to that HTTPS URL and test connection.
+
+### First migration to hosted DB
+
+After connecting the new HTTPS API URL:
+1. Optionally restore your latest JSON backup into the portal UI.
+2. Click **Sync current portal to PostgreSQL** once.
+3. Click **Load DB summary** to confirm row counts.
+
+### CORS note
+
+If you change domains later (custom domain, staging URL, etc.), update `ALLOWED_ORIGINS` in Render so browsers can call the API.
