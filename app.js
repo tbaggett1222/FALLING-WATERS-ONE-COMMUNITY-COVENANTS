@@ -21549,6 +21549,8 @@ var FallingWatersPortal = (() => {
       { value: "neutral", label: "Neutral / I have a question" }
     ]
   };
+  var commentStanceOptionsForTopic = (topic) => COMMENT_STANCE_OPTIONS_BY_TOPIC[topic] || COMMENT_STANCE_OPTIONS_BY_TOPIC.general;
+  var commentConcernOptionsForTopic = (topic) => topic === "str" ? STR_CONCERN_OPTIONS : topic === "acc" ? ACC_CONCERN_OPTIONS : GENERAL_CONCERN_OPTIONS;
   var DOC_STATUS_OPTIONS = [
     { value: "original", label: "Original" },
     { value: "active2014", label: "Active \u2014 Phase II lots" },
@@ -22760,26 +22762,42 @@ var FallingWatersPortal = (() => {
     ];
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "The status quo is not neutral."), " Failing to adopt a unified CC&R has real, documented financial and legal consequences for every lot owner in Falling Waters \u2014 whether or not you are personally affected by any disputed covenant provision today."), risks.map((r, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: { ...S.card, borderLeft: `4px solid ${r.color}`, background: r.bg } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 12, alignItems: "flex-start" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(r.color, "transparent") }, r.sev, " risk")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 16, fontWeight: "bold", color: r.color, margin: "8px 0 6px" } }, r.title), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7 } }, r.detail))));
   }
-  function CommentsPage({ user, comments, onAdd }) {
+  function CommentsPage({ user, comments, onAdd, onUpdate }) {
     const [formTopic, setFormTopic] = (0, import_react.useState)("str");
     const [formStance, setFormStance] = (0, import_react.useState)("");
-    const [formConcern, setFormConcern] = (0, import_react.useState)(STR_CONCERN_OPTIONS[0]);
+    const [formConcern, setFormConcern] = (0, import_react.useState)(commentConcernOptionsForTopic("str")[0]);
     const [filterTopic, setFilterTopic] = (0, import_react.useState)("all");
     const [filterStance, setFilterStance] = (0, import_react.useState)("");
     const [text, setText] = (0, import_react.useState)("");
     const [submitting, setSubmitting] = (0, import_react.useState)(false);
-    const [done, setDone] = (0, import_react.useState)(false);
+    const [done, setDone] = (0, import_react.useState)("");
+    const [editingCommentId, setEditingCommentId] = (0, import_react.useState)(null);
+    const [editTopic, setEditTopic] = (0, import_react.useState)("general");
+    const [editStance, setEditStance] = (0, import_react.useState)("neutral");
+    const [editConcern, setEditConcern] = (0, import_react.useState)(commentConcernOptionsForTopic("general")[0]);
+    const [editText, setEditText] = (0, import_react.useState)("");
+    const [editBusy, setEditBusy] = (0, import_react.useState)(false);
+    const [editErr, setEditErr] = (0, import_react.useState)("");
     const filtered = comments.filter((c) => (filterTopic === "all" || c.topic === filterTopic) && (filterStance === "" || c.stance === filterStance));
     const topicLabels = COMMENT_TOPIC_OPTIONS.reduce((acc, topic) => {
       acc[topic.value] = topic.label;
       return acc;
     }, {});
-    const stanceOptions = COMMENT_STANCE_OPTIONS_BY_TOPIC[formTopic] || COMMENT_STANCE_OPTIONS_BY_TOPIC.general;
-    const concernOptions = formTopic === "str" ? STR_CONCERN_OPTIONS : formTopic === "acc" ? ACC_CONCERN_OPTIONS : GENERAL_CONCERN_OPTIONS;
+    const stanceOptions = commentStanceOptionsForTopic(formTopic);
+    const concernOptions = commentConcernOptionsForTopic(formTopic);
+    const editStanceOptions = commentStanceOptionsForTopic(editTopic);
+    const editConcernOptions = commentConcernOptionsForTopic(editTopic);
     const stanceColors = {
       restrict: { c: C.danger, bg: C.dangerLight, label: "Supports stricter standards" },
       permit: { c: C.stoneDark, bg: "#FEF3C7", label: "Supports more flexibility" },
       neutral: { c: C.muted, bg: C.parchmentDark, label: "Neutral / question" }
+    };
+    const userLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+    const canEditComment = (comment) => {
+      if (user?.isAdmin) return true;
+      const commentLots = (Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot]).map((lot) => normalizeLotLabel(lot)).filter(Boolean);
+      const lotMatch = commentLots.some((lot) => userLots.includes(lot));
+      return !!comment?.userId && !!user?.userId && comment.userId === user.userId || normalizeNameKey(comment?.name) === normalizeNameKey(user?.name) && lotMatch;
     };
     (0, import_react.useEffect)(() => {
       setFormConcern((current) => concernOptions.includes(current) ? current : concernOptions[0]);
@@ -22788,6 +22806,12 @@ var FallingWatersPortal = (() => {
       const stanceValues = stanceOptions.map((option) => option.value);
       setFormStance((current) => current && stanceValues.includes(current) ? current : "");
     }, [formTopic]);
+    (0, import_react.useEffect)(() => {
+      if (!editingCommentId) return;
+      setEditConcern((current) => editConcernOptions.includes(current) ? current : editConcernOptions[0]);
+      const stanceValues = editStanceOptions.map((option) => option.value);
+      setEditStance((current) => current && stanceValues.includes(current) ? current : "neutral");
+    }, [editTopic, editingCommentId]);
     const submit = (e) => {
       e.preventDefault();
       if (text.trim().length < 20) return;
@@ -22797,6 +22821,7 @@ var FallingWatersPortal = (() => {
           id: Date.now(),
           lot: user.lot,
           lots: normalizeUserLots(user),
+          userId: user.userId,
           name: user.name,
           ts: todayLabel(),
           topic: formTopic,
@@ -22806,10 +22831,52 @@ var FallingWatersPortal = (() => {
         });
         setText("");
         setFormStance("");
-        setDone(true);
+        setDone("Comment posted. Thank you.");
         setSubmitting(false);
-        setTimeout(() => setDone(false), 4e3);
+        setTimeout(() => setDone(""), 4e3);
       }, 600);
+    };
+    const startEdit = (comment) => {
+      const nextTopic = COMMENT_TOPIC_OPTIONS.some((topic) => topic.value === comment?.topic) ? comment.topic : "general";
+      const nextStanceOptions = commentStanceOptionsForTopic(nextTopic);
+      const nextConcernOptions = commentConcernOptionsForTopic(nextTopic);
+      setEditingCommentId(comment?.id ?? null);
+      setEditTopic(nextTopic);
+      setEditStance(nextStanceOptions.some((option) => option.value === comment?.stance) ? comment.stance : "neutral");
+      setEditConcern(nextConcernOptions.includes(comment?.concern) ? comment.concern : nextConcernOptions[0]);
+      setEditText(String(comment?.text || ""));
+      setEditErr("");
+      setDone("");
+    };
+    const cancelEdit = () => {
+      setEditingCommentId(null);
+      setEditErr("");
+    };
+    const saveEdit = (comment) => {
+      if (!comment || editBusy) return;
+      if (editText.trim().length < 20) {
+        setEditErr("Comment must be at least 20 characters.");
+        return;
+      }
+      setEditBusy(true);
+      setEditErr("");
+      setTimeout(() => {
+        const result = onUpdate?.(comment.id, {
+          topic: editTopic,
+          stance: editStance || "neutral",
+          concern: editConcern,
+          text: editText.trim()
+        });
+        if (result?.error) {
+          setEditErr(result.error);
+          setEditBusy(false);
+          return;
+        }
+        setEditingCommentId(null);
+        setEditBusy(false);
+        setDone("Comment updated successfully.");
+        setTimeout(() => setDone(""), 4e3);
+      }, 300);
     };
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Community comments topics include ACC Building Guidelines."), " Use the Topic dropdown to post feedback specifically on ACC standards, design rules, and approval process concerns."), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Quick topic select"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "Choose the discussion focus before writing your comment."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement(
       "button",
@@ -22819,9 +22886,27 @@ var FallingWatersPortal = (() => {
         onClick: () => setFormTopic(topic.value)
       },
       topic.label
-    )))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Add your comment"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.6 } }, "Comments are attributed to your lot number. Be specific \u2014 detailed input helps the working group draft a covenant that reflects real community concerns."), done && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, "Comment posted. Thank you."), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: submit }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Topic"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: formTopic, onChange: (e) => setFormTopic(e.target.value) }, COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement("option", { key: topic.value, value: topic.value }, topic.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "My position"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: formStance, onChange: (e) => setFormStance(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "\u2014 Select \u2014"), stanceOptions.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Primary concern"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: formConcern, onChange: (e) => setFormConcern(e.target.value) }, concernOptions.map((opt) => /* @__PURE__ */ import_react.default.createElement("option", { key: opt, value: opt }, opt)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your comment"), /* @__PURE__ */ import_react.default.createElement("textarea", { style: S.textarea, placeholder: "Share your perspective, concerns, or questions. Min 20 characters.", value: text, onChange: (e) => setText(e.target.value) }), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Commenting as ", user.name, " \xB7 ", user.lot)), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: S.btn("primary"), disabled: submitting || text.trim().length < 20 }, submitting ? "Posting\u2026" : "Post comment \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Filter comments"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Topic"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: filterTopic, onChange: (e) => setFilterTopic(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "all" }, "All topics"), COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement("option", { key: topic.value, value: topic.value }, topic.label)))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Position"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: filterStance, onChange: (e) => setFilterStance(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "All positions"), /* @__PURE__ */ import_react.default.createElement("option", { value: "restrict" }, "Supports stricter standards"), /* @__PURE__ */ import_react.default.createElement("option", { value: "permit" }, "Supports more flexibility"), /* @__PURE__ */ import_react.default.createElement("option", { value: "neutral" }, "Neutral / question"))))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 12 } }, filtered.length, " comment", filtered.length !== 1 ? "s" : "", " shown"), filtered.length === 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, textAlign: "center", color: C.muted, fontSize: 13, padding: 32 } }, "No comments match your filter. Be the first to comment on this topic."), filtered.map((c) => {
+    )))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Add your comment"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.6 } }, "Comments are attributed to your lot number. Be specific \u2014 detailed input helps the working group draft a covenant that reflects real community concerns."), !!done && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, done), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: submit }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Topic"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: formTopic, onChange: (e) => setFormTopic(e.target.value) }, COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement("option", { key: topic.value, value: topic.value }, topic.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "My position"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: formStance, onChange: (e) => setFormStance(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "\u2014 Select \u2014"), stanceOptions.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Primary concern"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: formConcern, onChange: (e) => setFormConcern(e.target.value) }, concernOptions.map((opt) => /* @__PURE__ */ import_react.default.createElement("option", { key: opt, value: opt }, opt)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your comment"), /* @__PURE__ */ import_react.default.createElement("textarea", { style: S.textarea, placeholder: "Share your perspective, concerns, or questions. Min 20 characters.", value: text, onChange: (e) => setText(e.target.value) }), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Commenting as ", user.name, " \xB7 ", user.lot)), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: S.btn("primary"), disabled: submitting || text.trim().length < 20 }, submitting ? "Posting\u2026" : "Post comment \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Filter comments"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Topic"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: filterTopic, onChange: (e) => setFilterTopic(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "all" }, "All topics"), COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement("option", { key: topic.value, value: topic.value }, topic.label)))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Position"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: filterStance, onChange: (e) => setFilterStance(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "All positions"), /* @__PURE__ */ import_react.default.createElement("option", { value: "restrict" }, "Supports stricter standards"), /* @__PURE__ */ import_react.default.createElement("option", { value: "permit" }, "Supports more flexibility"), /* @__PURE__ */ import_react.default.createElement("option", { value: "neutral" }, "Neutral / question"))))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 12 } }, filtered.length, " comment", filtered.length !== 1 ? "s" : "", " shown"), filtered.length === 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, textAlign: "center", color: C.muted, fontSize: 13, padding: 32 } }, "No comments match your filter. Be the first to comment on this topic."), filtered.map((c) => {
       const sc = stanceColors[c.stance] || stanceColors.neutral;
-      return /* @__PURE__ */ import_react.default.createElement("div", { key: c.id, style: { ...S.card, marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "flex-start", gap: 8 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontWeight: 700, fontSize: 13, color: C.forest } }, c.name), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted, marginLeft: 8 } }, c.lot, " \xB7 ", c.ts)), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(sc.c, sc.bg) }, sc.label), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.muted, C.parchmentDark) }, topicLabels[c.topic] || c.topic), c.concern && /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge("#4338CA", "#E0E7FF") }, c.concern))), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7 } }, c.text));
+      const isEditing = editingCommentId === c.id;
+      const canEdit = canEditComment(c);
+      return /* @__PURE__ */ import_react.default.createElement("div", { key: c.id, style: { ...S.card, marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "flex-start", gap: 8 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontWeight: 700, fontSize: 13, color: C.forest } }, c.name), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted, marginLeft: 8 } }, c.lot, " \xB7 ", c.ts), c.editedAt && /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 11, color: C.muted, marginLeft: 8 } }, "Edited ", c.editedAt)), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(sc.c, sc.bg) }, sc.label), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.muted, C.parchmentDark) }, topicLabels[c.topic] || c.topic), c.concern && /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge("#4338CA", "#E0E7FF") }, c.concern), canEdit && !isEditing && /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          style: { ...S.btn("outline"), padding: "4px 8px", fontSize: 11 },
+          onClick: () => startEdit(c)
+        },
+        "Edit"
+      ))), isEditing ? /* @__PURE__ */ import_react.default.createElement("div", { style: { border: `1px solid ${C.border}`, borderRadius: 8, background: C.parchment, padding: 10 } }, editErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, editErr), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Topic"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: editTopic, onChange: (event) => setEditTopic(event.target.value), disabled: editBusy }, COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement("option", { key: topic.value, value: topic.value }, topic.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "My position"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: editStance, onChange: (event) => setEditStance(event.target.value), disabled: editBusy }, editStanceOptions.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Primary concern"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: editConcern, onChange: (event) => setEditConcern(event.target.value), disabled: editBusy }, editConcernOptions.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option, value: option }, option)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your comment"), /* @__PURE__ */ import_react.default.createElement(
+        "textarea",
+        {
+          style: S.textarea,
+          value: editText,
+          onChange: (event) => setEditText(event.target.value),
+          disabled: editBusy
+        }
+      )), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ import_react.default.createElement("button", { type: "button", style: { ...S.btn("primary"), padding: "6px 10px" }, onClick: () => saveEdit(c), disabled: editBusy || editText.trim().length < 20 }, editBusy ? "Saving..." : "Save changes"), /* @__PURE__ */ import_react.default.createElement("button", { type: "button", style: { ...S.btn("outline"), padding: "6px 10px" }, onClick: cancelEdit, disabled: editBusy }, "Cancel"))) : /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7 } }, c.text));
     }))));
   }
   function ProfilePage({ user, voteLedger, onUpdateProfile }) {
@@ -24208,8 +24293,45 @@ var FallingWatersPortal = (() => {
     };
     const handleAddComment = (c) => {
       setComments((prev) => [c, ...prev]);
-      const commentLots = Array.isArray(c.lots) ? c.lots.filter((lot) => lot !== "ADMIN") : [c.lot];
+      const commentLots = (Array.isArray(c.lots) ? c.lots : [c.lot]).map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
+    };
+    const handleUpdateComment = (commentId, updates = {}) => {
+      const targetId = String(commentId);
+      const nextText = String(updates.text || "").trim();
+      if (nextText.length < 20) {
+        return { error: "Comment must be at least 20 characters." };
+      }
+      const nextTopic = COMMENT_TOPIC_OPTIONS.some((topic) => topic.value === updates.topic) ? updates.topic : "general";
+      const nextStanceOptions = commentStanceOptionsForTopic(nextTopic);
+      const nextStance = nextStanceOptions.some((option) => option.value === updates.stance) ? updates.stance : "neutral";
+      const nextConcernOptions = commentConcernOptionsForTopic(nextTopic);
+      const nextConcern = nextConcernOptions.includes(updates.concern) ? updates.concern : nextConcernOptions[0];
+      let updated = false;
+      let editedComment = null;
+      setComments(
+        (prev) => prev.map((comment) => {
+          if (String(comment.id) !== targetId) return comment;
+          updated = true;
+          const nextComment = {
+            ...comment,
+            topic: nextTopic,
+            stance: nextStance,
+            concern: nextConcern,
+            text: nextText,
+            editedAt: todayLabel(),
+            editedBy: user?.name || comment.name
+          };
+          editedComment = nextComment;
+          return nextComment;
+        })
+      );
+      if (!updated) {
+        return { error: "Comment could not be updated because it was not found." };
+      }
+      const commentLots = (Array.isArray(editedComment?.lots) ? editedComment.lots : [editedComment?.lot]).map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
+      commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
+      return { message: "Comment updated." };
     };
     const handleAddDocument = (doc) => setCovenantDocs((prev) => {
       const result = consolidateCovenantDocs([doc, ...prev]);
@@ -24826,7 +24948,7 @@ var FallingWatersPortal = (() => {
         )
       },
       user.isAdmin ? "Admin control mode" : "Resident portal mode"
-    ))), /* @__PURE__ */ import_react.default.createElement("nav", { style: S.sidebarNav }, navItems.map((item) => /* @__PURE__ */ import_react.default.createElement("div", { key: item.id, style: S.navItem(page === item.id), onClick: () => setPage(item.id) }, item.icon, item.label))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.sidebarBottom }, /* @__PURE__ */ import_react.default.createElement("div", { style: { cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "rgba(255,255,255,0.5)" }, onClick: handleLogout }, /* @__PURE__ */ import_react.default.createElement(Icon.logout, null), " Sign out"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.main }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbar }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbarTitle }, pageTitles[page]), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Need ", votesNeeded, " votes \xB7"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.danger } }, votes.eliminate, " votes to eliminate STRs so far"), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.content }, user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
+    ))), /* @__PURE__ */ import_react.default.createElement("nav", { style: S.sidebarNav }, navItems.map((item) => /* @__PURE__ */ import_react.default.createElement("div", { key: item.id, style: S.navItem(page === item.id), onClick: () => setPage(item.id) }, item.icon, item.label))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.sidebarBottom }, /* @__PURE__ */ import_react.default.createElement("div", { style: { cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "rgba(255,255,255,0.5)" }, onClick: handleLogout }, /* @__PURE__ */ import_react.default.createElement(Icon.logout, null), " Sign out"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.main }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbar }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbarTitle }, pageTitles[page]), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Need ", votesNeeded, " votes \xB7"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.danger } }, votes.eliminate, " votes to eliminate STRs so far"), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.content }, user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
       DashboardPage,
       {
         votes,

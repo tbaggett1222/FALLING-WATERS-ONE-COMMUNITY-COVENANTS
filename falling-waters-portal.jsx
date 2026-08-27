@@ -94,6 +94,14 @@ const COMMENT_STANCE_OPTIONS_BY_TOPIC = {
     { value: "neutral", label: "Neutral / I have a question" },
   ],
 };
+const commentStanceOptionsForTopic = (topic) =>
+  COMMENT_STANCE_OPTIONS_BY_TOPIC[topic] || COMMENT_STANCE_OPTIONS_BY_TOPIC.general;
+const commentConcernOptionsForTopic = (topic) =>
+  topic === "str"
+    ? STR_CONCERN_OPTIONS
+    : topic === "acc"
+      ? ACC_CONCERN_OPTIONS
+      : GENERAL_CONCERN_OPTIONS;
 const DOC_STATUS_OPTIONS = [
   { value: "original", label: "Original" },
   { value: "active2014", label: "Active — Phase II lots" },
@@ -1982,31 +1990,49 @@ function RisksPage() {
 }
 
 // ── COMMENTS PAGE ────────────────────────────────────────────────────────────
-function CommentsPage({ user, comments, onAdd }) {
+function CommentsPage({ user, comments, onAdd, onUpdate }) {
   const [formTopic, setFormTopic] = useState("str");
   const [formStance, setFormStance] = useState("");
-  const [formConcern, setFormConcern] = useState(STR_CONCERN_OPTIONS[0]);
+  const [formConcern, setFormConcern] = useState(commentConcernOptionsForTopic("str")[0]);
   const [filterTopic, setFilterTopic] = useState("all");
   const [filterStance, setFilterStance] = useState("");
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState("");
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editTopic, setEditTopic] = useState("general");
+  const [editStance, setEditStance] = useState("neutral");
+  const [editConcern, setEditConcern] = useState(commentConcernOptionsForTopic("general")[0]);
+  const [editText, setEditText] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editErr, setEditErr] = useState("");
   const filtered = comments.filter(c => (filterTopic==="all" || c.topic===filterTopic) && (filterStance==="" || c.stance===filterStance));
   const topicLabels = COMMENT_TOPIC_OPTIONS.reduce((acc, topic) => {
     acc[topic.value] = topic.label;
     return acc;
   }, {});
-  const stanceOptions = COMMENT_STANCE_OPTIONS_BY_TOPIC[formTopic] || COMMENT_STANCE_OPTIONS_BY_TOPIC.general;
-  const concernOptions =
-    formTopic === "str"
-      ? STR_CONCERN_OPTIONS
-      : formTopic === "acc"
-        ? ACC_CONCERN_OPTIONS
-        : GENERAL_CONCERN_OPTIONS;
+  const stanceOptions = commentStanceOptionsForTopic(formTopic);
+  const concernOptions = commentConcernOptionsForTopic(formTopic);
+  const editStanceOptions = commentStanceOptionsForTopic(editTopic);
+  const editConcernOptions = commentConcernOptionsForTopic(editTopic);
   const stanceColors = {
     restrict:{ c:C.danger, bg:C.dangerLight, label:"Supports stricter standards" },
     permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports more flexibility" },
     neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" },
+  };
+  const userLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+  const canEditComment = (comment) => {
+    if (user?.isAdmin) return true;
+    const commentLots = (Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot])
+      .map((lot) => normalizeLotLabel(lot))
+      .filter(Boolean);
+    const lotMatch = commentLots.some((lot) => userLots.includes(lot));
+    return (
+      !!comment?.userId && !!user?.userId && comment.userId === user.userId
+    ) || (
+      normalizeNameKey(comment?.name) === normalizeNameKey(user?.name)
+      && lotMatch
+    );
   };
   useEffect(() => {
     setFormConcern((current) => (concernOptions.includes(current) ? current : concernOptions[0]));
@@ -2015,6 +2041,12 @@ function CommentsPage({ user, comments, onAdd }) {
     const stanceValues = stanceOptions.map((option) => option.value);
     setFormStance((current) => (current && stanceValues.includes(current) ? current : ""));
   }, [formTopic]);
+  useEffect(() => {
+    if (!editingCommentId) return;
+    setEditConcern((current) => (editConcernOptions.includes(current) ? current : editConcernOptions[0]));
+    const stanceValues = editStanceOptions.map((option) => option.value);
+    setEditStance((current) => (current && stanceValues.includes(current) ? current : "neutral"));
+  }, [editTopic, editingCommentId]);
   const submit = (e) => {
     e.preventDefault();
     if (text.trim().length < 20) return;
@@ -2024,6 +2056,7 @@ function CommentsPage({ user, comments, onAdd }) {
         id:Date.now(),
         lot:user.lot,
         lots: normalizeUserLots(user),
+        userId: user.userId,
         name:user.name,
         ts:todayLabel(),
         topic:formTopic,
@@ -2031,9 +2064,51 @@ function CommentsPage({ user, comments, onAdd }) {
         concern: formConcern,
         text:text.trim(),
       });
-      setText(""); setFormStance(""); setDone(true); setSubmitting(false);
-      setTimeout(() => setDone(false), 4000);
+      setText(""); setFormStance(""); setDone("Comment posted. Thank you."); setSubmitting(false);
+      setTimeout(() => setDone(""), 4000);
     }, 600);
+  };
+  const startEdit = (comment) => {
+    const nextTopic = COMMENT_TOPIC_OPTIONS.some((topic) => topic.value === comment?.topic) ? comment.topic : "general";
+    const nextStanceOptions = commentStanceOptionsForTopic(nextTopic);
+    const nextConcernOptions = commentConcernOptionsForTopic(nextTopic);
+    setEditingCommentId(comment?.id ?? null);
+    setEditTopic(nextTopic);
+    setEditStance(nextStanceOptions.some((option) => option.value === comment?.stance) ? comment.stance : "neutral");
+    setEditConcern(nextConcernOptions.includes(comment?.concern) ? comment.concern : nextConcernOptions[0]);
+    setEditText(String(comment?.text || ""));
+    setEditErr("");
+    setDone("");
+  };
+  const cancelEdit = () => {
+    setEditingCommentId(null);
+    setEditErr("");
+  };
+  const saveEdit = (comment) => {
+    if (!comment || editBusy) return;
+    if (editText.trim().length < 20) {
+      setEditErr("Comment must be at least 20 characters.");
+      return;
+    }
+    setEditBusy(true);
+    setEditErr("");
+    setTimeout(() => {
+      const result = onUpdate?.(comment.id, {
+        topic: editTopic,
+        stance: editStance || "neutral",
+        concern: editConcern,
+        text: editText.trim(),
+      });
+      if (result?.error) {
+        setEditErr(result.error);
+        setEditBusy(false);
+        return;
+      }
+      setEditingCommentId(null);
+      setEditBusy(false);
+      setDone("Comment updated successfully.");
+      setTimeout(() => setDone(""), 4000);
+    }, 300);
   };
   return (
     <div>
@@ -2062,7 +2137,7 @@ function CommentsPage({ user, comments, onAdd }) {
           <div style={S.card}>
             <div style={S.cardTitle}>Add your comment</div>
             <p style={{ fontSize:13, color:C.muted, marginBottom:14, lineHeight:1.6 }}>Comments are attributed to your lot number. Be specific — detailed input helps the working group draft a covenant that reflects real community concerns.</p>
-            {done && <div style={S.alert("success")}>Comment posted. Thank you.</div>}
+            {!!done && <div style={S.alert("success")}>{done}</div>}
             <form onSubmit={submit}>
               <div style={{ marginBottom:12 }}>
                 <label style={S.label}>Topic</label>
@@ -2126,20 +2201,83 @@ function CommentsPage({ user, comments, onAdd }) {
           {filtered.length === 0 && <div style={{ ...S.card, textAlign:"center", color:C.muted, fontSize:13, padding:32 }}>No comments match your filter. Be the first to comment on this topic.</div>}
           {filtered.map(c => {
             const sc = stanceColors[c.stance] || stanceColors.neutral;
+            const isEditing = editingCommentId === c.id;
+            const canEdit = canEditComment(c);
             return (
               <div key={c.id} style={{ ...S.card, marginBottom:12 }}>
                 <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8, alignItems:"flex-start", gap:8 }}>
                   <div>
                     <span style={{ fontWeight:700, fontSize:13, color:C.forest }}>{c.name}</span>
                     <span style={{ fontSize:12, color:C.muted, marginLeft:8 }}>{c.lot} · {c.ts}</span>
+                    {c.editedAt && (
+                      <span style={{ fontSize:11, color:C.muted, marginLeft:8 }}>
+                        Edited {c.editedAt}
+                      </span>
+                    )}
                   </div>
                   <div style={{ display:"flex", gap:6, flexShrink:0 }}>
                     <span style={S.badge(sc.c, sc.bg)}>{sc.label}</span>
                     <span style={S.badge(C.muted, C.parchmentDark)}>{topicLabels[c.topic] || c.topic}</span>
                     {c.concern && <span style={S.badge("#4338CA", "#E0E7FF")}>{c.concern}</span>}
+                    {canEdit && !isEditing && (
+                      <button
+                        type="button"
+                        style={{ ...S.btn("outline"), padding: "4px 8px", fontSize: 11 }}
+                        onClick={() => startEdit(c)}
+                      >
+                        Edit
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div style={{ fontSize:13, color:C.ink, lineHeight:1.7 }}>{c.text}</div>
+                {isEditing ? (
+                  <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, background: C.parchment, padding: 10 }}>
+                    {editErr && <div style={S.alert("danger")}>{editErr}</div>}
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={S.label}>Topic</label>
+                      <select style={S.select} value={editTopic} onChange={(event) => setEditTopic(event.target.value)} disabled={editBusy}>
+                        {COMMENT_TOPIC_OPTIONS.map((topic) => (
+                          <option key={topic.value} value={topic.value}>{topic.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={S.label}>My position</label>
+                      <select style={S.select} value={editStance} onChange={(event) => setEditStance(event.target.value)} disabled={editBusy}>
+                        {editStanceOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={S.label}>Primary concern</label>
+                      <select style={S.select} value={editConcern} onChange={(event) => setEditConcern(event.target.value)} disabled={editBusy}>
+                        {editConcernOptions.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ marginBottom: 10 }}>
+                      <label style={S.label}>Your comment</label>
+                      <textarea
+                        style={S.textarea}
+                        value={editText}
+                        onChange={(event) => setEditText(event.target.value)}
+                        disabled={editBusy}
+                      />
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button type="button" style={{ ...S.btn("primary"), padding: "6px 10px" }} onClick={() => saveEdit(c)} disabled={editBusy || editText.trim().length < 20}>
+                        {editBusy ? "Saving..." : "Save changes"}
+                      </button>
+                      <button type="button" style={{ ...S.btn("outline"), padding: "6px 10px" }} onClick={cancelEdit} disabled={editBusy}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize:13, color:C.ink, lineHeight:1.7 }}>{c.text}</div>
+                )}
               </div>
             );
           })}
@@ -4131,8 +4269,56 @@ export default function App() {
 
   const handleAddComment = (c) => {
     setComments(prev => [c, ...prev]);
-    const commentLots = Array.isArray(c.lots) ? c.lots.filter((lot) => lot !== "ADMIN") : [c.lot];
+    const commentLots = (Array.isArray(c.lots) ? c.lots : [c.lot])
+      .map((lot) => normalizeLotLabel(lot))
+      .filter((lot) => !!lot && lot !== "ADMIN");
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
+  };
+  const handleUpdateComment = (commentId, updates = {}) => {
+    const targetId = String(commentId);
+    const nextText = String(updates.text || "").trim();
+    if (nextText.length < 20) {
+      return { error: "Comment must be at least 20 characters." };
+    }
+    const nextTopic = COMMENT_TOPIC_OPTIONS.some((topic) => topic.value === updates.topic)
+      ? updates.topic
+      : "general";
+    const nextStanceOptions = commentStanceOptionsForTopic(nextTopic);
+    const nextStance = nextStanceOptions.some((option) => option.value === updates.stance)
+      ? updates.stance
+      : "neutral";
+    const nextConcernOptions = commentConcernOptionsForTopic(nextTopic);
+    const nextConcern = nextConcernOptions.includes(updates.concern)
+      ? updates.concern
+      : nextConcernOptions[0];
+
+    let updated = false;
+    let editedComment = null;
+    setComments((prev) =>
+      prev.map((comment) => {
+        if (String(comment.id) !== targetId) return comment;
+        updated = true;
+        const nextComment = {
+          ...comment,
+          topic: nextTopic,
+          stance: nextStance,
+          concern: nextConcern,
+          text: nextText,
+          editedAt: todayLabel(),
+          editedBy: user?.name || comment.name,
+        };
+        editedComment = nextComment;
+        return nextComment;
+      })
+    );
+    if (!updated) {
+      return { error: "Comment could not be updated because it was not found." };
+    }
+    const commentLots = (Array.isArray(editedComment?.lots) ? editedComment.lots : [editedComment?.lot])
+      .map((lot) => normalizeLotLabel(lot))
+      .filter((lot) => !!lot && lot !== "ADMIN");
+    commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
+    return { message: "Comment updated." };
   };
   const handleAddDocument = (doc) =>
     setCovenantDocs((prev) => {
@@ -4903,7 +5089,7 @@ export default function App() {
           {page === "risks" && <RisksPage/>}
           {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
-          {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment}/>}
+          {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment} onUpdate={handleUpdateComment}/>}
           {page === "dashboard" && (
             <DashboardPage
               votes={votes}
