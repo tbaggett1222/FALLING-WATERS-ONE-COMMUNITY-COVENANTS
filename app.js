@@ -24313,6 +24313,8 @@ var FallingWatersPortal = (() => {
     const [sharedDataBusy, setSharedDataBusy] = (0, import_react.useState)(false);
     const [sharedDataMsg, setSharedDataMsg] = (0, import_react.useState)("");
     const [sharedDataErr, setSharedDataErr] = (0, import_react.useState)("");
+    const sharedSyncScopeQueueRef = useRef(/* @__PURE__ */ new Set());
+    const [sharedSyncNonce, setSharedSyncNonce] = (0, import_react.useState)(0);
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
     (0, import_react.useEffect)(() => {
@@ -24720,7 +24722,7 @@ var FallingWatersPortal = (() => {
       setComments((prev) => [c, ...prev]);
       const commentLots = normalizeCommentLots(c);
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
-      void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
     };
     const handleDeleteComment = (commentId) => {
       const targetId = String(commentId);
@@ -24749,7 +24751,7 @@ var FallingWatersPortal = (() => {
           return next;
         });
       }
-      void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
       return { message: "Comment deleted." };
     };
     const handleUpdateComment = (commentId, updates = {}) => {
@@ -24794,7 +24796,7 @@ var FallingWatersPortal = (() => {
       }
       const commentLots = (Array.isArray(editedComment?.lots) ? editedComment.lots : [editedComment?.lot]).map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
-      void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
       return { message: "Comment updated." };
     };
     const handleAddDocument = (doc) => setCovenantDocs((prev) => {
@@ -25351,6 +25353,19 @@ var FallingWatersPortal = (() => {
         return { error: message };
       }
     };
+    const queueSharedChangesSync = (scopeKeys = []) => {
+      const keys = Array.isArray(scopeKeys) ? scopeKeys : [];
+      if (keys.length === 0) return;
+      keys.forEach((key) => sharedSyncScopeQueueRef.current.add(key));
+      setSharedSyncNonce((value) => value + 1);
+    };
+    (0, import_react.useEffect)(() => {
+      if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
+      const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
+      if (queuedScopes.length === 0) return;
+      sharedSyncScopeQueueRef.current.clear();
+      void pushSharedChangesToDb(queuedScopes, { mode: "merge" });
+    }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
     (0, import_react.useEffect)(() => {
       if (!user || !dbApiBaseUrl) return;
       let cancelled = false;

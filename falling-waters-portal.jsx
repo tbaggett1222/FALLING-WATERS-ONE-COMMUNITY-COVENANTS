@@ -4374,6 +4374,8 @@ export default function App() {
   const [sharedDataBusy, setSharedDataBusy] = useState(false);
   const [sharedDataMsg, setSharedDataMsg] = useState("");
   const [sharedDataErr, setSharedDataErr] = useState("");
+  const sharedSyncScopeQueueRef = useRef(new Set());
+  const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
@@ -4781,7 +4783,7 @@ export default function App() {
     setComments(prev => [c, ...prev]);
     const commentLots = normalizeCommentLots(c);
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
-    void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
   };
   const handleDeleteComment = (commentId) => {
     const targetId = String(commentId);
@@ -4810,7 +4812,7 @@ export default function App() {
         return next;
       });
     }
-    void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
     return { message: "Comment deleted." };
   };
   const handleUpdateComment = (commentId, updates = {}) => {
@@ -4864,7 +4866,7 @@ export default function App() {
       .map((lot) => normalizeLotLabel(lot))
       .filter((lot) => !!lot && lot !== "ADMIN");
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
-    void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
     return { message: "Comment updated." };
   };
   const handleAddDocument = (doc) =>
@@ -5522,6 +5524,21 @@ export default function App() {
       return { error: message };
     }
   };
+
+  const queueSharedChangesSync = (scopeKeys = []) => {
+    const keys = Array.isArray(scopeKeys) ? scopeKeys : [];
+    if (keys.length === 0) return;
+    keys.forEach((key) => sharedSyncScopeQueueRef.current.add(key));
+    setSharedSyncNonce((value) => value + 1);
+  };
+
+  useEffect(() => {
+    if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
+    const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
+    if (queuedScopes.length === 0) return;
+    sharedSyncScopeQueueRef.current.clear();
+    void pushSharedChangesToDb(queuedScopes, { mode: "merge" });
+  }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
 
   useEffect(() => {
     if (!user || !dbApiBaseUrl) return;
