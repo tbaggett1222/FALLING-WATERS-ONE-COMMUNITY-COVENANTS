@@ -70,11 +70,36 @@ In the same admin card:
 
 Server endpoints:
 - `GET /api/db/health`
+- `GET /api/db/alert-status`
 - `GET /api/db/scopes`
 - `GET /api/db/summary`
 - `GET /api/db/records/:table`
 - `POST /api/db/sync`
 - `POST /api/db/export`
+
+## Database alerting endpoint
+
+Use `GET /api/db/alert-status` for monitoring and alerts.
+
+Response includes:
+- overall `status` (`pass`, `warn`, or `fail`)
+- per-check results (connection, sync freshness, minimum row checks)
+- metrics and threshold values
+
+Query options:
+- `strict=true` (or `strict=1`) returns HTTP `503` when status is `warn`/`fail`
+  - Useful for uptime monitors that alert on non-200 responses.
+
+Example:
+
+```bash
+curl "https://falling-waters-postgres-api.onrender.com/api/db/alert-status?strict=true"
+```
+
+Alert thresholds are configurable by env vars:
+- `ALERT_MAX_SYNC_AGE_MINUTES` (default `1440`)
+- `ALERT_MIN_STATE_KEYS` (default `1`)
+- `ALERT_MIN_SCOPE_RECORDS` (default `1`)
 
 ## Deploy backend to Render (recommended for GitHub Pages)
 
@@ -92,6 +117,10 @@ This repo includes `render.yaml` to deploy:
 4. In the Render web service settings, set:
    - `ALLOWED_ORIGINS` = your portal origin(s), comma separated.
      - Example: `https://tbaggett1222.github.io`
+   - (optional) tune alert thresholds:
+     - `ALERT_MAX_SYNC_AGE_MINUTES=1440`
+     - `ALERT_MIN_STATE_KEYS=1`
+     - `ALERT_MIN_SCOPE_RECORDS=1`
 5. Wait for deploy to finish.
 6. Copy the Render service URL (example: `https://falling-waters-postgres-api.onrender.com`).
 7. In portal admin, set **Database API base URL** to that HTTPS URL and test connection.
@@ -106,3 +135,11 @@ After connecting the new HTTPS API URL:
 ### CORS note
 
 If you change domains later (custom domain, staging URL, etc.), update `ALLOWED_ORIGINS` in Render so browsers can call the API.
+
+### Monitoring recommendation
+
+Create an external uptime monitor (UptimeRobot/Better Stack/etc.) for:
+
+- `https://falling-waters-postgres-api.onrender.com/api/db/alert-status?strict=true`
+
+This alerts on outages **and** stale/low-data conditions, not just basic uptime.
