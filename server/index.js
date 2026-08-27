@@ -20,8 +20,26 @@ const app = express();
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "100mb" }));
 
+let schemaReady = false;
+let schemaInitInFlight = null;
+
+const ensureSchemaReady = async () => {
+  if (schemaReady) return;
+  if (!schemaInitInFlight) {
+    schemaInitInFlight = ensureSchema()
+      .then(() => {
+        schemaReady = true;
+      })
+      .finally(() => {
+        schemaInitInFlight = null;
+      });
+  }
+  return schemaInitInFlight;
+};
+
 app.get("/api/db/health", async (_req, res) => {
   try {
+    await ensureSchemaReady();
     const ping = await query("SELECT NOW() AS now");
     res.json({
       ok: true,
@@ -30,7 +48,11 @@ app.get("/api/db/health", async (_req, res) => {
       now: ping.rows[0]?.now || null,
     });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error.message || "Database health check failed." });
+    res.status(503).json({
+      ok: false,
+      error: error.message || "Database health check failed.",
+      hint: "Ensure PostgreSQL is running and DATABASE_URL points to a reachable Postgres host.",
+    });
   }
 });
 
@@ -43,6 +65,7 @@ app.get("/api/db/scopes", (_req, res) => {
 
 app.get("/api/db/summary", async (_req, res) => {
   try {
+    await ensureSchemaReady();
     const summary = await getRecordCounts();
     res.json({ ok: true, summary });
   } catch (error) {
@@ -52,6 +75,7 @@ app.get("/api/db/summary", async (_req, res) => {
 
 app.get("/api/db/records/:table", async (req, res) => {
   try {
+    await ensureSchemaReady();
     const records = await getRecords({
       table: String(req.params.table || ""),
       limit: Number(req.query.limit) || 200,
@@ -65,6 +89,7 @@ app.get("/api/db/records/:table", async (req, res) => {
 
 app.post("/api/db/sync", async (req, res) => {
   try {
+    await ensureSchemaReady();
     const body = req.body || {};
     const backup = body.backup || {};
     const mode = body.mode || "replace";
@@ -86,6 +111,7 @@ app.post("/api/db/sync", async (req, res) => {
 
 app.post("/api/db/export", async (_req, res) => {
   try {
+    await ensureSchemaReady();
     const backup = await buildBackupFromDatabase();
     res.json({
       ok: true,
@@ -97,16 +123,15 @@ app.post("/api/db/export", async (_req, res) => {
   }
 });
 
-const start = async () => {
-  await ensureSchema();
+const start = () => {
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`PostgreSQL API listening on port ${PORT}`);
   });
+  ensureSchemaReady().catch((error) => {
+    // eslint-disable-next-line no-console
+    console.error("PostgreSQL API started, but database initialization failed:", error);
+  });
 };
 
-start().catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error("Failed to start PostgreSQL API:", error);
-  process.exit(1);
-});
+start();

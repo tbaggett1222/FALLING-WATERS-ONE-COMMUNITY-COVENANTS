@@ -4542,15 +4542,52 @@ export default function App() {
     return `${base.replace(/\/+$/, "")}${safePath}`;
   };
 
+  const buildDbApiNetworkErrorMessage = (requestUrl, error) => {
+    const baseMessage = error?.message || "Network request failed.";
+    const hints = [
+      "confirm the API server is running",
+      "verify the saved API URL is reachable from this browser",
+    ];
+
+    if (typeof window !== "undefined") {
+      const pageProtocol = String(window.location?.protocol || "");
+      const pageHost = String(window.location?.hostname || "");
+      let requestProtocol = "";
+      let requestHost = "";
+      try {
+        const parsed = new URL(requestUrl, window.location.href);
+        requestProtocol = String(parsed.protocol || "");
+        requestHost = String(parsed.hostname || "");
+      } catch {
+        requestProtocol = "";
+        requestHost = "";
+      }
+
+      if (pageProtocol === "https:" && requestProtocol === "http:") {
+        hints.push("the page is HTTPS and cannot call an HTTP API URL (mixed content); use an HTTPS API URL or open the portal over HTTP");
+      }
+      if (requestHost && /^(localhost|127\.0\.0\.1)$/i.test(requestHost) && !/^(localhost|127\.0\.0\.1)$/i.test(pageHost)) {
+        hints.push("localhost points to this browser machine; if your API runs elsewhere, replace localhost with that host");
+      }
+    }
+
+    return `Could not reach Database API (${baseMessage}). ${hints.join("; ")}. Request URL: ${requestUrl}`;
+  };
+
   const callDbApi = async (path, options = {}) => {
     const requestUrl = resolveDbApiUrl(path);
-    const response = await fetch(requestUrl, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-      },
-      ...options,
-    });
+    let response;
+    try {
+      response = await fetch(requestUrl, {
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+        ...options,
+      });
+    } catch (error) {
+      throw new Error(buildDbApiNetworkErrorMessage(requestUrl, error));
+    }
     const text = await response.text();
     let parsed = {};
     try {
