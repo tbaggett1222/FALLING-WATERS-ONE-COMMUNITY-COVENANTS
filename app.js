@@ -24313,7 +24313,7 @@ var FallingWatersPortal = (() => {
     const [sharedDataBusy, setSharedDataBusy] = (0, import_react.useState)(false);
     const [sharedDataMsg, setSharedDataMsg] = (0, import_react.useState)("");
     const [sharedDataErr, setSharedDataErr] = (0, import_react.useState)("");
-    const sharedSyncScopeQueueRef = useRef(/* @__PURE__ */ new Set());
+    const sharedSyncScopeQueueRef = (0, import_react.useRef)(/* @__PURE__ */ new Set());
     const [sharedSyncNonce, setSharedSyncNonce] = (0, import_react.useState)(0);
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
