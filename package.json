@@ -7,6 +7,8 @@
     "server": "python3 -m http.server 3000",
     "build": "esbuild site-entry.jsx --bundle --format=iife --global-name=FallingWatersPortal --outfile=app.js",
     "build:min": "esbuild site-entry.jsx --bundle --minify --format=iife --global-name=FallingWatersPortal --outfile=app.js",
+    "server": "node server/index.js",
+    "server:dev": "node --watch server/index.js",
     "test": "echo \"No automated tests configured\""
   },
   "repository": {
@@ -21,7 +23,10 @@
   },
   "homepage": "https://github.com/tbaggett1222/FALLING-WATERS-ONE-COMMUNITY-COVENANTS#readme",
   "dependencies": {
+    "cors": "^2.8.5",
     "esbuild": "^0.28.2",
+    "express": "^5.1.0",
+    "pg": "^8.16.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   }
