@@ -4,6 +4,7 @@
   "description": "Falling Waters One Community Covenants",
   "main": "index.js",
   "scripts": {
+    "serve:static": "python3 -m http.server 3000",
     "build": "esbuild site-entry.jsx --bundle --format=iife --global-name=FallingWatersPortal --outfile=app.js",
     "build:min": "esbuild site-entry.jsx --bundle --minify --format=iife --global-name=FallingWatersPortal --outfile=app.js",
     "server": "node server/index.js",
