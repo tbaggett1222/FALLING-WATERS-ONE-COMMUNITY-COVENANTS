@@ -21487,10 +21487,15 @@ var FallingWatersPortal = (() => {
     "Lot 156|T. Nguyen|Aug 22, 2026",
     "Lot 34|S. Burke|Aug 23, 2026"
   ]);
-  var SEED_VOTES = { eliminate: 38, permit: 19, undecided: 87 };
   var DEFAULT_TOTAL_LOTS = 200;
   var MAX_TOTAL_LOTS = 500;
   var MIN_TOTAL_LOTS = 1;
+  var DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
+  var MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
+  var MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
+  var LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
+  var BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
+  var DB_API_BASE_URL_KEY = "fw_db_api_base_url";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
   var STR_CONCERN_OPTIONS = [
@@ -21562,6 +21567,24 @@ var FallingWatersPortal = (() => {
     { value: "read_only_admin", label: "Read-only admin" }
   ];
   var DEFAULT_ADMIN_GRADE = "full_admin";
+  var BACKUP_RESTORE_SCOPE_OPTIONS = [
+    { key: "lotSettings", label: "Lot count settings" },
+    { key: "votes", label: "Voting ledger + per-lot vote keys" },
+    { key: "comments", label: "Community comments" },
+    { key: "ownerActivity", label: "Owner activity records" },
+    { key: "outreach", label: "Outreach contact state" },
+    { key: "eligibility", label: "Vote eligibility flags" },
+    { key: "primaryVoters", label: "Primary voter assignments" },
+    { key: "adminAccess", label: "Admin access roster + grades" },
+    { key: "userDirectory", label: "User access directory" },
+    { key: "covenantDocs", label: "Covenant document metadata" },
+    { key: "covenantFiles", label: "Stored covenant file blobs" },
+    { key: "sessionUser", label: "Current signed-in session" }
+  ];
+  var defaultBackupRestoreScopes = () => BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
+    acc[scope.key] = true;
+    return acc;
+  }, {});
   var store = {
     get: (k) => {
       try {
@@ -21595,6 +21618,49 @@ var FallingWatersPortal = (() => {
   };
   var buildLotLabels = (totalLots) => Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
   var votesNeededForLots = (totalLots) => Math.ceil(Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2 / 3);
+  var sanitizeDbApiBaseUrl = (inputValue, { allowEmpty = true } = {}) => {
+    const raw = String(inputValue || "").trim();
+    if (!raw) {
+      if (allowEmpty) return { value: "" };
+      return { error: "Enter a Database API URL like http://localhost:8787." };
+    }
+    if (/^postgres(ql)?:\/\//i.test(raw)) {
+      return {
+        error: "This field expects the API URL (for example http://localhost:8787), not DATABASE_URL."
+      };
+    }
+    if (/\bnpm\s+run\b/i.test(raw) || /\bexport\b/i.test(raw) || /\s/.test(raw)) {
+      const urlMatch = raw.match(/https?:\/\/[^\s"'`]+/i);
+      if (urlMatch) return sanitizeDbApiBaseUrl(urlMatch[0], { allowEmpty });
+      return {
+        error: "Paste only the API URL, not a terminal command. Example: http://localhost:8787"
+      };
+    }
+    if (!/^https?:\/\//i.test(raw)) {
+      return { error: "Database API URL must start with http:// or https://." };
+    }
+    let value = raw.replace(/\/+$/, "");
+    if (value.endsWith("/api")) {
+      value = value.slice(0, -4);
+    }
+    return { value };
+  };
+  var computeVoteTotalsFromLedger = (ledger = {}, lotLabels = buildLotLabels(DEFAULT_TOTAL_LOTS)) => {
+    let eliminate = 0;
+    let permit = 0;
+    let undecided = 0;
+    lotLabels.forEach((lot) => {
+      const choice = ledger?.[lot];
+      if (choice === "eliminate") eliminate += 1;
+      if (choice === "permit") permit += 1;
+      if (choice === "undecided") undecided += 1;
+    });
+    return {
+      eliminate,
+      permit,
+      undecided
+    };
+  };
   var formatMegabytes = (bytes) => `${(Number(bytes || 0) / (1024 * 1024)).toFixed(1)}MB`;
   var parseLotsInput = (value) => {
     const raw = String(value || "").trim();
@@ -21731,8 +21797,171 @@ var FallingWatersPortal = (() => {
     reader.onerror = () => reject(new Error("Could not read text from uploaded file."));
     reader.readAsText(file);
   });
+  var PORTAL_BACKUP_TYPE = "falling-waters-portal-backup";
+  var PORTAL_BACKUP_VERSION = 1;
   var COVENANT_ASSET_DB_NAME = "fw-covenant-assets";
   var COVENANT_ASSET_STORE = "files";
+  var VALID_VOTE_CHOICES = /* @__PURE__ */ new Set(["eliminate", "permit", "undecided"]);
+  var readBlobAsDataUrl = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not serialize stored covenant file."));
+    reader.readAsDataURL(blob);
+  });
+  var dataUrlToBlob = (dataUrl) => {
+    const raw = String(dataUrl || "");
+    const [meta, payload = ""] = raw.split(",", 2);
+    if (!meta.startsWith("data:")) {
+      throw new Error("Backup file contains an invalid covenant attachment encoding.");
+    }
+    const mimeMatch = meta.match(/^data:([^;]+)/);
+    const mime = mimeMatch?.[1] || "application/octet-stream";
+    const isBase64 = /;base64$/i.test(meta);
+    if (!isBase64) {
+      return new Blob([decodeURIComponent(payload)], { type: mime });
+    }
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let idx = 0; idx < binary.length; idx += 1) {
+      bytes[idx] = binary.charCodeAt(idx);
+    }
+    return new Blob([bytes], { type: mime });
+  };
+  var listCovenantAssetRecords = async () => {
+    const db = await openCovenantAssetDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(COVENANT_ASSET_STORE, "readonly");
+      const request = tx.objectStore(COVENANT_ASSET_STORE).getAll();
+      request.onsuccess = async () => {
+        try {
+          const records = Array.isArray(request.result) ? request.result : [];
+          const serialized = [];
+          for (const record of records) {
+            if (!record?.id || !(record?.blob instanceof Blob)) continue;
+            const blobDataUrl = await readBlobAsDataUrl(record.blob);
+            serialized.push({
+              id: record.id,
+              fileName: record.fileName || "",
+              fileType: record.fileType || record.blob.type || "application/octet-stream",
+              updatedAt: Number(record.updatedAt) || Date.now(),
+              blobDataUrl
+            });
+          }
+          db.close();
+          resolve(serialized);
+        } catch {
+          db.close();
+          reject(new Error("Could not prepare covenant attachments for backup export."));
+        }
+      };
+      request.onerror = () => {
+        db.close();
+        reject(new Error("Could not read covenant attachments from browser storage."));
+      };
+    });
+  };
+  var replaceCovenantAssetRecords = async (records) => {
+    const safeRecords = Array.isArray(records) ? records : [];
+    const db = await openCovenantAssetDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(COVENANT_ASSET_STORE, "readwrite");
+      const storeRef = tx.objectStore(COVENANT_ASSET_STORE);
+      storeRef.clear();
+      safeRecords.forEach((record) => {
+        const id = String(record?.id || "").trim();
+        if (!id) return;
+        const encoded = String(record?.blobDataUrl || "");
+        if (!encoded.startsWith("data:")) return;
+        try {
+          const blob = dataUrlToBlob(encoded);
+          storeRef.put({
+            id,
+            blob,
+            fileName: record?.fileName || "",
+            fileType: record?.fileType || blob.type || "application/octet-stream",
+            updatedAt: Number(record?.updatedAt) || Date.now()
+          });
+        } catch {
+        }
+      });
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(new Error("Could not restore covenant attachments from backup."));
+      };
+    });
+  };
+  var collectLegacyVoteEntries = () => {
+    const entries = {};
+    if (typeof localStorage === "undefined") return entries;
+    for (let idx = 0; idx < localStorage.length; idx += 1) {
+      const key = localStorage.key(idx);
+      if (!key || !key.startsWith("vote_")) continue;
+      const choice = store.get(key);
+      if (VALID_VOTE_CHOICES.has(choice)) {
+        entries[key] = choice;
+      }
+    }
+    return entries;
+  };
+  var clearLegacyVoteEntries = () => {
+    if (typeof localStorage === "undefined") return;
+    const keys = [];
+    for (let idx = 0; idx < localStorage.length; idx += 1) {
+      const key = localStorage.key(idx);
+      if (key && key.startsWith("vote_")) keys.push(key);
+    }
+    keys.forEach((key) => store.del(key));
+  };
+  var normalizeRestoreScopes = (scopes) => {
+    const defaults = defaultBackupRestoreScopes();
+    if (!scopes || typeof scopes !== "object") return defaults;
+    const normalized = { ...defaults };
+    Object.keys(defaults).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(scopes, key)) {
+        normalized[key] = scopes[key] !== false;
+      }
+    });
+    return normalized;
+  };
+  var hasSelectedRestoreScope = (scopes) => Object.values(normalizeRestoreScopes(scopes)).some(Boolean);
+  var mergeCommentsBySignature = (existingComments, incomingComments) => {
+    const list = [];
+    const seen = /* @__PURE__ */ new Set();
+    const add = (comment) => {
+      if (!comment || typeof comment !== "object") return;
+      const key = [
+        comment.id || "",
+        comment.name || "",
+        comment.lot || "",
+        comment.topic || "",
+        comment.stance || "",
+        comment.ts || "",
+        comment.text || ""
+      ].join("|");
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push(comment);
+    };
+    (Array.isArray(existingComments) ? existingComments : []).forEach(add);
+    (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+    return list;
+  };
+  var mergeCovenantDocsById = (existingDocs, incomingDocs) => {
+    const map = /* @__PURE__ */ new Map();
+    (Array.isArray(existingDocs) ? existingDocs : []).forEach((doc, idx) => {
+      const id = String(doc?.id || `existing-${idx}`);
+      map.set(id, doc);
+    });
+    (Array.isArray(incomingDocs) ? incomingDocs : []).forEach((doc, idx) => {
+      const id = String(doc?.id || `incoming-${idx}`);
+      map.set(id, doc);
+    });
+    return Array.from(map.values());
+  };
   var openCovenantAssetDb = () => new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
       reject(new Error("This browser does not support large local file storage."));
@@ -22050,15 +22279,36 @@ var FallingWatersPortal = (() => {
     return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s) and name to access the portal. Choose Primary voter for official voting rights or Comment-only for spouse/household participation. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, placeholder: "e.g. Lot 36, Lot 37 (admins can leave blank)", value: lot, onChange: (e) => setLot(e.target.value) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your name"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, placeholder: "First and last name", value: name, onChange: (e) => setName(e.target.value) }), isAdminUserAllowed(name.trim(), adminAccessEntries) && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.success, marginTop: 6, fontWeight: 600 } }, "Admin recognized. You will enter Admin Control Mode after sign in.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Create / enter a password"), /* @__PURE__ */ import_react.default.createElement("input", { style: S.input, type: "password", placeholder: "Min 4 characters", value: pw, onChange: (e) => setPw(e.target.value) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 } }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
   }
   function HomePage({ votes, stats, totalLots, votesNeeded }) {
-    const communityEngaged = Math.min(totalLots, votes.eliminate + votes.permit + votes.undecided);
+    const communityEngaged = Math.min(totalLots, stats.votedLots);
+    const notVotedLots = Math.max(totalLots - communityEngaged, 0);
     const engPct = Math.round(communityEngaged / totalLots * 100);
     const yesPct = Math.round(votes.eliminate / totalLots * 100);
+    const voteResponseCount = votes.eliminate + votes.permit + votes.undecided;
+    const totalCoverage = voteResponseCount + notVotedLots;
+    const integrityChecks = [
+      {
+        label: "Vote response buckets",
+        equation: `${votes.eliminate} + ${votes.permit} + ${votes.undecided} + ${notVotedLots} = ${totalCoverage} of ${totalLots}`,
+        pass: totalCoverage === totalLots
+      },
+      {
+        label: "Engagement aligns with ledger",
+        equation: `${communityEngaged} engaged = ${voteResponseCount} voted-response lots`,
+        pass: communityEngaged === voteResponseCount
+      },
+      {
+        label: "Portal totals align",
+        equation: `stats.votedLots (${stats.votedLots}) = engaged (${communityEngaged})`,
+        pass: stats.votedLots === communityEngaged
+      }
+    ];
+    const integrityPass = integrityChecks.every((check) => check.pass);
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: `linear-gradient(135deg, ${C.forest} 0%, ${C.forestLight} 100%)`, borderRadius: 10, padding: "28px 32px", marginBottom: 20, color: C.white, position: "relative", overflow: "hidden" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { position: "absolute", right: 0, bottom: 0, opacity: 0.12 } }, /* @__PURE__ */ import_react.default.createElement("svg", { width: "300", height: "100", viewBox: "0 0 300 100" }, /* @__PURE__ */ import_react.default.createElement("polyline", { points: "0,100 60,20 100,55 160,5 220,40 280,15 300,25 300,100", fill: C.white }))), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 13, color: C.stone, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 } }, "Falling Waters Residential Association"), /* @__PURE__ */ import_react.default.createElement("h1", { style: { fontFamily: "Georgia,serif", fontSize: 28, margin: "0 0 8px", lineHeight: 1.2 } }, "One Community, One Covenant"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 14, color: "rgba(255,255,255,0.8)", maxWidth: 560, margin: "0 0 20px", lineHeight: 1.6 } }, "A community-led effort to adopt a single, legally valid set of CC&Rs binding all ", totalLots, " lots \u2014 transparently, fairly, and permanently."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { background: "rgba(196,168,130,0.25)", border: `1px solid ${C.stone}`, color: C.stone, padding: "4px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600 } }, "\u2696 Phase 1 \u2014 Legal review in progress"), /* @__PURE__ */ import_react.default.createElement("span", { style: { background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", padding: "4px 14px", borderRadius: 20, fontSize: 12 } }, "Attorney engaged \xB7 Aug 2026"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statGrid }, [
       { num: totalLots, label: "Total lots", accent: C.forest },
       { num: votesNeeded, label: "Votes needed (2/3)", accent: C.stone },
       { num: communityEngaged, label: "Owners engaged", accent: "#2563EB" },
       { num: `${yesPct}%`, label: "Supporting STR elimination", accent: C.danger }
-    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Overall engagement"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Owners who have participated in the survey process"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, communityEngaged, " of ", totalLots, " lots engaged"), /* @__PURE__ */ import_react.default.createElement("span", null, engPct, "%")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.meter }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.meterFill(engPct, C.forest) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6 } }, "Goal: 100% engagement before vote \xB7 ", totalLots - communityEngaged, " owners not yet reached"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 10, fontSize: 12, color: C.muted, lineHeight: 1.55 } }, "Portal-tracked engagement: ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.loggedInLots), " lots logged in \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.commentedLots), " lots commented \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.votedLots), " lots cast a portal vote.")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "STR vote progress"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Current STR policy preference within the one-community CC&R campaign"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, votes.eliminate, " eliminate \xB7 ", votes.permit, " permit \xB7 ", votes.undecided, " not voted"), /* @__PURE__ */ import_react.default.createElement("span", null, yesPct, "% support elimination")), /* @__PURE__ */ import_react.default.createElement("div", { style: { height: 20, borderRadius: 10, overflow: "hidden", display: "flex", margin: "8px 0" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.eliminate / totalLots * 100}%`, background: C.danger, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.permit / totalLots * 100}%`, background: C.stone, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { flex: 1, background: C.parchmentDark } })), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 14, fontSize: 11, color: C.muted } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.danger, borderRadius: 2, display: "inline-block" } }), " Eliminate STRs (", votes.eliminate, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.stone, borderRadius: 2, display: "inline-block" } }), " Permit STRs (", votes.permit, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.parchmentDark, border: `1px solid ${C.border}`, borderRadius: 2, display: "inline-block" } }), " Not voted (", votes.undecided, ")")), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.alert("warn"), marginTop: 12, marginBottom: 0, fontSize: 12 } }, "Need ", votesNeeded, " votes to eliminate STRs. Currently ", Math.max(votesNeeded - votes.eliminate, 0), " votes short."))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Why this matters \u2014 the urgent case for a unified CC&R"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 12 } }, [
+    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Overall engagement"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Owners who have participated in the survey process"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, communityEngaged, " of ", totalLots, " lots engaged"), /* @__PURE__ */ import_react.default.createElement("span", null, engPct, "%")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.meter }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.meterFill(engPct, C.forest) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6 } }, "Goal: 100% engagement before vote \xB7 ", notVotedLots, " owners not yet reached"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 10, fontSize: 12, color: C.muted, lineHeight: 1.55 } }, "Portal-tracked engagement: ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.loggedInLots), " lots logged in \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.commentedLots), " lots commented \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.votedLots), " lots cast a portal vote.")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "STR vote progress"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Current STR policy preference within the one-community CC&R campaign"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, votes.eliminate, " eliminate \xB7 ", votes.permit, " permit \xB7 ", votes.undecided, " undecided \xB7 ", notVotedLots, " not voted"), /* @__PURE__ */ import_react.default.createElement("span", null, yesPct, "% support elimination")), /* @__PURE__ */ import_react.default.createElement("div", { style: { height: 20, borderRadius: 10, overflow: "hidden", display: "flex", margin: "8px 0" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.eliminate / totalLots * 100}%`, background: C.danger, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.permit / totalLots * 100}%`, background: C.stone, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.undecided / totalLots * 100}%`, background: "#3B82F6", transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${notVotedLots / totalLots * 100}%`, background: C.parchmentDark, transition: "width 1s" } })), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: C.muted } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.danger, borderRadius: 2, display: "inline-block" } }), " Eliminate STRs (", votes.eliminate, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.stone, borderRadius: 2, display: "inline-block" } }), " Permit STRs (", votes.permit, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: "#3B82F6", borderRadius: 2, display: "inline-block" } }), " Undecided (", votes.undecided, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.parchmentDark, border: `1px solid ${C.border}`, borderRadius: 2, display: "inline-block" } }), " Not voted (", notVotedLots, ")")), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.alert("warn"), marginTop: 12, marginBottom: 0, fontSize: 12 } }, "Need ", votesNeeded, " votes to eliminate STRs. Currently ", Math.max(votesNeeded - votes.eliminate, 0), " votes short."))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Data integrity check (live)"), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(integrityPass ? C.success : C.danger, integrityPass ? C.successLight : C.dangerLight) }, integrityPass ? "PASS" : "REVIEW NEEDED")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "Calculated from current vote ledger and lot count in real time."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gap: 8 } }, integrityChecks.map((check, idx) => /* @__PURE__ */ import_react.default.createElement("div", { key: idx, style: { border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", background: C.white } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.forest } }, check.label), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(check.pass ? C.success : C.danger, check.pass ? C.successLight : C.dangerLight) }, check.pass ? "OK" : "Mismatch")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" } }, check.equation))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Why this matters \u2014 the urgent case for a unified CC&R"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 12 } }, [
       { icon: "\u2696", title: "Three conflicting covenant sets", text: "Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
       { icon: "\u{1F3E0}", title: "Short-term rental gap \u2014 confirmed by attorney", text: "Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
       { icon: "\u{1F43B}", title: "Safety and community character", text: "STR guests don't always know our community rules \u2014 noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." }
@@ -22446,6 +22696,7 @@ var FallingWatersPortal = (() => {
     const allUnvoted = lotChoices.every((choice) => !choice);
     const uniformChoice = !allUnvoted && lotChoices.every((choice) => choice && choice === lotChoices[0]);
     const userVoted = allUnvoted ? null : uniformChoice ? lotChoices[0] : "mixed";
+    const notVotedLots = Math.max(totalLots - (votes.eliminate + votes.permit + votes.undecided), 0);
     const lotChoiceMap = votingLots.reduce((acc, lot, idx) => {
       acc[lot] = lotChoices[idx] || null;
       return acc;
@@ -22458,10 +22709,11 @@ var FallingWatersPortal = (() => {
       { icon: "\u2696", title: "Enforcement and liability", text: "The HOA has limited enforcement capacity. Every STR guest who violates a rule requires the Association to identify them, trace them to an owner, and pursue enforcement \u2014 while the owner may be hundreds of miles away. The Association's liability exposure from guest incidents is also heightened when the lot is functioning commercially." },
       { icon: "\u{1F3DB}", title: "Legal history \u2014 STRs were never permitted", text: "The original 2008 declaration required all leases to be for at least one year, effectively prohibiting short-term rentals before Airbnb existed. No owner has ever had a legally clear right to operate an STR in Falling Waters. The unified CC&R makes explicit what the community intended from the beginning." }
     ];
-    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "STR & Unified CC&R Vote:"), " this section captures each lot's STR policy preference as part of the one-community covenant adoption effort."), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, background: `linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border: `1px solid ${C.danger}` } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 18, fontWeight: "bold", color: C.danger, marginBottom: 8 } }, "Short-Term Rentals \u2014 The Central Issue"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: "0 0 12px" } }, "Our attorney has confirmed: ", /* @__PURE__ */ import_react.default.createElement("strong", null, "owners whose chain of title only includes the 2014 declaration have no enforceable short-term rental restriction today."), " Georgia courts will not imply a restriction that is not in an owner's title. Without a unified CC&R, Falling Waters cannot establish a consistent, community-wide STR rule \u2014 whether permissive or restrictive."), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: 0 } }, "This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Every lot owner's voice matters \u2014 this is why we need 100% engagement."))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 } }, [
+    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "STR & Unified CC&R Vote:"), " this section captures each lot's STR policy preference as part of the one-community covenant adoption effort."), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, background: `linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border: `1px solid ${C.danger}` } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 18, fontWeight: "bold", color: C.danger, marginBottom: 8 } }, "Short-Term Rentals \u2014 The Central Issue"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: "0 0 12px" } }, "Our attorney has confirmed: ", /* @__PURE__ */ import_react.default.createElement("strong", null, "owners whose chain of title only includes the 2014 declaration have no enforceable short-term rental restriction today."), " Georgia courts will not imply a restriction that is not in an owner's title. Without a unified CC&R, Falling Waters cannot establish a consistent, community-wide STR rule \u2014 whether permissive or restrictive."), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: 0 } }, "This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Every lot owner's voice matters \u2014 this is why we need 100% engagement."))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 20 } }, [
       { label: "Eliminate STRs", count: votes.eliminate, pct: Math.round(votes.eliminate / totalLots * 100), color: C.danger, desc: "No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
       { label: "Permit with regulation", count: votes.permit, pct: Math.round(votes.permit / totalLots * 100), color: C.stone, desc: "7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
-      { label: "Not yet voted", count: votes.undecided, pct: Math.round(votes.undecided / totalLots * 100), color: C.parchmentDark, desc: "Owners who have not yet indicated a preference. Your voice is needed." }
+      { label: "Undecided response", count: votes.undecided, pct: Math.round(votes.undecided / totalLots * 100), color: "#3B82F6", desc: "Owners who participated but need more time or information before choosing eliminate/permit." },
+      { label: "Not yet voted", count: notVotedLots, pct: Math.round(notVotedLots / totalLots * 100), color: C.parchmentDark, desc: "Owners who have not yet submitted any preference. Your voice is needed." }
     ].map((v, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: { background: C.white, border: `2px solid ${v.color}`, borderRadius: 8, padding: "16px 20px" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 28, fontWeight: 700, fontFamily: "Georgia,serif", color: v.color } }, v.count), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 600, fontSize: 13, marginBottom: 6, color: C.ink } }, v.label), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.5, marginBottom: 8 } }, v.desc), /* @__PURE__ */ import_react.default.createElement("div", { style: S.meter }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.meterFill(v.pct, v.color) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, v.pct, "% of ", totalLots, " lots")))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Six reasons Falling Waters needs a clear STR restriction"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 } }, reasons.map((r, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: { background: C.parchment, borderRadius: 6, padding: "14px 16px", borderLeft: `3px solid ${C.stone}` } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 18, marginBottom: 4 } }, r.icon), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 700, fontSize: 13, color: C.forest, marginBottom: 4 } }, r.title), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.65 } }, r.text))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Cast your STR policy vote for the unified CC&R package"), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Vote context:"), " this ballot records each lot's preference on STR policy as part of the one-community CC&R effort. Final adoption of one unified declaration still requires the community-wide 2/3 threshold (", votesNeeded, " lots)."), !canVote && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, "This login is set as ", /* @__PURE__ */ import_react.default.createElement("strong", null, accessRoleLabel(user.accessRole)), ". Voting is restricted to the designated primary voter for each lot, but you can still add community comments."), votingLots.length > 1 && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "You are currently voting for ", /* @__PURE__ */ import_react.default.createElement("strong", null, votingLots.length, " lots"), " (", votingLots.join(", "), "). Use per-lot controls below for separate votes, or quick actions to apply one choice across all listed lots."), userVoted ? /* @__PURE__ */ import_react.default.createElement("div", { style: userVoted === "mixed" ? S.alert("warn") : S.alert("success") }, /* @__PURE__ */ import_react.default.createElement("strong", null, userVoted === "mixed" ? "Your listed lots currently have mixed selections." : `Your vote has been recorded: "${userVoted === "eliminate" ? "Eliminate STRs" : userVoted === "permit" ? "Permit with regulation" : "Undecided"}".`), " ", "You can change your vote at any time before the formal ballot closes. Thank you for participating.") : /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "This is a preliminary preference survey \u2014 not the formal legal vote. Results inform the working group's drafting process. The formal certified-mail ballot will follow attorney review and draft completion."), votingLots.length > 1 && /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 10, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 8 } }, "Per-lot voting status"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gap: 8 } }, votingLots.map((lot) => /* @__PURE__ */ import_react.default.createElement("div", { key: lot, style: { border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", background: C.white } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 700, color: C.forest, fontSize: 13 } }, lot), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(lotChoiceMap[lot] ? C.success : C.muted, lotChoiceMap[lot] ? C.successLight : C.parchmentDark) }, choiceLabel(lotChoiceMap[lot]))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
@@ -22610,6 +22862,7 @@ var FallingWatersPortal = (() => {
     }))));
   }
   function AdminVotingPage({
+    comments,
     ownerActivity,
     voteLedger,
     primaryVoterRegistry,
@@ -22620,7 +22873,20 @@ var FallingWatersPortal = (() => {
     adminAccessGrades,
     totalLots,
     votesNeeded,
+    lastBackupExportAt,
+    backupHealthThresholdDays,
+    dbApiBaseUrl,
     onImportCsv,
+    onExportBackup,
+    onRestoreBackup,
+    onRecordBackupExport,
+    onUpdateBackupHealthThresholdDays,
+    onUpdateDbApiBaseUrl,
+    onTestDbConnection,
+    onSyncToDb,
+    onRestoreFromDb,
+    onFetchDbSummary,
+    onFetchDbRecords,
     onUpdateEligibility,
     onUpdateTotalLots,
     onSetAdminAccessGrade,
@@ -22633,10 +22899,33 @@ var FallingWatersPortal = (() => {
     const [importing, setImporting] = (0, import_react.useState)(false);
     const [importMsg, setImportMsg] = (0, import_react.useState)("");
     const [importErr, setImportErr] = (0, import_react.useState)("");
+    const [backupBusy, setBackupBusy] = (0, import_react.useState)(false);
+    const [backupMsg, setBackupMsg] = (0, import_react.useState)("");
+    const [backupErr, setBackupErr] = (0, import_react.useState)("");
+    const [bundleBusy, setBundleBusy] = (0, import_react.useState)(false);
+    const [restoreMode, setRestoreMode] = (0, import_react.useState)("replace");
+    const [restoreScopes, setRestoreScopes] = (0, import_react.useState)(() => defaultBackupRestoreScopes());
     const [gradeMsg, setGradeMsg] = (0, import_react.useState)("");
     const [newAdminName, setNewAdminName] = (0, import_react.useState)("");
     const [newAdminGrade, setNewAdminGrade] = (0, import_react.useState)(DEFAULT_ADMIN_GRADE);
     const [gradeErr, setGradeErr] = (0, import_react.useState)("");
+    const [backupThresholdInput, setBackupThresholdInput] = (0, import_react.useState)(String(backupHealthThresholdDays));
+    const [backupThresholdMsg, setBackupThresholdMsg] = (0, import_react.useState)("");
+    const [backupThresholdErr, setBackupThresholdErr] = (0, import_react.useState)("");
+    const [dbApiInput, setDbApiInput] = (0, import_react.useState)(String(dbApiBaseUrl || ""));
+    const [dbBusy, setDbBusy] = (0, import_react.useState)(false);
+    const [dbMsg, setDbMsg] = (0, import_react.useState)("");
+    const [dbErr, setDbErr] = (0, import_react.useState)("");
+    const [dbSummary, setDbSummary] = (0, import_react.useState)(null);
+    const [dbRecordsTable, setDbRecordsTable] = (0, import_react.useState)("state_values");
+    const [dbRecords, setDbRecords] = (0, import_react.useState)([]);
+    const effectiveBackupHealthThresholdDays = Number.isInteger(Number(backupHealthThresholdDays)) && Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS ? Number(backupHealthThresholdDays) : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
+    const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
+    const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
+    const backupAgeDays = backupTimestampMs === null ? null : Math.floor((Date.now() - backupTimestampMs) / (1e3 * 60 * 60 * 24));
+    const backupHealthLevel = backupTimestampMs === null ? "missing" : backupAgeDays > effectiveBackupHealthThresholdDays ? "stale" : "healthy";
+    const backupHealthText = backupHealthLevel === "healthy" ? `Last full backup export: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} day${backupAgeDays === 1 ? "" : "s"} ago).` : backupHealthLevel === "stale" ? `Last full backup export is stale: ${parsedLastBackupAt.toLocaleString()} (${backupAgeDays} days ago).` : "No recorded full backup export yet.";
+    const backupHealthGuidance = backupHealthLevel === "healthy" ? "Backup cadence is healthy." : `Recommendation: export a full backup at least every ${effectiveBackupHealthThresholdDays} days and after each admin session.`;
     const lotLabels = buildLotLabels(totalLots);
     const directoryRows = Object.values(userDirectory || {}).sort((a, b) => {
       if (!!a.isAdmin !== !!b.isAdmin) return a.isAdmin ? -1 : 1;
@@ -22657,6 +22946,12 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       setLotCountInput(String(totalLots));
     }, [totalLots]);
+    (0, import_react.useEffect)(() => {
+      setBackupThresholdInput(String(effectiveBackupHealthThresholdDays));
+    }, [effectiveBackupHealthThresholdDays]);
+    (0, import_react.useEffect)(() => {
+      setDbApiInput(String(dbApiBaseUrl || ""));
+    }, [dbApiBaseUrl]);
     const lotRows = lotLabels.map((lotLabel) => {
       const activity = ownerActivity[lotLabel] || null;
       const outreach = outreachState?.[lotLabel] || null;
@@ -22743,6 +23038,226 @@ var FallingWatersPortal = (() => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     };
+    const downloadCsvFile = (fileName, headers, rows) => {
+      const lines = [
+        headers.join(","),
+        ...rows.map(
+          (row) => row.map((val) => `"${String(val ?? "").replaceAll('"', '""')}"`).join(",")
+        )
+      ];
+      const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+    const exportCsvBundle = async () => {
+      setBackupErr("");
+      setBackupMsg("");
+      setBundleBusy(true);
+      try {
+        const stamp = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+        const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+        const lotRowsSorted = [...lotRows].sort((a, b) => (a.lotNum || 9999) - (b.lotNum || 9999));
+        const storedCovenantDocs = store.get("fw_covenant_docs");
+        const covenantDocCount = Array.isArray(storedCovenantDocs) ? storedCovenantDocs.length : 0;
+        const storageKeys = [];
+        if (typeof localStorage !== "undefined") {
+          for (let idx = 0; idx < localStorage.length; idx += 1) {
+            const key = localStorage.key(idx);
+            if (key && (key.startsWith("fw_") || key.startsWith("vote_"))) {
+              storageKeys.push(key);
+            }
+          }
+        }
+        storageKeys.sort((a, b) => a.localeCompare(b));
+        const covenantAssetRecords2 = await listCovenantAssetRecords().catch(() => []);
+        const allRows = [];
+        const lotNameMap = /* @__PURE__ */ new Map();
+        const addLotName = (lot, name) => {
+          const normalizedLot = normalizeLotLabel(lot);
+          const safeName = String(name || "").trim();
+          if (!normalizedLot || !safeName || normalizedLot === "ADMIN") return;
+          if (!lotNameMap.has(normalizedLot)) {
+            lotNameMap.set(normalizedLot, /* @__PURE__ */ new Set());
+          }
+          lotNameMap.get(normalizedLot).add(safeName);
+        };
+        lotRowsSorted.forEach((row) => {
+          addLotName(row.lot, row.ownerName);
+          addLotName(row.lot, row.primaryVoter);
+        });
+        directoryRows.forEach((row) => {
+          if (!row || row.isAdmin || !Array.isArray(row.lots)) return;
+          row.lots.forEach((lot) => addLotName(lot, row.name));
+        });
+        const appendField = (section, rowId, field, value) => {
+          let printable = "";
+          let valueType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+          if (value === void 0) {
+            printable = "";
+            valueType = "undefined";
+          } else if (typeof value === "string") {
+            printable = value;
+          } else {
+            try {
+              printable = JSON.stringify(value);
+            } catch {
+              printable = String(value);
+            }
+          }
+          allRows.push([section, rowId, field, valueType, printable]);
+        };
+        const appendObject = (section, rowId, obj) => {
+          const safeObj = obj && typeof obj === "object" ? obj : {};
+          Object.entries(safeObj).forEach(([field, value]) => appendField(section, rowId, field, value));
+        };
+        lotRowsSorted.forEach((row) => {
+          const associatedNames = Array.from(lotNameMap.get(row.lot) || []);
+          const bestAvailableName = row.ownerName || row.primaryVoter || associatedNames[0] || "";
+          appendObject("votes", row.lot, {
+            lot: row.lot,
+            vote_choice: row.choice || null,
+            vote_choice_label: choiceLabel(row.choice),
+            has_voted: row.hasVoted,
+            status: row.status,
+            owner_name: row.ownerName || "",
+            primary_voter: row.primaryVoter || "",
+            associated_names: associatedNames,
+            best_available_name: bestAvailableName
+          });
+          appendObject("eligibility", row.lot, {
+            vote_eligible: row.voteEligible,
+            ineligible_reason: row.ineligibleReason || "",
+            eligibility_updated_at: row.eligibilityUpdatedAt || "",
+            best_available_name: bestAvailableName
+          });
+          appendObject("outreach", row.lot, {
+            contacted: row.contacted,
+            outreach_notes: row.outreachNotes || "",
+            last_contact: row.lastContact || "",
+            owner_name: row.ownerName || "",
+            primary_voter: row.primaryVoter || "",
+            associated_names: associatedNames,
+            best_available_name: bestAvailableName
+          });
+        });
+        lotRowsSorted.forEach((row) => {
+          const associatedNames = Array.from(lotNameMap.get(row.lot) || []);
+          appendObject("lot_name_directory", row.lot, {
+            lot: row.lot,
+            owner_name: row.ownerName || "",
+            primary_voter: row.primaryVoter || "",
+            directory_names: associatedNames,
+            best_available_name: row.ownerName || row.primaryVoter || associatedNames[0] || ""
+          });
+        });
+        (Array.isArray(comments) ? comments : []).forEach((comment, idx) => {
+          appendObject("comments", `comment_${idx + 1}`, {
+            ts: comment?.ts || "",
+            name: comment?.name || "",
+            lot: comment?.lot || "",
+            lots: Array.isArray(comment?.lots) ? comment.lots : [],
+            topic: comment?.topic || "",
+            stance: comment?.stance || "",
+            text: comment?.text || ""
+          });
+        });
+        approvedAdminRows.forEach((row) => {
+          appendObject("admin_access", row.nameKey || row.name, {
+            approved_admin: row.name,
+            admin_grade: row.grade,
+            admin_grade_label: adminGradeLabel(row.grade),
+            grade_updated_at: row.gradeUpdatedAt || ""
+          });
+        });
+        directoryRows.forEach((row, idx) => {
+          const rowKey = row.userId || `user_${idx + 1}`;
+          appendObject("user_directory", rowKey, {
+            name: row.name || "",
+            is_admin: !!row.isAdmin,
+            admin_grade: row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "",
+            access_role: row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole),
+            lots: Array.isArray(row.lots) ? row.lots : [],
+            last_seen: row.lastSeen || ""
+          });
+        });
+        storageKeys.forEach((key) => {
+          const rawValue = typeof localStorage !== "undefined" ? String(localStorage.getItem(key) ?? "") : "";
+          let parsedValue = "";
+          try {
+            parsedValue = JSON.stringify(JSON.parse(rawValue));
+          } catch {
+            parsedValue = "";
+          }
+          appendObject("raw_storage", key, {
+            key,
+            key_type: key.startsWith("fw_") ? "portal" : "lot-vote",
+            parsed_json_value: parsedValue,
+            raw_storage_value: rawValue
+          });
+        });
+        covenantAssetRecords2.forEach((record) => {
+          appendObject("covenant_file_blobs", record.id || "", {
+            asset_id: record.id || "",
+            file_name: record.fileName || "",
+            file_type: record.fileType || "",
+            updated_at_ms: Number(record.updatedAt) || "",
+            blob_data_url: record.blobDataUrl || ""
+          });
+        });
+        const stateSnapshot = {
+          fw_user: store.get("fw_user"),
+          fw_votes: store.get("fw_votes"),
+          fw_comments: store.get("fw_comments"),
+          fw_comments_data_version: store.get("fw_comments_data_version"),
+          fw_covenant_docs: store.get("fw_covenant_docs"),
+          fw_owner_activity: store.get("fw_owner_activity"),
+          fw_vote_ledger: store.get("fw_vote_ledger"),
+          fw_primary_voter_registry: store.get("fw_primary_voter_registry"),
+          fw_outreach_state: store.get("fw_outreach_state"),
+          fw_user_directory: store.get("fw_user_directory"),
+          fw_admin_access_entries: store.get("fw_admin_access_entries"),
+          fw_admin_access_grades: store.get("fw_admin_access_grades"),
+          fw_total_lots: store.get("fw_total_lots"),
+          fw_vote_eligibility: store.get("fw_vote_eligibility")
+        };
+        Object.entries(stateSnapshot).forEach(([key, value]) => {
+          appendField("portal_state_snapshot", key, "json_value", value);
+        });
+        appendObject("manifest", "summary", {
+          exported_at: nowIso,
+          total_lots: totalLots,
+          votes_needed: votesNeeded,
+          vote_records: Object.keys(voteLedger || {}).length,
+          comments_count: (Array.isArray(comments) ? comments : []).length,
+          owner_activity_records: Object.keys(ownerActivity || {}).length,
+          outreach_records: Object.keys(outreachState || {}).length,
+          eligibility_records: Object.keys(eligibilityState || {}).length,
+          primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
+          admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
+          user_directory_records: Object.keys(userDirectory || {}).length,
+          covenant_docs: covenantDocCount,
+          raw_storage_keys_exported: storageKeys.length,
+          covenant_blob_records_exported: covenantAssetRecords2.length
+        });
+        downloadCsvFile(
+          `fw-full-data-export-${stamp}.csv`,
+          ["Section", "Row Id", "Field", "Value Type", "Value"],
+          allRows
+        );
+        onRecordBackupExport?.(nowIso);
+        setBackupMsg("Full CSV export downloaded as a single file with all sections.");
+      } catch (err) {
+        setBackupErr(err?.message || "Could not export CSV bundle.");
+      } finally {
+        setBundleBusy(false);
+      }
+    };
     const toggleLotEligibility = (row) => {
       if (row.voteEligible) {
         onUpdateEligibility(row.lot, { eligible: false, reason: row.ineligibleReason || "Dues unpaid" });
@@ -22818,7 +23333,207 @@ var FallingWatersPortal = (() => {
         event.target.value = "";
       }
     };
-    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-owner universe settings"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many lots are included in official participation and vote math. The 2/3 threshold updates automatically."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
+    const handleBackupExport = async () => {
+      setBackupErr("");
+      setBackupMsg("");
+      setBackupBusy(true);
+      try {
+        const result = await onExportBackup?.();
+        if (result?.error) {
+          setBackupErr(result.error);
+        } else {
+          onRecordBackupExport?.((/* @__PURE__ */ new Date()).toISOString());
+          setBackupMsg(result?.message || "Backup exported.");
+        }
+      } catch (err) {
+        setBackupErr(err?.message || "Could not export backup JSON.");
+      } finally {
+        setBackupBusy(false);
+      }
+    };
+    const handleBackupRestore = async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+      if (!hasSelectedRestoreScope(normalizedScopes)) {
+        setBackupErr("Select at least one data scope before restoring.");
+        event.target.value = "";
+        return;
+      }
+      setBackupErr("");
+      setBackupMsg("");
+      setBackupBusy(true);
+      try {
+        const rawText = await readFileAsText(file);
+        const parsed = JSON.parse(rawText);
+        const result = await onRestoreBackup?.(parsed, { mode: restoreMode, scopes: normalizedScopes });
+        if (result?.error) {
+          setBackupErr(result.error);
+        } else {
+          setBackupMsg(result?.message || "Backup restored.");
+        }
+      } catch (err) {
+        setBackupErr(err?.message || "Could not restore backup JSON.");
+      } finally {
+        setBackupBusy(false);
+        event.target.value = "";
+      }
+    };
+    const setAllRestoreScopes = (value) => {
+      const next = {};
+      BACKUP_RESTORE_SCOPE_OPTIONS.forEach((scope) => {
+        next[scope.key] = value;
+      });
+      setRestoreScopes(next);
+    };
+    const toggleRestoreScope = (scopeKey) => {
+      setRestoreScopes((prev) => ({
+        ...normalizeRestoreScopes(prev),
+        [scopeKey]: !(normalizeRestoreScopes(prev)[scopeKey] !== false)
+      }));
+    };
+    const saveBackupHealthThreshold = (valueOverride = null) => {
+      setBackupThresholdErr("");
+      setBackupThresholdMsg("");
+      const candidate = valueOverride === null ? backupThresholdInput : valueOverride;
+      const parsed = Number.parseInt(String(candidate || "").trim(), 10);
+      if (Number.isNaN(parsed) || parsed < MIN_BACKUP_HEALTH_MAX_AGE_DAYS || parsed > MAX_BACKUP_HEALTH_MAX_AGE_DAYS) {
+        setBackupThresholdErr(
+          `Backup threshold must be between ${MIN_BACKUP_HEALTH_MAX_AGE_DAYS} and ${MAX_BACKUP_HEALTH_MAX_AGE_DAYS} days.`
+        );
+        return;
+      }
+      setBackupThresholdInput(String(parsed));
+      const result = onUpdateBackupHealthThresholdDays?.(parsed);
+      if (result?.error) {
+        setBackupThresholdErr(result.error);
+        return;
+      }
+      setBackupThresholdMsg(result?.message || `Backup health threshold set to ${parsed} days.`);
+      setTimeout(() => setBackupThresholdMsg(""), 3500);
+    };
+    const saveDbApiUrl = () => {
+      setDbErr("");
+      setDbMsg("");
+      const result = onUpdateDbApiBaseUrl?.(dbApiInput);
+      if (result?.error) {
+        setDbErr(result.error);
+        return;
+      }
+      const safeUrl = String(result?.value || "").trim();
+      setDbApiInput(safeUrl);
+      setDbMsg(
+        safeUrl ? `Database API URL saved: ${safeUrl}` : "Database API URL cleared (will use same-origin /api routes)."
+      );
+      setTimeout(() => setDbMsg(""), 3500);
+    };
+    const testDbConnection = async () => {
+      setDbErr("");
+      setDbMsg("");
+      setDbBusy(true);
+      try {
+        const result = await onTestDbConnection?.();
+        if (result?.error) {
+          setDbErr(result.error);
+        } else {
+          setDbMsg(result?.message || "PostgreSQL API connection is healthy.");
+        }
+      } catch (err) {
+        setDbErr(err?.message || "Could not reach PostgreSQL API.");
+      } finally {
+        setDbBusy(false);
+      }
+    };
+    const syncPortalToDb = async () => {
+      setDbErr("");
+      setDbMsg("");
+      setDbBusy(true);
+      try {
+        const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+        const result = await onSyncToDb?.({ mode: restoreMode, scopes: normalizedScopes });
+        if (result?.error) {
+          setDbErr(result.error);
+        } else {
+          setDbMsg(result?.message || "Portal data synced to PostgreSQL.");
+        }
+      } catch (err) {
+        setDbErr(err?.message || "Could not sync portal data to PostgreSQL.");
+      } finally {
+        setDbBusy(false);
+      }
+    };
+    const restoreFromDb = async () => {
+      setDbErr("");
+      setDbMsg("");
+      setDbBusy(true);
+      try {
+        const normalizedScopes = normalizeRestoreScopes(restoreScopes);
+        const result = await onRestoreFromDb?.({ mode: restoreMode, scopes: normalizedScopes });
+        if (result?.error) {
+          setDbErr(result.error);
+        } else {
+          setDbMsg(result?.message || "Portal restored from PostgreSQL.");
+        }
+      } catch (err) {
+        setDbErr(err?.message || "Could not restore data from PostgreSQL.");
+      } finally {
+        setDbBusy(false);
+      }
+    };
+    const loadDbSummary = async () => {
+      setDbErr("");
+      setDbBusy(true);
+      try {
+        const result = await onFetchDbSummary?.();
+        if (result?.error) {
+          setDbErr(result.error);
+          return;
+        }
+        setDbSummary(result?.summary || null);
+        setDbMsg("Database summary loaded.");
+      } catch (err) {
+        setDbErr(err?.message || "Could not load database summary.");
+      } finally {
+        setDbBusy(false);
+      }
+    };
+    const loadDbRecords = async () => {
+      setDbErr("");
+      setDbBusy(true);
+      try {
+        const result = await onFetchDbRecords?.(dbRecordsTable, 200, 0);
+        if (result?.error) {
+          setDbErr(result.error);
+          return;
+        }
+        setDbRecords(Array.isArray(result?.records) ? result.records : []);
+        setDbMsg(`Loaded ${Array.isArray(result?.records) ? result.records.length : 0} record(s) from "${dbRecordsTable}".`);
+      } catch (err) {
+        setDbErr(err?.message || "Could not load database records.");
+      } finally {
+        setDbBusy(false);
+      }
+    };
+    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Backup health:"), " ", backupHealthText, " ", backupHealthGuidance), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup health policy"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many days can pass before backup health is marked stale."), backupThresholdErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupThresholdErr), backupThresholdMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupThresholdMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: { ...S.input, maxWidth: 180 },
+        type: "number",
+        min: MIN_BACKUP_HEALTH_MAX_AGE_DAYS,
+        max: MAX_BACKUP_HEALTH_MAX_AGE_DAYS,
+        value: backupThresholdInput,
+        onChange: (event) => setBackupThresholdInput(event.target.value)
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: () => saveBackupHealthThreshold(null) }, "Save threshold"), [3, 7, 14].map((days) => /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        key: days,
+        style: { ...S.btn(effectiveBackupHealthThresholdDays === days ? "primary" : "outline"), padding: "7px 12px" },
+        onClick: () => saveBackupHealthThreshold(days)
+      },
+      days,
+      " days"
+    ))), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, "Current stale threshold: ", /* @__PURE__ */ import_react.default.createElement("strong", null, effectiveBackupHealthThresholdDays, " days"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-owner universe settings"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many lots are included in official participation and vote math. The 2/3 threshold updates automatically."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, maxWidth: 180 },
@@ -22859,7 +23574,112 @@ var FallingWatersPortal = (() => {
         onClick: () => revokeAdminAccess(row.name)
       },
       "Revoke"
-    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statGrid }, [
+    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Export options: JSON for full-fidelity restore, plus a single-file full CSV export that includes reporting tables and raw stored portal records."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("primary"), padding: "7px 12px" },
+        onClick: handleBackupExport,
+        disabled: backupBusy || bundleBusy
+      },
+      "Export full backup JSON"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("stone"), padding: "7px 12px" },
+        onClick: exportCsvBundle,
+        disabled: backupBusy || bundleBusy
+      },
+      "Export full CSV (all data)"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: { ...S.input, padding: "7px 10px", maxWidth: 320 },
+        type: "file",
+        accept: ".json,application/json",
+        onChange: handleBackupRestore,
+        disabled: backupBusy || bundleBusy
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.forest, fontWeight: 700, marginBottom: 8 } }, "Selective restore options"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: { fontSize: 12, color: C.muted } }, "Mode"), /* @__PURE__ */ import_react.default.createElement(
+      "select",
+      {
+        style: { ...S.select, minWidth: 180, padding: "6px 8px" },
+        value: restoreMode,
+        onChange: (event) => {
+          const nextMode = event.target.value;
+          setRestoreMode(nextMode === "merge" || nextMode === "missing" ? nextMode : "replace");
+        },
+        disabled: backupBusy || dbBusy
+      },
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "replace" }, "Replace selected sections"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "merge" }, "Merge selected sections"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "missing" }, "Restore missing values only")
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("outline"), padding: "6px 10px", fontSize: 11 },
+        onClick: () => setAllRestoreScopes(true),
+        disabled: backupBusy || dbBusy
+      },
+      "Select all"
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("outline"), padding: "6px 10px", fontSize: 11 },
+        onClick: () => setAllRestoreScopes(false),
+        disabled: backupBusy || dbBusy
+      },
+      "Clear all"
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 } }, BACKUP_RESTORE_SCOPE_OPTIONS.map((scope) => /* @__PURE__ */ import_react.default.createElement(
+      "label",
+      {
+        key: scope.key,
+        style: {
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          border: `1px solid ${C.border}`,
+          borderRadius: 8,
+          padding: "8px 10px",
+          background: C.white,
+          fontSize: 12,
+          color: C.ink,
+          cursor: "pointer"
+        }
+      },
+      /* @__PURE__ */ import_react.default.createElement(
+        "input",
+        {
+          type: "checkbox",
+          checked: normalizeRestoreScopes(restoreScopes)[scope.key] !== false,
+          onChange: () => toggleRestoreScope(scope.key),
+          disabled: backupBusy || dbBusy
+        }
+      ),
+      /* @__PURE__ */ import_react.default.createElement("span", null, scope.label)
+    )))), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 8 } }, "Restore applies only selected sections. Replace mode overwrites those sections; merge mode overlays backup values; missing-only mode fills blanks without replacing existing records.")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "PostgreSQL sync, restore, and record viewer"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Connect to your PostgreSQL API server, push current portal state, restore from database using selected scopes/mode, and inspect records."), dbErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, dbErr), dbMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, dbMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "1.4fr auto auto", gap: 8, alignItems: "end", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Database API base URL"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        value: dbApiInput,
+        onChange: (event) => setDbApiInput(event.target.value),
+        placeholder: "http://localhost:8787"
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Enter only the API host URL (not DATABASE_URL or terminal commands). Leave blank only when the API is same-origin.")), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: saveDbApiUrl, disabled: dbBusy }, "Save URL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: testDbConnection, disabled: dbBusy }, "Test connection")), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: syncPortalToDb, disabled: dbBusy }, "Sync current portal to PostgreSQL"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("stone"), padding: "7px 12px" }, onClick: restoreFromDb, disabled: dbBusy }, "Restore from PostgreSQL (", restoreMode, ")"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: loadDbSummary, disabled: dbBusy }, "Load DB summary")), dbSummary && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "state_values: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.state_values || 0), " \xB7 covenant_assets: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.covenant_assets || 0), " \xB7 snapshots: ", /* @__PURE__ */ import_react.default.createElement("strong", null, dbSummary.backup_snapshots || 0)), dbSummary?.scope_records?.length > 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Scope"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Record count"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, dbSummary.scope_records.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.scope }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.scope), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.count)))))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement("select", { style: { ...S.select, maxWidth: 260 }, value: dbRecordsTable, onChange: (event) => setDbRecordsTable(event.target.value), disabled: dbBusy }, [
+      "state_values",
+      "comments",
+      "covenantDocs",
+      "ownerActivity",
+      "voteLedger",
+      "primaryVoters",
+      "outreach",
+      "userDirectory",
+      "adminAccess",
+      "adminAccessGrades",
+      "voteEligibility",
+      "legacyVoteEntries",
+      "covenant_assets",
+      "backup_snapshots"
+    ].map((tableName) => /* @__PURE__ */ import_react.default.createElement("option", { key: tableName, value: tableName }, tableName))), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: loadDbRecords, disabled: dbBusy }, "Load records")), /* @__PURE__ */ import_react.default.createElement("div", { style: { maxHeight: 260, overflow: "auto", background: C.parchment, border: `1px solid ${C.border}`, borderRadius: 8, padding: 10 } }, /* @__PURE__ */ import_react.default.createElement("pre", { style: { margin: 0, fontSize: 11, lineHeight: 1.45, color: C.ink } }, JSON.stringify(dbRecords, null, 2)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statGrid }, [
       { num: totalLots, label: "Total lots", accent: C.forest },
       { num: eligibleVotedRows.length, label: "Eligible votes counted", accent: C.success },
       { num: ineligibleVotedRows.length, label: "Non-eligible votes flagged", accent: C.danger },
@@ -22890,7 +23710,7 @@ var FallingWatersPortal = (() => {
     ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 10, color: C.muted } }, "Updated ", row.eligibilityUpdatedAt || "today")))), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.primaryVoter || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.ownerName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.commented ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.contacted ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontSize: 12, color: C.muted } }, row.outreachNotes || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastContact || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastActive || "\u2014"))))))));
   }
   function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operationalStats }) {
-    const surveyEngaged = votes.eliminate + votes.permit + votes.undecided;
+    const surveyEngaged = operationalStats.votedLots;
     const notEngaged = Math.max(0, totalLots - surveyEngaged);
     const strComments = comments.filter((c) => c.topic === "str");
     const restrictCount = comments.filter((c) => c.stance === "restrict").length;
@@ -22984,7 +23804,30 @@ var FallingWatersPortal = (() => {
       };
     });
     const [page, setPage] = (0, import_react.useState)("home");
-    const [votes, setVotes] = (0, import_react.useState)(() => store.get("fw_votes") || SEED_VOTES);
+    const [votes, setVotes] = (0, import_react.useState)(() => {
+      const savedTotalLots = Number(store.get("fw_total_lots"));
+      const effectiveTotalLots = Number.isInteger(savedTotalLots) && savedTotalLots >= MIN_TOTAL_LOTS && savedTotalLots <= MAX_TOTAL_LOTS ? savedTotalLots : DEFAULT_TOTAL_LOTS;
+      const initialLotLabels = buildLotLabels(effectiveTotalLots);
+      const savedLedger = store.get("fw_vote_ledger");
+      if (savedLedger && typeof savedLedger === "object") {
+        return computeVoteTotalsFromLedger(savedLedger, initialLotLabels);
+      }
+      const savedVotes = store.get("fw_votes");
+      if (savedVotes && typeof savedVotes === "object") {
+        const eliminate = Math.max(0, Number(savedVotes.eliminate) || 0);
+        const permit = Math.max(0, Number(savedVotes.permit) || 0);
+        return {
+          eliminate,
+          permit,
+          undecided: Math.max(0, initialLotLabels.length - eliminate - permit)
+        };
+      }
+      return {
+        eliminate: 0,
+        permit: 0,
+        undecided: initialLotLabels.length
+      };
+    });
     const [comments, setComments] = (0, import_react.useState)(() => {
       const savedComments = store.get("fw_comments");
       const safeSavedComments = Array.isArray(savedComments) ? savedComments : [];
@@ -23028,9 +23871,24 @@ var FallingWatersPortal = (() => {
       const saved = store.get("fw_vote_eligibility");
       return saved && typeof saved === "object" ? saved : {};
     });
+    const [lastBackupExportAt, setLastBackupExportAt] = (0, import_react.useState)(() => {
+      const saved = store.get(LAST_BACKUP_EXPORT_KEY);
+      return typeof saved === "string" && saved.trim() ? saved : "";
+    });
+    const [backupHealthThresholdDays, setBackupHealthThresholdDays] = (0, import_react.useState)(() => {
+      const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
+      if (Number.isInteger(saved) && saved >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && saved <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS) {
+        return saved;
+      }
+      return DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
+    });
+    const [dbApiBaseUrl, setDbApiBaseUrl] = (0, import_react.useState)(() => {
+      const saved = store.get(DB_API_BASE_URL_KEY);
+      const normalized = sanitizeDbApiBaseUrl(typeof saved === "string" ? saved : "", { allowEmpty: true });
+      return normalized?.value || "";
+    });
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
-    const previousTotalLotsRef = (0, import_react.useRef)(totalLots);
     (0, import_react.useEffect)(() => {
       store.set("fw_votes", votes);
     }, [votes]);
@@ -23067,6 +23925,15 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       store.set("fw_vote_eligibility", eligibilityState);
     }, [eligibilityState]);
+    (0, import_react.useEffect)(() => {
+      store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || "");
+    }, [lastBackupExportAt]);
+    (0, import_react.useEffect)(() => {
+      store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays);
+    }, [backupHealthThresholdDays]);
+    (0, import_react.useEffect)(() => {
+      store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || "");
+    }, [dbApiBaseUrl]);
     (0, import_react.useEffect)(() => {
       const result = consolidateCovenantDocs(covenantDocs);
       if (result.removedCount > 0) {
@@ -23266,25 +24133,19 @@ var FallingWatersPortal = (() => {
       const votingLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
       const targetLots = lotOverride ? votingLots.filter((lot) => lot === lotOverride) : votingLots;
       if (targetLots.length === 0) return;
-      const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`));
+      const previousChoices = targetLots.map((lot) => voteLedger[lot] || store.get(`vote_${lot}`) || null);
       if (previousChoices.every((prevChoice) => prevChoice === choice)) return;
-      setVotes((priorVotes) => {
-        const nextVotes = { ...priorVotes };
-        targetLots.forEach((lot, idx) => {
-          const prevChoice = previousChoices[idx];
-          if (prevChoice) {
-            nextVotes[prevChoice] = Math.max(0, (nextVotes[prevChoice] || 0) - 1);
-          } else {
-            nextVotes.undecided = Math.max(0, (nextVotes.undecided || 0) - 1);
-          }
-          nextVotes[choice] = (nextVotes[choice] || 0) + 1;
-        });
-        return nextVotes;
-      });
       setVoteLedger((prevLedger) => {
         const nextLedger = { ...prevLedger };
         targetLots.forEach((lot) => {
           nextLedger[lot] = choice;
+        });
+        setVotes((prevVotes) => {
+          const recomputed = recomputeVotesFromLedger(nextLedger);
+          if (prevVotes.eliminate === recomputed.eliminate && prevVotes.permit === recomputed.permit && prevVotes.undecided === recomputed.undecided) {
+            return prevVotes;
+          }
+          return recomputed;
         });
         return nextLedger;
       });
@@ -23346,22 +24207,9 @@ var FallingWatersPortal = (() => {
       return null;
     };
     const recomputeVotesFromLedger = (ledger, lotLabels = allLotLabels) => {
-      let eliminate = 0;
-      let permit = 0;
-      lotLabels.forEach((lot) => {
-        const choice = ledger[lot];
-        if (choice === "eliminate") eliminate += 1;
-        if (choice === "permit") permit += 1;
-      });
-      return {
-        eliminate,
-        permit,
-        undecided: Math.max(0, lotLabels.length - eliminate - permit)
-      };
+      return computeVoteTotalsFromLedger(ledger, lotLabels);
     };
     (0, import_react.useEffect)(() => {
-      if (previousTotalLotsRef.current === totalLots) return;
-      previousTotalLotsRef.current = totalLots;
       setVotes((prev) => {
         const recomputed = recomputeVotesFromLedger(voteLedger, allLotLabels);
         if (prev.eliminate === recomputed.eliminate && prev.permit === recomputed.permit && prev.undecided === recomputed.undecided) {
@@ -23369,7 +24217,7 @@ var FallingWatersPortal = (() => {
         }
         return recomputed;
       });
-    }, [totalLots]);
+    }, [totalLots, voteLedger]);
     const handleImportCsv = (rows) => {
       if (!Array.isArray(rows) || rows.length === 0) {
         return { error: "No CSV rows found to import." };
@@ -23488,6 +24336,311 @@ var FallingWatersPortal = (() => {
         message: `Imported ${rows.length} rows (${recognizedLots} recognized lots). Updated ${touchedVoteLots.size} lot vote records, ${touchedEligibilityLots.size} eligibility records, and outreach/owner fields where provided.`
       };
     };
+    const buildPortalBackupPayload = async () => {
+      const covenantAssetRecords2 = await listCovenantAssetRecords().catch(() => []);
+      return {
+        backupType: PORTAL_BACKUP_TYPE,
+        version: PORTAL_BACKUP_VERSION,
+        exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        payload: {
+          fw_user: user,
+          fw_votes: votes,
+          fw_comments: comments,
+          fw_comments_data_version: COMMENTS_DATA_VERSION,
+          fw_covenant_docs: covenantDocs,
+          fw_owner_activity: ownerActivity,
+          fw_vote_ledger: voteLedger,
+          fw_primary_voter_registry: primaryVoterRegistry,
+          fw_outreach_state: outreachState,
+          fw_user_directory: userDirectory,
+          fw_admin_access_entries: adminAccessEntries,
+          fw_admin_access_grades: adminAccessGrades,
+          fw_total_lots: totalLots,
+          fw_vote_eligibility: eligibilityState,
+          fw_last_backup_export_at: lastBackupExportAt || null,
+          fw_backup_health_threshold_days: backupHealthThresholdDays,
+          legacy_vote_entries: collectLegacyVoteEntries(),
+          covenant_asset_records: covenantAssetRecords2
+        }
+      };
+    };
+    const handleExportBackup = async () => {
+      const backup = await buildPortalBackupPayload();
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `fw-full-backup-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      return {
+        message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${covenantAssetRecords.length} stored covenant attachments).`
+      };
+    };
+    const handleRestoreBackup = async (rawBackup, restoreOptions = {}) => {
+      const candidate = rawBackup?.payload && typeof rawBackup.payload === "object" ? rawBackup.payload : rawBackup;
+      if (!candidate || typeof candidate !== "object") {
+        return { error: "Backup JSON format is invalid." };
+      }
+      if (rawBackup?.backupType && rawBackup.backupType !== PORTAL_BACKUP_TYPE) {
+        return { error: `Unsupported backup type "${rawBackup.backupType}".` };
+      }
+      if (rawBackup?.version && Number(rawBackup.version) > PORTAL_BACKUP_VERSION) {
+        return { error: `Backup version ${rawBackup.version} is newer than this portal supports.` };
+      }
+      const restoreMode = restoreOptions?.mode === "merge" || restoreOptions?.mode === "missing" ? restoreOptions.mode : "replace";
+      const scopeFlags = normalizeRestoreScopes(restoreOptions?.scopes);
+      if (!hasSelectedRestoreScope(scopeFlags)) {
+        return { error: "Select at least one section to restore." };
+      }
+      const sanitizeObj = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
+      const mergeObjectState = (currentState, incomingState) => {
+        if (restoreMode === "replace") return sanitizeObj(incomingState);
+        if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+        const current = { ...sanitizeObj(currentState) };
+        const incoming = sanitizeObj(incomingState);
+        Object.entries(incoming).forEach(([key, value]) => {
+          const existing = current[key];
+          const isMissing = existing === void 0 || existing === null || existing === "";
+          if (isMissing) current[key] = value;
+        });
+        return current;
+      };
+      const parsedTotalLots = Number(candidate.fw_total_lots);
+      const restoredTotalLots = Number.isInteger(parsedTotalLots) && parsedTotalLots >= MIN_TOTAL_LOTS && parsedTotalLots <= MAX_TOTAL_LOTS ? parsedTotalLots : totalLots;
+      const parsedThreshold = Number(candidate.fw_backup_health_threshold_days);
+      const restoredThreshold = Number.isInteger(parsedThreshold) && parsedThreshold >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && parsedThreshold <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS ? parsedThreshold : backupHealthThresholdDays;
+      const nextTotalLots = scopeFlags.lotSettings ? restoredTotalLots : totalLots;
+      const nextLotLabels = buildLotLabels(nextTotalLots);
+      const nextLotSet = new Set(nextLotLabels);
+      const importedLedgerRaw = sanitizeObj(candidate.fw_vote_ledger);
+      const importedVoteLedger = {};
+      Object.entries(importedLedgerRaw).forEach(([lotLabel, choice]) => {
+        const normalizedLot = normalizeLotLabel(lotLabel);
+        if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
+        if (!VALID_VOTE_CHOICES.has(choice)) return;
+        importedVoteLedger[normalizedLot] = choice;
+      });
+      const currentVoteLedgerForScope = {};
+      Object.entries(sanitizeObj(voteLedger)).forEach(([lotLabel, choice]) => {
+        const normalizedLot = normalizeLotLabel(lotLabel);
+        if (!normalizedLot || !nextLotSet.has(normalizedLot)) return;
+        if (!VALID_VOTE_CHOICES.has(choice)) return;
+        currentVoteLedgerForScope[normalizedLot] = choice;
+      });
+      const nextVoteLedger = scopeFlags.votes ? (() => {
+        if (restoreMode === "replace") return importedVoteLedger;
+        if (restoreMode === "merge") return { ...currentVoteLedgerForScope, ...importedVoteLedger };
+        const merged = { ...currentVoteLedgerForScope };
+        Object.entries(importedVoteLedger).forEach(([lotLabel, choice]) => {
+          if (!merged[lotLabel]) merged[lotLabel] = choice;
+        });
+        return merged;
+      })() : currentVoteLedgerForScope;
+      if (scopeFlags.votes) {
+        const importedLegacyVotes = sanitizeObj(candidate.legacy_vote_entries);
+        if (restoreMode === "replace") {
+          clearLegacyVoteEntries();
+        }
+        Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
+          if (!String(key).startsWith("vote_")) return;
+          if (!VALID_VOTE_CHOICES.has(choice)) return;
+          if (restoreMode === "missing" && store.get(key)) return;
+          store.set(key, choice);
+        });
+        Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
+          store.set(`vote_${lotLabel}`, choice);
+        });
+      }
+      const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
+      const nextComments = scopeFlags.comments ? restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments) : comments;
+      const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
+      const nextCovenantDocsRaw = scopeFlags.covenantDocs ? restoreMode === "replace" ? importedCovenantDocs : mergeCovenantDocsById(covenantDocs, importedCovenantDocs) : covenantDocs;
+      const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
+      const nextOwnerActivity = scopeFlags.ownerActivity ? mergeObjectState(ownerActivity, candidate.fw_owner_activity) : ownerActivity;
+      const nextPrimaryRegistry = scopeFlags.primaryVoters ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry) : primaryVoterRegistry;
+      const nextOutreach = scopeFlags.outreach ? mergeObjectState(outreachState, candidate.fw_outreach_state) : outreachState;
+      const nextUserDirectory = scopeFlags.userDirectory ? mergeObjectState(userDirectory, candidate.fw_user_directory) : userDirectory;
+      const nextEligibility = scopeFlags.eligibility ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility) : eligibilityState;
+      const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
+      const effectiveAdminEntries = scopeFlags.adminAccess ? (() => {
+        if (restoreMode === "merge" || restoreMode === "missing") {
+          const mergedEntries = normalizeAdminAccessEntries([...adminAccessEntries, ...nextAdminEntries]);
+          return mergedEntries.length > 0 ? mergedEntries : adminAccessEntries;
+        }
+        return nextAdminEntries.length > 0 ? nextAdminEntries : adminAccessEntries;
+      })() : adminAccessEntries;
+      const nextAdminGrades = scopeFlags.adminAccess ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades) : adminAccessGrades;
+      const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
+      if (scopeFlags.covenantFiles) {
+        if (restoreMode === "merge" || restoreMode === "missing") {
+          const existingAssets = await listCovenantAssetRecords().catch(() => []);
+          const assetMap = /* @__PURE__ */ new Map();
+          existingAssets.forEach((record) => assetMap.set(record.id, record));
+          restoredAssets.forEach((record) => {
+            const id = String(record?.id || "").trim();
+            if (!id) return;
+            if (restoreMode === "missing" && assetMap.has(id)) return;
+            assetMap.set(id, record);
+          });
+          await replaceCovenantAssetRecords(Array.from(assetMap.values()));
+        } else {
+          await replaceCovenantAssetRecords(restoredAssets);
+        }
+      }
+      if (scopeFlags.lotSettings) {
+        setTotalLots(nextTotalLots);
+        setBackupHealthThresholdDays(restoredThreshold);
+      }
+      if (scopeFlags.votes) setVoteLedger(nextVoteLedger);
+      setVotes(computeVoteTotalsFromLedger(nextVoteLedger, nextLotLabels));
+      if (scopeFlags.comments) {
+        setComments(nextComments);
+        store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
+      }
+      if (scopeFlags.covenantDocs) setCovenantDocs(nextCovenantDocs);
+      if (scopeFlags.ownerActivity) setOwnerActivity(nextOwnerActivity);
+      if (scopeFlags.primaryVoters) setPrimaryVoterRegistry(nextPrimaryRegistry);
+      if (scopeFlags.outreach) setOutreachState(nextOutreach);
+      if (scopeFlags.userDirectory) setUserDirectory(nextUserDirectory);
+      if (scopeFlags.eligibility) setEligibilityState(nextEligibility);
+      if (scopeFlags.adminAccess) {
+        setAdminAccessEntries(effectiveAdminEntries);
+        setAdminAccessGrades(nextAdminGrades);
+      }
+      const restoredUserRaw = candidate.fw_user;
+      const restoredUser = scopeFlags.sessionUser && restoredUserRaw && typeof restoredUserRaw === "object" ? (() => {
+        const lots = normalizeUserLots(restoredUserRaw);
+        const hasAdminApproval = isAdminUserAllowed(restoredUserRaw.name, effectiveAdminEntries);
+        const requestedAdmin = !!restoredUserRaw.isAdmin || lots.length === 1 && lots[0] === "ADMIN";
+        if (requestedAdmin && !hasAdminApproval) return null;
+        if (!hasAdminApproval && lots.length === 0) return null;
+        const isAdmin = hasAdminApproval || requestedAdmin;
+        const effectiveLots = isAdmin ? ["ADMIN"] : lots;
+        return {
+          ...restoredUserRaw,
+          isAdmin,
+          accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(restoredUserRaw.accessRole),
+          userId: restoredUserRaw.userId || generateUserId(restoredUserRaw.name),
+          lots: effectiveLots,
+          lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", ")
+        };
+      })() : user;
+      if (scopeFlags.sessionUser) {
+        store.set("fw_user", restoredUser);
+        setUser(restoredUser);
+        setPage(restoredUser?.isAdmin ? "admin-votes" : "home");
+        if (candidate.fw_last_backup_export_at && !Number.isNaN(Date.parse(String(candidate.fw_last_backup_export_at)))) {
+          setLastBackupExportAt(new Date(String(candidate.fw_last_backup_export_at)).toISOString());
+        }
+      }
+      const appliedScopeLabels = BACKUP_RESTORE_SCOPE_OPTIONS.filter((scope) => scopeFlags[scope.key] !== false).map((scope) => scope.label);
+      return {
+        message: `Backup restored (${restoreMode}): ${appliedScopeLabels.join(", ")}. Vote records now ${Object.keys(nextVoteLedger).length}; comments ${nextComments.length}.`
+      };
+    };
+    const handleRecordBackupExport = (isoTimestamp = (/* @__PURE__ */ new Date()).toISOString()) => {
+      const safeIso = String(isoTimestamp || "").trim();
+      const parsed = Date.parse(safeIso);
+      if (Number.isNaN(parsed)) return;
+      setLastBackupExportAt(new Date(parsed).toISOString());
+    };
+    const handleUpdateBackupHealthThresholdDays = (nextDays) => {
+      const parsed = Number.parseInt(String(nextDays || "").trim(), 10);
+      if (Number.isNaN(parsed) || parsed < MIN_BACKUP_HEALTH_MAX_AGE_DAYS || parsed > MAX_BACKUP_HEALTH_MAX_AGE_DAYS) {
+        return {
+          error: `Backup threshold must be between ${MIN_BACKUP_HEALTH_MAX_AGE_DAYS} and ${MAX_BACKUP_HEALTH_MAX_AGE_DAYS} days.`
+        };
+      }
+      setBackupHealthThresholdDays(parsed);
+      return { message: `Backup health threshold set to ${parsed} days.` };
+    };
+    const handleUpdateDbApiBaseUrl = (nextUrl = "") => {
+      const normalized = sanitizeDbApiBaseUrl(nextUrl, { allowEmpty: true });
+      if (normalized.error) {
+        return { error: normalized.error };
+      }
+      setDbApiBaseUrl(normalized.value);
+      return {
+        value: normalized.value,
+        message: normalized.value ? "Database API URL updated." : "Database API URL cleared (same-origin /api will be used)."
+      };
+    };
+    const resolveDbApiUrl = (path) => {
+      const safePath = String(path || "");
+      const base = String(dbApiBaseUrl || "").trim();
+      if (!base) return safePath;
+      return `${base.replace(/\/+$/, "")}${safePath}`;
+    };
+    const callDbApi = async (path, options = {}) => {
+      const requestUrl = resolveDbApiUrl(path);
+      const response = await fetch(requestUrl, {
+        headers: {
+          "Content-Type": "application/json",
+          ...options.headers || {}
+        },
+        ...options
+      });
+      const text = await response.text();
+      let parsed = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = {};
+      }
+      if (!response.ok || parsed?.ok === false) {
+        if (parsed?.error) {
+          throw new Error(parsed.error);
+        }
+        if (response.status === 404) {
+          throw new Error(
+            `Database API request failed (404). Check that the saved API URL is only the API host (example: http://localhost:8787), not a command, and that the server is running. Request URL: ${requestUrl}`
+          );
+        }
+        throw new Error(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
+      }
+      return parsed;
+    };
+    const handleTestDbConnection = async () => {
+      const result = await callDbApi("/api/db/health", { method: "GET" });
+      return {
+        message: `Connected to PostgreSQL API. Server time: ${result?.now || "unknown"}`
+      };
+    };
+    const handleSyncToDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
+      const backup = await buildPortalBackupPayload();
+      const result = await callDbApi("/api/db/sync", {
+        method: "POST",
+        body: JSON.stringify({
+          backup,
+          mode,
+          scopes
+        })
+      });
+      return {
+        message: result?.message || "PostgreSQL sync completed."
+      };
+    };
+    const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
+      const result = await callDbApi("/api/db/export", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      return handleRestoreBackup(result?.backup || {}, { mode, scopes });
+    };
+    const handleFetchDbSummary = async () => {
+      const result = await callDbApi("/api/db/summary", { method: "GET" });
+      return { summary: result?.summary || null };
+    };
+    const handleFetchDbRecords = async (table, limit = 200, offset = 0) => {
+      const safeTable = encodeURIComponent(String(table || "state_values"));
+      const result = await callDbApi(`/api/db/records/${safeTable}?limit=${Number(limit) || 200}&offset=${Number(offset) || 0}`, {
+        method: "GET"
+      });
+      return { records: Array.isArray(result?.records) ? result.records : [] };
+    };
     const activityRows = Object.values(ownerActivity);
     const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
     const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -23544,7 +24697,7 @@ var FallingWatersPortal = (() => {
         )
       },
       user.isAdmin ? "Admin control mode" : "Resident portal mode"
-    ))), /* @__PURE__ */ import_react.default.createElement("nav", { style: S.sidebarNav }, navItems.map((item) => /* @__PURE__ */ import_react.default.createElement("div", { key: item.id, style: S.navItem(page === item.id), onClick: () => setPage(item.id) }, item.icon, item.label))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.sidebarBottom }, /* @__PURE__ */ import_react.default.createElement("div", { style: { cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "rgba(255,255,255,0.5)" }, onClick: handleLogout }, /* @__PURE__ */ import_react.default.createElement(Icon.logout, null), " Sign out"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.main }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbar }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbarTitle }, pageTitles[page]), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Need ", votesNeeded, " votes \xB7"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.danger } }, votes.eliminate, " votes to eliminate STRs so far"), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.content }, user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, and CSV import/export."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
+    ))), /* @__PURE__ */ import_react.default.createElement("nav", { style: S.sidebarNav }, navItems.map((item) => /* @__PURE__ */ import_react.default.createElement("div", { key: item.id, style: S.navItem(page === item.id), onClick: () => setPage(item.id) }, item.icon, item.label))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.sidebarBottom }, /* @__PURE__ */ import_react.default.createElement("div", { style: { cursor: "pointer", display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "rgba(255,255,255,0.5)" }, onClick: handleLogout }, /* @__PURE__ */ import_react.default.createElement(Icon.logout, null), " Sign out"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.main }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbar }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.topbarTitle }, pageTitles[page]), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 10, alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted } }, "Need ", votesNeeded, " votes \xB7"), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, fontWeight: 700, color: C.danger } }, votes.eliminate, " votes to eliminate STRs so far"), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.content }, user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
       DashboardPage,
       {
         votes,
@@ -23557,6 +24710,7 @@ var FallingWatersPortal = (() => {
     ), page === "admin-votes" && user.isAdmin && /* @__PURE__ */ import_react.default.createElement(
       AdminVotingPage,
       {
+        comments,
         ownerActivity,
         voteLedger,
         primaryVoterRegistry,
@@ -23567,7 +24721,20 @@ var FallingWatersPortal = (() => {
         adminAccessGrades,
         totalLots,
         votesNeeded,
+        lastBackupExportAt,
+        backupHealthThresholdDays,
+        dbApiBaseUrl,
         onImportCsv: handleImportCsv,
+        onExportBackup: handleExportBackup,
+        onRestoreBackup: handleRestoreBackup,
+        onRecordBackupExport: handleRecordBackupExport,
+        onUpdateBackupHealthThresholdDays: handleUpdateBackupHealthThresholdDays,
+        onUpdateDbApiBaseUrl: handleUpdateDbApiBaseUrl,
+        onTestDbConnection: handleTestDbConnection,
+        onSyncToDb: handleSyncToDb,
+        onRestoreFromDb: handleRestoreFromDb,
+        onFetchDbSummary: handleFetchDbSummary,
+        onFetchDbRecords: handleFetchDbRecords,
         onUpdateEligibility: handleUpdateEligibility,
         onUpdateTotalLots: handleUpdateTotalLots,
         onSetAdminAccessGrade: handleSetAdminAccessGrade,
