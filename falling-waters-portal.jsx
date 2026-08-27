@@ -310,6 +310,24 @@ const getUserLotDisplay = (user) => {
   return lots.join(", ");
 };
 
+const normalizeCommentLots = (comment) => {
+  const rawLots = Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot];
+  return rawLots
+    .map((lot) => normalizeLotLabel(lot))
+    .filter((lot) => !!lot && lot !== "ADMIN");
+};
+
+const userCanManageComment = (user, comment) => {
+  if (!user || !comment) return false;
+  if (user.isAdmin) return true;
+  const userLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+  const commentLots = normalizeCommentLots(comment);
+  const lotMatch = commentLots.some((lot) => userLots.includes(lot));
+  const sameUserId = !!(comment.userId && user.userId && comment.userId === user.userId);
+  const sameNameAndLot = normalizeNameKey(comment.name) === normalizeNameKey(user.name) && lotMatch;
+  return sameUserId || sameNameAndLot;
+};
+
 const choiceLabel = (choice) =>
   choice === "eliminate"
     ? "Eliminate STRs"
@@ -2077,7 +2095,7 @@ function RisksPage() {
 }
 
 // ── COMMENTS PAGE ────────────────────────────────────────────────────────────
-function CommentsPage({ user, comments, onAdd, onUpdate }) {
+function CommentsPage({ user, comments, onAdd, onUpdate, onDelete }) {
   const [formTopic, setFormTopic] = useState("str");
   const [formStance, setFormStance] = useState("");
   const [formConcern, setFormConcern] = useState(commentConcernOptionsForTopic("str")[0]);
@@ -2092,6 +2110,7 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
   const [editConcern, setEditConcern] = useState(commentConcernOptionsForTopic("general")[0]);
   const [editText, setEditText] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  const [deletingCommentId, setDeletingCommentId] = useState(null);
   const [editErr, setEditErr] = useState("");
   const filtered = comments.filter(c => (filterTopic==="all" || c.topic===filterTopic) && (filterStance==="" || c.stance===filterStance));
   const topicLabels = COMMENT_TOPIC_OPTIONS.reduce((acc, topic) => {
@@ -2107,20 +2126,7 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
     permit:{ c:C.stoneDark, bg:"#FEF3C7", label:"Supports more flexibility" },
     neutral:{ c:C.muted, bg:C.parchmentDark, label:"Neutral / question" },
   };
-  const userLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
-  const canEditComment = (comment) => {
-    if (user?.isAdmin) return true;
-    const commentLots = (Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot])
-      .map((lot) => normalizeLotLabel(lot))
-      .filter(Boolean);
-    const lotMatch = commentLots.some((lot) => userLots.includes(lot));
-    return (
-      !!comment?.userId && !!user?.userId && comment.userId === user.userId
-    ) || (
-      normalizeNameKey(comment?.name) === normalizeNameKey(user?.name)
-      && lotMatch
-    );
-  };
+  const canEditComment = (comment) => userCanManageComment(user, comment);
   useEffect(() => {
     setFormConcern((current) => (concernOptions.includes(current) ? current : concernOptions[0]));
   }, [formTopic]);
@@ -2196,6 +2202,33 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
       setDone("Comment updated successfully.");
       setTimeout(() => setDone(""), 4000);
     }, 300);
+  };
+  const deleteComment = (comment) => {
+    if (!comment || deletingCommentId !== null) return;
+    if (!userCanManageComment(user, comment)) {
+      setEditErr("You can only delete your own comments.");
+      return;
+    }
+    const confirmed = typeof window === "undefined"
+      ? true
+      : window.confirm("Delete this comment? This action cannot be undone.");
+    if (!confirmed) return;
+    setDeletingCommentId(comment.id);
+    setEditErr("");
+    setTimeout(() => {
+      const result = onDelete?.(comment.id);
+      if (result?.error) {
+        setEditErr(result.error);
+        setDeletingCommentId(null);
+        return;
+      }
+      if (editingCommentId === comment.id) {
+        setEditingCommentId(null);
+      }
+      setDeletingCommentId(null);
+      setDone(result?.message || "Comment deleted.");
+      setTimeout(() => setDone(""), 4000);
+    }, 250);
   };
   return (
     <div>
@@ -2327,6 +2360,16 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
                         onClick={() => startEdit(c)}
                       >
                         Edit
+                      </button>
+                    )}
+                    {canEdit && !isEditing && (
+                      <button
+                        type="button"
+                        style={{ ...S.btn("danger"), padding: "4px 8px", fontSize: 11 }}
+                        onClick={() => deleteComment(c)}
+                        disabled={deletingCommentId === c.id}
+                      >
+                        {deletingCommentId === c.id ? "Deleting…" : "Delete"}
                       </button>
                     )}
                   </div>
@@ -4723,13 +4766,47 @@ export default function App() {
 
   const handleAddComment = (c) => {
     setComments(prev => [c, ...prev]);
-    const commentLots = (Array.isArray(c.lots) ? c.lots : [c.lot])
-      .map((lot) => normalizeLotLabel(lot))
-      .filter((lot) => !!lot && lot !== "ADMIN");
+    const commentLots = normalizeCommentLots(c);
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
+  };
+  const handleDeleteComment = (commentId) => {
+    const targetId = String(commentId);
+    const targetComment = comments.find((comment) => String(comment.id) === targetId);
+    if (!targetComment) {
+      return { error: "Comment not found." };
+    }
+    if (!userCanManageComment(user, targetComment)) {
+      return { error: "You can only delete your own comments." };
+    }
+    const remainingComments = comments.filter((comment) => String(comment.id) !== targetId);
+    setComments(remainingComments);
+    const affectedLots = normalizeCommentLots(targetComment);
+    if (affectedLots.length > 0) {
+      setOwnerActivity((prev) => {
+        const next = { ...prev };
+        affectedLots.forEach((lot) => {
+          const stillCommented = remainingComments.some((comment) => normalizeCommentLots(comment).includes(lot));
+          if (!stillCommented && next[lot]) {
+            next[lot] = {
+              ...next[lot],
+              commented: false,
+            };
+          }
+        });
+        return next;
+      });
+    }
+    return { message: "Comment deleted." };
   };
   const handleUpdateComment = (commentId, updates = {}) => {
     const targetId = String(commentId);
+    const targetComment = comments.find((comment) => String(comment.id) === targetId);
+    if (!targetComment) {
+      return { error: "Comment could not be updated because it was not found." };
+    }
+    if (!userCanManageComment(user, targetComment)) {
+      return { error: "You can only edit your own comments." };
+    }
     const nextText = String(updates.text || "").trim();
     if (nextText.length < 20) {
       return { error: "Comment must be at least 20 characters." };
@@ -5698,7 +5775,7 @@ export default function App() {
           {page === "risks" && <RisksPage/>}
           {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots} votesNeeded={votesNeeded}/>}
           {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
-          {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment} onUpdate={handleUpdateComment}/>}
+          {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment} onUpdate={handleUpdateComment} onDelete={handleDeleteComment}/>}
           {page === "dashboard" && (
             <DashboardPage
               votes={votes}

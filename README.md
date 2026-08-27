@@ -39,6 +39,15 @@ Portal data is still cached per browser, but when a PostgreSQL API URL is config
 
 This keeps iPhone and desktop views aligned with the shared database.
 
+### Community comment controls
+
+Residents can now:
+- add comments
+- edit their own comments
+- delete their own comments
+
+Admins can edit/delete any comment for moderation.
+
 ### Primary voter identity lock (duplicate-vote prevention)
 
 For each lot:

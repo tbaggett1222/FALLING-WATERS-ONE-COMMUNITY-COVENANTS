@@ -21739,6 +21739,20 @@ var FallingWatersPortal = (() => {
     if (lots.length <= 1) return lots[0] || user?.lot || "";
     return lots.join(", ");
   };
+  var normalizeCommentLots = (comment) => {
+    const rawLots = Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot];
+    return rawLots.map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
+  };
+  var userCanManageComment = (user, comment) => {
+    if (!user || !comment) return false;
+    if (user.isAdmin) return true;
+    const userLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+    const commentLots = normalizeCommentLots(comment);
+    const lotMatch = commentLots.some((lot) => userLots.includes(lot));
+    const sameUserId = !!(comment.userId && user.userId && comment.userId === user.userId);
+    const sameNameAndLot = normalizeNameKey(comment.name) === normalizeNameKey(user.name) && lotMatch;
+    return sameUserId || sameNameAndLot;
+  };
   var choiceLabel = (choice) => choice === "eliminate" ? "Eliminate STRs" : choice === "permit" ? "Permit with regulation" : choice === "undecided" ? "Undecided" : "Not voted";
   var ACCESS_ROLES = {
     primary: "primary_voter",
@@ -22847,7 +22861,7 @@ var FallingWatersPortal = (() => {
     ];
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "The status quo is not neutral."), " Failing to adopt a unified CC&R has real, documented financial and legal consequences for every lot owner in Falling Waters \u2014 whether or not you are personally affected by any disputed covenant provision today."), risks.map((r, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: { ...S.card, borderLeft: `4px solid ${r.color}`, background: r.bg } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 12, alignItems: "flex-start" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(r.color, "transparent") }, r.sev, " risk")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 16, fontWeight: "bold", color: r.color, margin: "8px 0 6px" } }, r.title), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7 } }, r.detail))));
   }
-  function CommentsPage({ user, comments, onAdd, onUpdate }) {
+  function CommentsPage({ user, comments, onAdd, onUpdate, onDelete }) {
     const [formTopic, setFormTopic] = (0, import_react.useState)("str");
     const [formStance, setFormStance] = (0, import_react.useState)("");
     const [formConcern, setFormConcern] = (0, import_react.useState)(commentConcernOptionsForTopic("str")[0]);
@@ -22862,6 +22876,7 @@ var FallingWatersPortal = (() => {
     const [editConcern, setEditConcern] = (0, import_react.useState)(commentConcernOptionsForTopic("general")[0]);
     const [editText, setEditText] = (0, import_react.useState)("");
     const [editBusy, setEditBusy] = (0, import_react.useState)(false);
+    const [deletingCommentId, setDeletingCommentId] = (0, import_react.useState)(null);
     const [editErr, setEditErr] = (0, import_react.useState)("");
     const filtered = comments.filter((c) => (filterTopic === "all" || c.topic === filterTopic) && (filterStance === "" || c.stance === filterStance));
     const topicLabels = COMMENT_TOPIC_OPTIONS.reduce((acc, topic) => {
@@ -22877,13 +22892,7 @@ var FallingWatersPortal = (() => {
       permit: { c: C.stoneDark, bg: "#FEF3C7", label: "Supports more flexibility" },
       neutral: { c: C.muted, bg: C.parchmentDark, label: "Neutral / question" }
     };
-    const userLots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
-    const canEditComment = (comment) => {
-      if (user?.isAdmin) return true;
-      const commentLots = (Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot]).map((lot) => normalizeLotLabel(lot)).filter(Boolean);
-      const lotMatch = commentLots.some((lot) => userLots.includes(lot));
-      return !!comment?.userId && !!user?.userId && comment.userId === user.userId || normalizeNameKey(comment?.name) === normalizeNameKey(user?.name) && lotMatch;
-    };
+    const canEditComment = (comment) => userCanManageComment(user, comment);
     (0, import_react.useEffect)(() => {
       setFormConcern((current) => concernOptions.includes(current) ? current : concernOptions[0]);
     }, [formTopic]);
@@ -22963,6 +22972,31 @@ var FallingWatersPortal = (() => {
         setTimeout(() => setDone(""), 4e3);
       }, 300);
     };
+    const deleteComment = (comment) => {
+      if (!comment || deletingCommentId !== null) return;
+      if (!userCanManageComment(user, comment)) {
+        setEditErr("You can only delete your own comments.");
+        return;
+      }
+      const confirmed = typeof window === "undefined" ? true : window.confirm("Delete this comment? This action cannot be undone.");
+      if (!confirmed) return;
+      setDeletingCommentId(comment.id);
+      setEditErr("");
+      setTimeout(() => {
+        const result = onDelete?.(comment.id);
+        if (result?.error) {
+          setEditErr(result.error);
+          setDeletingCommentId(null);
+          return;
+        }
+        if (editingCommentId === comment.id) {
+          setEditingCommentId(null);
+        }
+        setDeletingCommentId(null);
+        setDone(result?.message || "Comment deleted.");
+        setTimeout(() => setDone(""), 4e3);
+      }, 250);
+    };
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Community comments topics include ACC Building Guidelines."), " Use the Topic dropdown to post feedback specifically on ACC standards, design rules, and approval process concerns."), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Quick topic select"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "Choose the discussion focus before writing your comment."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } }, COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
@@ -22997,6 +23031,15 @@ var FallingWatersPortal = (() => {
           onClick: () => startEdit(c)
         },
         "Edit"
+      ), canEdit && !isEditing && /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          type: "button",
+          style: { ...S.btn("danger"), padding: "4px 8px", fontSize: 11 },
+          onClick: () => deleteComment(c),
+          disabled: deletingCommentId === c.id
+        },
+        deletingCommentId === c.id ? "Deleting\u2026" : "Delete"
       ))), isEditing ? /* @__PURE__ */ import_react.default.createElement("div", { style: { border: `1px solid ${C.border}`, borderRadius: 8, background: C.parchment, padding: 10 } }, editErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, editErr), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Topic"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: editTopic, onChange: (event) => setEditTopic(event.target.value), disabled: editBusy }, COMMENT_TOPIC_OPTIONS.map((topic) => /* @__PURE__ */ import_react.default.createElement("option", { key: topic.value, value: topic.value }, topic.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "My position"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: editStance, onChange: (event) => setEditStance(event.target.value), disabled: editBusy }, editStanceOptions.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option.value, value: option.value }, option.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Primary concern"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: editConcern, onChange: (event) => setEditConcern(event.target.value), disabled: editBusy }, editConcernOptions.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option, value: option }, option)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Your comment"), /* @__PURE__ */ import_react.default.createElement(
         "textarea",
         {
@@ -24663,11 +24706,47 @@ var FallingWatersPortal = (() => {
     };
     const handleAddComment = (c) => {
       setComments((prev) => [c, ...prev]);
-      const commentLots = (Array.isArray(c.lots) ? c.lots : [c.lot]).map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
+      const commentLots = normalizeCommentLots(c);
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
+    };
+    const handleDeleteComment = (commentId) => {
+      const targetId = String(commentId);
+      const targetComment = comments.find((comment) => String(comment.id) === targetId);
+      if (!targetComment) {
+        return { error: "Comment not found." };
+      }
+      if (!userCanManageComment(user, targetComment)) {
+        return { error: "You can only delete your own comments." };
+      }
+      const remainingComments = comments.filter((comment) => String(comment.id) !== targetId);
+      setComments(remainingComments);
+      const affectedLots = normalizeCommentLots(targetComment);
+      if (affectedLots.length > 0) {
+        setOwnerActivity((prev) => {
+          const next = { ...prev };
+          affectedLots.forEach((lot) => {
+            const stillCommented = remainingComments.some((comment) => normalizeCommentLots(comment).includes(lot));
+            if (!stillCommented && next[lot]) {
+              next[lot] = {
+                ...next[lot],
+                commented: false
+              };
+            }
+          });
+          return next;
+        });
+      }
+      return { message: "Comment deleted." };
     };
     const handleUpdateComment = (commentId, updates = {}) => {
       const targetId = String(commentId);
+      const targetComment = comments.find((comment) => String(comment.id) === targetId);
+      if (!targetComment) {
+        return { error: "Comment could not be updated because it was not found." };
+      }
+      if (!userCanManageComment(user, targetComment)) {
+        return { error: "You can only edit your own comments." };
+      }
       const nextText = String(updates.text || "").trim();
       if (nextText.length < 20) {
         return { error: "Comment must be at least 20 characters." };
@@ -25458,7 +25537,7 @@ var FallingWatersPortal = (() => {
         disabled: sharedDataBusy
       },
       sharedDataBusy ? "Refreshing\u2026" : "Refresh shared data"
-    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
+    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment, onDelete: handleDeleteComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
       DashboardPage,
       {
         votes,
