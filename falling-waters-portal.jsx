@@ -637,6 +637,19 @@ const normalizeRestoreScopes = (scopes) => {
 const hasSelectedRestoreScope = (scopes) =>
   Object.values(normalizeRestoreScopes(scopes)).some(Boolean);
 
+const buildScopedRestoreSelection = (enabledScopeKeys = [], defaultValue = false) => {
+  const scopeState = defaultBackupRestoreScopes();
+  Object.keys(scopeState).forEach((key) => {
+    scopeState[key] = !!defaultValue;
+  });
+  (Array.isArray(enabledScopeKeys) ? enabledScopeKeys : []).forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(scopeState, key)) {
+      scopeState[key] = true;
+    }
+  });
+  return scopeState;
+};
+
 const mergeCommentsBySignature = (existingComments, incomingComments) => {
   const list = [];
   const seen = new Set();
@@ -4768,6 +4781,7 @@ export default function App() {
     setComments(prev => [c, ...prev]);
     const commentLots = normalizeCommentLots(c);
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
+    void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
   };
   const handleDeleteComment = (commentId) => {
     const targetId = String(commentId);
@@ -4796,6 +4810,7 @@ export default function App() {
         return next;
       });
     }
+    void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
     return { message: "Comment deleted." };
   };
   const handleUpdateComment = (commentId, updates = {}) => {
@@ -4849,6 +4864,7 @@ export default function App() {
       .map((lot) => normalizeLotLabel(lot))
       .filter((lot) => !!lot && lot !== "ADMIN");
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
+    void pushSharedChangesToDb(["comments", "ownerActivity", "userDirectory"], { mode: "merge" });
     return { message: "Comment updated." };
   };
   const handleAddDocument = (doc) =>
@@ -5488,17 +5504,55 @@ export default function App() {
     }
   };
 
+  const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError = false } = {}) => {
+    if (!dbApiBaseUrl) {
+      return { skipped: true };
+    }
+    const scopes = buildScopedRestoreSelection(scopeKeys, false);
+    if (!hasSelectedRestoreScope(scopes)) {
+      return { skipped: true };
+    }
+    try {
+      return await handleSyncToDb({ mode, scopes });
+    } catch (error) {
+      const message = error?.message || "Could not sync shared data to PostgreSQL.";
+      if (reportError) {
+        setSharedDataErr(message);
+      }
+      return { error: message };
+    }
+  };
+
   useEffect(() => {
     if (!user || !dbApiBaseUrl) return;
     let cancelled = false;
-    (async () => {
+    const refreshShared = async () => {
       const result = await handleRefreshSharedData({ silent: true, mode: "merge" });
       if (cancelled) return;
       if (result?.error) {
         setSharedDataErr(result.error);
       }
-    })();
-    return () => { cancelled = true; };
+    };
+    void refreshShared();
+    const intervalId = window.setInterval(() => {
+      void refreshShared();
+    }, 45000);
+    const onFocus = () => {
+      void refreshShared();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refreshShared();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [dbApiBaseUrl, user?.userId]);
 
   const handleRunDbChecklist = async () => {
