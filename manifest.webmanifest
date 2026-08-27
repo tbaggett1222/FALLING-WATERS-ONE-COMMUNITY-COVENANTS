@@ -1,0 +1,24 @@
+{
+  "name": "Falling Waters Community Covenant Portal",
+  "short_name": "Falling Waters HOA",
+  "description": "Community portal for covenant review, resident comments, and STR voting.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F7F4EF",
+  "theme_color": "#1C3A2E",
+  "icons": [
+    {
+      "src": "pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "maskable-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

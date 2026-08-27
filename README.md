@@ -11,6 +11,17 @@ npm run build
 
 Open `index.html` in your browser (or serve the folder with any static host).
 
+## Mobile + iPhone readiness (Phase 1)
+
+The portal now includes:
+- responsive app shell for small screens (mobile nav menu + adaptive layout grids)
+- Progressive Web App (PWA) support via:
+  - `manifest.webmanifest`
+  - `service-worker.js`
+  - app icons (`pwa-icon.svg`, `maskable-icon.svg`)
+
+On iPhone, open the portal in Safari and use **Share → Add to Home Screen**.
+
 ## PostgreSQL activation (all three steps)
 
 This repo now includes a PostgreSQL API so the portal can:

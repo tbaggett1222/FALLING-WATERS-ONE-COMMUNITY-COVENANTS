@@ -34,7 +34,7 @@ jobs:
       - name: Prepare publish directory
         run: |
           mkdir -p dist
-          cp index.html app.js dist/
+          cp index.html app.js manifest.webmanifest service-worker.js pwa-icon.svg maskable-icon.svg dist/
           touch dist/.nojekyll
 
       - name: Publish to gh-pages branch

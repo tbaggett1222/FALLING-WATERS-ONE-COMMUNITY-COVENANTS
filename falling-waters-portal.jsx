@@ -35,6 +35,7 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
+const MOBILE_BREAKPOINT_PX = 920;
 const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
 const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
 const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -880,6 +881,8 @@ const Icon = {
   chat: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>,
   dash: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>,
   user: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+  menu: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+  close: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
   logout: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
   lock: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
   star: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>,
@@ -901,10 +904,10 @@ const S = {
   sidebarNav: { flex:1, padding:"12px 0", overflowY:"auto" },
   navItem: (active) => ({ display:"flex", alignItems:"center", gap:10, padding:"10px 20px", cursor:"pointer", fontSize:13, fontWeight: active ? 600 : 400, color: active ? C.white : "rgba(255,255,255,0.65)", background: active ? "rgba(196,168,130,0.2)" : "transparent", borderLeft: active ? `3px solid ${C.stone}` : "3px solid transparent", transition:"all .15s" }),
   sidebarBottom: { padding:"16px 20px", borderTop:`1px solid rgba(255,255,255,0.1)` },
-  main: { flex:1, overflowY:"auto" },
+  main: { flex:1, overflowY:"auto", minWidth: 0 },
   topbar: { background:C.white, borderBottom:`1px solid ${C.border}`, padding:"14px 32px", display:"flex", alignItems:"center", justifyContent:"space-between", position:"sticky", top:0, zIndex:10 },
   topbarTitle: { fontFamily:"Georgia,serif", fontSize:20, fontWeight:"bold", color:C.forest },
-  content: { padding:"28px 32px", maxWidth:1100 },
+  content: { padding:"28px 32px", maxWidth:1100, margin:"0 auto" },
   card: { background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:"20px 24px", marginBottom:16 },
   cardTitle: { fontFamily:"Georgia,serif", fontSize:17, fontWeight:"bold", color:C.forest, marginBottom:8 },
   badge: (color, bg) => ({ display:"inline-flex", alignItems:"center", gap:4, fontSize:11, padding:"3px 10px", borderRadius:20, background:bg, color:color, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.05em" }),
@@ -927,7 +930,7 @@ const S = {
   meter: { height:20, borderRadius:10, background:C.parchmentDark, overflow:"hidden", position:"relative", margin:"8px 0" },
   meterFill: (pct, color) => ({ height:"100%", width:`${pct}%`, background:color, borderRadius:10, transition:"width 1s ease" }),
   pill: (c, bg) => ({ display:"inline-block", padding:"2px 10px", borderRadius:20, fontSize:11, fontWeight:600, color:c, background:bg }),
-  statGrid: { display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginBottom:20 },
+  statGrid: { display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(170px, 1fr))", gap:12, marginBottom:20 },
   statCard: (accent) => ({ background:C.white, border:`1px solid ${C.border}`, borderRadius:8, padding:"16px 20px", borderTop:`3px solid ${accent}` }),
   statNum: { fontSize:28, fontWeight:700, color:C.forest, fontFamily:"Georgia,serif" },
   statLabel: { fontSize:12, color:C.muted, marginTop:2 },
@@ -1064,7 +1067,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         ))}
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:16, marginBottom:16 }}>
         <div style={S.card}>
           <div style={S.cardTitle}>Overall engagement</div>
           <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Owners who have participated in the survey process</div>
@@ -1124,7 +1127,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
 
       <div style={S.card}>
         <div style={S.cardTitle}>Why this matters — the urgent case for a unified CC&R</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginTop:12 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginTop:12 }}>
           {[
             { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
             { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
@@ -1489,13 +1492,13 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument, onCon
         <strong>Admin tools:</strong> upload existing covenants here. New uploads appear in the CC&R Documents page with metadata and auto-generated comparison notes.
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
         <div style={S.card}>
           <div style={S.cardTitle}>Upload covenant document</div>
           {error && <div style={S.alert("danger")}>{error}</div>}
           {success && <div style={S.alert("success")}>{success}</div>}
           <form onSubmit={saveDocument}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
               <div>
                 <label style={S.label}>Document year</label>
                 <input style={S.input} value={year} onChange={(e) => setYear(e.target.value)} placeholder="e.g. 2026" />
@@ -1517,7 +1520,7 @@ function AdminDocumentsPage({ user, docs, onAddDocument, onDeleteDocument, onCon
               <label style={S.label}>Preparer / source</label>
               <input style={S.input} value={preparer} onChange={(e) => setPreparer(e.target.value)} placeholder="Law firm, board, owner group, etc." />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 12 }}>
               <div>
                 <label style={S.label}>Filed date</label>
                 <input style={S.input} value={filed} onChange={(e) => setFiled(e.target.value)} placeholder="e.g. Aug 25, 2026" />
@@ -1624,7 +1627,7 @@ function ComparisonPage() {
   return (
     <div>
       <div style={S.alert("warn")}><strong>Attorney-confirmed:</strong> Georgia will not impose a restriction not in an owner's chain of title. Owners whose title only includes the 2014 declaration have no short-term rental restriction today. The unified CC&R is the only way to establish consistent, enforceable rules for all 200 lots.</div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12, marginBottom:12 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginBottom:12 }}>
         {[
           { title:"Biggest legal mismatch", body:"Only the 2021 document uses the strict 2/3 of all lots threshold. 2008 and 2014 rely on quorum-based meeting votes.", color:C.stone },
           { title:"Biggest STR mismatch", body:"2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color:C.danger },
@@ -1867,7 +1870,7 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
 
       <div style={S.card}>
         <div style={S.cardTitle}>Six reasons Falling Waters needs a clear STR restriction</div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginTop:12 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(220px, 1fr))", gap:12, marginTop:12 }}>
           {reasons.map((r,i) => (
             <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px", borderLeft:`3px solid ${C.stone}` }}>
               <div style={{ fontSize:18, marginBottom:4 }}>{r.icon}</div>
@@ -2132,7 +2135,7 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
           ))}
         </div>
       </div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 2fr", gap:20 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(280px, 1fr))", gap:20 }}>
         <div>
           <div style={S.card}>
             <div style={S.cardTitle}>Add your comment</div>
@@ -2342,7 +2345,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
       <div style={S.alert("info")}>
         Keep your profile current. Primary-voter accounts can cast one vote per non-combined lot; comment-only accounts can participate in discussion without casting official votes.
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
         <div style={S.card}>
           <div style={S.cardTitle}>Resident profile</div>
           {err && <div style={S.alert("danger")}>{err}</div>}
@@ -3225,7 +3228,7 @@ function AdminVotingPage({
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
           These names are currently approved for admin access in this portal. Assign an access grade for governance and internal control tracking.
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, alignItems: "end", marginBottom: 10 }}>
           <div>
             <label style={S.label}>Grant admin rights (name)</label>
             <input
@@ -3461,7 +3464,7 @@ function AdminVotingPage({
         </div>
         {dbErr && <div style={S.alert("danger")}>{dbErr}</div>}
         {dbMsg && <div style={S.alert("success")}>{dbMsg}</div>}
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr auto auto", gap: 8, alignItems: "end", marginBottom: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, alignItems: "end", marginBottom: 10 }}>
           <div>
             <label style={S.label}>Database API base URL</label>
             <input
@@ -3770,7 +3773,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
         </div>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:16, marginBottom:16 }}>
         <div style={S.card}>
           <div style={S.cardTitle}>Vote progress toward {votesNeeded}</div>
           <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {votesNeeded} of {totalLots} lots to vote yes on unified covenant</div>
@@ -3830,7 +3833,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
 
       <div style={S.card}>
         <div style={S.cardTitle}>Campaign roadmap — live status</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:12, marginTop:12 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(160px, 1fr))", gap:12, marginTop:12 }}>
           {phases.map((p,i) => (
             <div key={i} style={{ border:`2px solid ${p.status==="active" ? C.stone : p.status==="done" ? C.success : C.border}`, borderRadius:8, padding:"14px 16px", background: p.status==="active" ? "#FFFBF5" : C.white }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
@@ -3919,6 +3922,10 @@ export default function App() {
     };
   });
   const [page, setPage] = useState("home");
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth : 1280
+  );
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [votes, setVotes] = useState(() => {
     const savedTotalLots = Number(store.get("fw_total_lots"));
     const effectiveTotalLots =
@@ -4032,6 +4039,21 @@ export default function App() {
   useEffect(() => { store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || ""); }, [lastDbSyncAt]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
+  useEffect(() => {
+    if (typeof window === "undefined") return () => {};
+    const updateViewport = () => setViewportWidth(window.innerWidth);
+    updateViewport();
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
+  useEffect(() => {
+    if (viewportWidth > MOBILE_BREAKPOINT_PX && mobileNavOpen) {
+      setMobileNavOpen(false);
+    }
+  }, [viewportWidth, mobileNavOpen]);
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [page]);
   useEffect(() => {
     const result = consolidateCovenantDocs(covenantDocs);
     if (result.removedCount > 0) {
@@ -5044,10 +5066,67 @@ export default function App() {
     "admin-votes":"Admin voting roster",
     "admin-docs":"Admin document upload",
   };
+  const isMobile = viewportWidth <= MOBILE_BREAKPOINT_PX;
+  const appStyle = {
+    ...S.app,
+    flexDirection: isMobile ? "column" : "row",
+  };
+  const sidebarStyle = isMobile
+    ? {
+        ...S.sidebar,
+        position: "fixed",
+        top: 0,
+        left: 0,
+        bottom: 0,
+        width: 260,
+        zIndex: 40,
+        transform: mobileNavOpen ? "translateX(0)" : "translateX(-110%)",
+        transition: "transform 180ms ease",
+        boxShadow: mobileNavOpen ? "0 14px 30px rgba(0,0,0,0.28)" : "none",
+      }
+    : S.sidebar;
+  const topbarStyle = {
+    ...S.topbar,
+    padding: isMobile ? "12px 14px" : S.topbar.padding,
+    flexWrap: isMobile ? "wrap" : "nowrap",
+    rowGap: isMobile ? 8 : 0,
+  };
+  const topbarMetaStyle = {
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    flexWrap: "wrap",
+    width: isMobile ? "100%" : "auto",
+  };
+  const contentStyle = {
+    ...S.content,
+    padding: isMobile ? "16px 12px 24px" : S.content.padding,
+    maxWidth: isMobile ? "100%" : S.content.maxWidth,
+  };
+  const closeMobileNav = () => setMobileNavOpen(false);
+  const navigateToPage = (nextPage) => {
+    setPage(nextPage);
+    closeMobileNav();
+  };
 
   return (
-    <div style={S.app}>
-      <div style={S.sidebar}>
+    <div style={appStyle}>
+      {isMobile && mobileNavOpen && (
+        <button
+          type="button"
+          onClick={closeMobileNav}
+          aria-label="Close menu overlay"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            border: "none",
+            zIndex: 30,
+            cursor: "pointer",
+          }}
+        />
+      )}
+      <div style={sidebarStyle}>
         <div style={S.sidebarTop}>
           <div style={S.sidebarLogo}>Falling Waters</div>
           <div style={S.sidebarSub}>Covenant Unification</div>
@@ -5069,28 +5148,46 @@ export default function App() {
         </div>
         <nav style={S.sidebarNav}>
           {navItems.map(item => (
-            <div key={item.id} style={S.navItem(page===item.id)} onClick={() => setPage(item.id)}>
+            <div key={item.id} style={S.navItem(page===item.id)} onClick={() => navigateToPage(item.id)}>
               {item.icon}{item.label}
             </div>
           ))}
         </nav>
         <div style={S.sidebarBottom}>
-          <div style={{ cursor:"pointer", display:"flex", alignItems:"center", gap:8, fontSize:13, color:"rgba(255,255,255,0.5)" }} onClick={handleLogout}>
+          <div
+            style={{ cursor:"pointer", display:"flex", alignItems:"center", gap:8, fontSize:13, color:"rgba(255,255,255,0.5)" }}
+            onClick={() => {
+              closeMobileNav();
+              handleLogout();
+            }}
+          >
             <Icon.logout/> Sign out
           </div>
         </div>
       </div>
 
       <div style={S.main}>
-        <div style={S.topbar}>
-          <div style={S.topbarTitle}>{pageTitles[page]}</div>
-          <div style={{ display:"flex", gap:10, alignItems:"center" }}>
+        <div style={topbarStyle}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {isMobile && (
+              <button
+                type="button"
+                style={{ ...S.btn("outline"), padding: "6px 9px" }}
+                onClick={() => setMobileNavOpen((prev) => !prev)}
+                aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+              >
+                {mobileNavOpen ? <Icon.close/> : <Icon.menu/>}
+              </button>
+            )}
+            <div style={{ ...S.topbarTitle, fontSize: isMobile ? 18 : S.topbarTitle.fontSize }}>{pageTitles[page]}</div>
+          </div>
+          <div style={topbarMetaStyle}>
             <span style={{ fontSize:12, color:C.muted }}>Need {votesNeeded} votes ·</span>
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
             {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>STR & Unified CC&R vote →</button>}
           </div>
         </div>
-        <div style={S.content}>
+        <div style={contentStyle}>
           {user.isAdmin && (
             <div style={S.alert("warn")}>
               <strong>Admin Control Mode active:</strong> You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore.
