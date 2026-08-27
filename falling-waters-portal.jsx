@@ -5399,11 +5399,44 @@ export default function App() {
     };
   };
 
-  const resolveDbApiUrl = (path) => {
+  const isLoopbackHost = (host) => /^(localhost|127\.0\.0\.1)$/i.test(String(host || "").trim());
+
+  const buildDbApiRequestUrls = (path) => {
     const safePath = String(path || "");
-    const base = String(dbApiBaseUrl || "").trim();
-    if (!base) return safePath;
-    return `${base.replace(/\/+$/, "")}${safePath}`;
+    const urls = [];
+    const seen = new Set();
+    const addBase = (baseValue) => {
+      const base = String(baseValue || "").trim();
+      const url = base ? `${base.replace(/\/+$/, "")}${safePath}` : safePath;
+      if (seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    };
+
+    const explicitBase = String(dbApiBaseUrl || "").trim();
+    addBase(explicitBase);
+
+    const normalizedDefault = sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true });
+    const defaultBase = String(normalizedDefault?.value || "").trim();
+    if (!defaultBase || defaultBase === explicitBase) return urls;
+
+    let shouldTryDefaultFallback = !explicitBase;
+    if (!shouldTryDefaultFallback && explicitBase) {
+      let explicitHost = "";
+      try {
+        explicitHost = String(new URL(explicitBase).hostname || "");
+      } catch {
+        explicitHost = "";
+      }
+      const pageHost = typeof window !== "undefined" ? String(window.location?.hostname || "") : "";
+      if (isLoopbackHost(explicitHost) && !isLoopbackHost(pageHost)) {
+        shouldTryDefaultFallback = true;
+      }
+    }
+    if (shouldTryDefaultFallback) {
+      addBase(defaultBase);
+    }
+    return urls.length > 0 ? urls : [safePath];
   };
 
   const buildDbApiNetworkErrorMessage = (requestUrl, error) => {
@@ -5439,38 +5472,46 @@ export default function App() {
   };
 
   const callDbApi = async (path, options = {}) => {
-    const requestUrl = resolveDbApiUrl(path);
-    let response;
-    try {
-      response = await fetch(requestUrl, {
-        headers: {
-          "Content-Type": "application/json",
-          ...(options.headers || {}),
-        },
-        ...options,
-      });
-    } catch (error) {
-      throw new Error(buildDbApiNetworkErrorMessage(requestUrl, error));
-    }
-    const text = await response.text();
-    let parsed = {};
-    try {
-      parsed = text ? JSON.parse(text) : {};
-    } catch {
-      parsed = {};
-    }
-    if (!response.ok || parsed?.ok === false) {
+    const requestUrls = buildDbApiRequestUrls(path);
+    const failedMessages = [];
+    for (const requestUrl of requestUrls) {
+      let response;
+      try {
+        response = await fetch(requestUrl, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          },
+          ...options,
+        });
+      } catch (error) {
+        failedMessages.push(buildDbApiNetworkErrorMessage(requestUrl, error));
+        continue;
+      }
+      const text = await response.text();
+      let parsed = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = {};
+      }
+      if (response.ok && parsed?.ok !== false) {
+        return parsed;
+      }
       if (parsed?.error) {
-        throw new Error(parsed.error);
+        failedMessages.push(parsed.error);
+        continue;
       }
       if (response.status === 404) {
-        throw new Error(
+        failedMessages.push(
           `Database API request failed (404). Check that the saved API URL is only the API host (example: http://localhost:8787), not a command, and that the server is running. Request URL: ${requestUrl}`
         );
+        continue;
       }
-      throw new Error(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
+      failedMessages.push(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
     }
-    return parsed;
+    const suffix = requestUrls.length > 1 ? ` Tried URLs: ${requestUrls.join(", ")}` : "";
+    throw new Error(`${failedMessages[failedMessages.length - 1] || "Database API request failed."}${suffix}`);
   };
 
   const handleTestDbConnection = async () => {
@@ -5554,8 +5595,14 @@ export default function App() {
   };
 
   const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError = false } = {}) => {
-    if (!dbApiBaseUrl) {
-      return { skipped: true };
+    const explicitBase = String(dbApiBaseUrl || "").trim();
+    const defaultBase = String(sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true })?.value || "").trim();
+    if (!explicitBase && !defaultBase) {
+      const error = "Database API URL is not configured for shared sync.";
+      if (reportError) {
+        setSharedDataErr(error);
+      }
+      return { skipped: true, error };
     }
     const scopes = buildScopedRestoreSelection(scopeKeys, false);
     if (!hasSelectedRestoreScope(scopes)) {
@@ -5583,13 +5630,13 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
+    if (sharedSyncNonce === 0) return;
     const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
     if (queuedScopes.length === 0) return;
     const queuedMode = sharedSyncModeRef.current === "replace" ? "replace" : "merge";
     sharedSyncScopeQueueRef.current.clear();
     sharedSyncModeRef.current = "merge";
-    void pushSharedChangesToDb(queuedScopes, { mode: queuedMode });
+    void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
   }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
 
   useEffect(() => {
