@@ -2205,8 +2205,8 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
             const canEdit = canEditComment(c);
             return (
               <div key={c.id} style={{ ...S.card, marginBottom:12 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8, alignItems:"flex-start", gap:8 }}>
-                  <div>
+                <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8, alignItems:"flex-start", gap:8, flexWrap:"wrap" }}>
+                  <div style={{ minWidth: 180 }}>
                     <span style={{ fontWeight:700, fontSize:13, color:C.forest }}>{c.name}</span>
                     <span style={{ fontSize:12, color:C.muted, marginLeft:8 }}>{c.lot} · {c.ts}</span>
                     {c.editedAt && (
@@ -2215,10 +2215,24 @@ function CommentsPage({ user, comments, onAdd, onUpdate }) {
                       </span>
                     )}
                   </div>
-                  <div style={{ display:"flex", gap:6, flexShrink:0 }}>
-                    <span style={S.badge(sc.c, sc.bg)}>{sc.label}</span>
-                    <span style={S.badge(C.muted, C.parchmentDark)}>{topicLabels[c.topic] || c.topic}</span>
-                    {c.concern && <span style={S.badge("#4338CA", "#E0E7FF")}>{c.concern}</span>}
+                  <div style={{ display:"flex", gap:6, flexShrink:1, flexWrap:"wrap", justifyContent:"flex-end", marginLeft:"auto", maxWidth:"100%" }}>
+                    <span style={{ ...S.badge(sc.c, sc.bg), maxWidth: "100%" }}>{sc.label}</span>
+                    <span style={{ ...S.badge(C.muted, C.parchmentDark), maxWidth: "100%" }}>{topicLabels[c.topic] || c.topic}</span>
+                    {c.concern && (
+                      <span
+                        style={{
+                          ...S.badge("#4338CA", "#E0E7FF"),
+                          maxWidth: "100%",
+                          whiteSpace: "normal",
+                          textTransform: "none",
+                          letterSpacing: "0.02em",
+                          lineHeight: 1.3,
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {c.concern}
+                      </span>
+                    )}
                     {canEdit && !isEditing && (
                       <button
                         type="button"

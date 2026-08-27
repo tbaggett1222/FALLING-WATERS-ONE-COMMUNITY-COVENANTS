@@ -22890,7 +22890,21 @@ var FallingWatersPortal = (() => {
       const sc = stanceColors[c.stance] || stanceColors.neutral;
       const isEditing = editingCommentId === c.id;
       const canEdit = canEditComment(c);
-      return /* @__PURE__ */ import_react.default.createElement("div", { key: c.id, style: { ...S.card, marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "flex-start", gap: 8 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontWeight: 700, fontSize: 13, color: C.forest } }, c.name), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted, marginLeft: 8 } }, c.lot, " \xB7 ", c.ts), c.editedAt && /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 11, color: C.muted, marginLeft: 8 } }, "Edited ", c.editedAt)), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 0 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(sc.c, sc.bg) }, sc.label), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.muted, C.parchmentDark) }, topicLabels[c.topic] || c.topic), c.concern && /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge("#4338CA", "#E0E7FF") }, c.concern), canEdit && !isEditing && /* @__PURE__ */ import_react.default.createElement(
+      return /* @__PURE__ */ import_react.default.createElement("div", { key: c.id, style: { ...S.card, marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 8, alignItems: "flex-start", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { minWidth: 180 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { fontWeight: 700, fontSize: 13, color: C.forest } }, c.name), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 12, color: C.muted, marginLeft: 8 } }, c.lot, " \xB7 ", c.ts), c.editedAt && /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 11, color: C.muted, marginLeft: 8 } }, "Edited ", c.editedAt)), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 6, flexShrink: 1, flexWrap: "wrap", justifyContent: "flex-end", marginLeft: "auto", maxWidth: "100%" } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { ...S.badge(sc.c, sc.bg), maxWidth: "100%" } }, sc.label), /* @__PURE__ */ import_react.default.createElement("span", { style: { ...S.badge(C.muted, C.parchmentDark), maxWidth: "100%" } }, topicLabels[c.topic] || c.topic), c.concern && /* @__PURE__ */ import_react.default.createElement(
+        "span",
+        {
+          style: {
+            ...S.badge("#4338CA", "#E0E7FF"),
+            maxWidth: "100%",
+            whiteSpace: "normal",
+            textTransform: "none",
+            letterSpacing: "0.02em",
+            lineHeight: 1.3,
+            wordBreak: "break-word"
+          }
+        },
+        c.concern
+      ), canEdit && !isEditing && /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
           type: "button",
