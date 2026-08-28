@@ -21490,6 +21490,10 @@ var FallingWatersPortal = (() => {
   var DEFAULT_TOTAL_LOTS = 200;
   var MAX_TOTAL_LOTS = 500;
   var MIN_TOTAL_LOTS = 1;
+  var RETIRED_LOT_NUMBER_REPLACEMENTS = {
+    "26": "27R",
+    "28": "29R"
+  };
   var MOBILE_BREAKPOINT_PX = 920;
   var MIN_LOGIN_SECRET_LENGTH = 8;
   var DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
@@ -21616,13 +21620,15 @@ var FallingWatersPortal = (() => {
   };
   var todayLabel = () => (/* @__PURE__ */ new Date()).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   var isLegacySampleComment = (comment) => LEGACY_SAMPLE_COMMENT_KEYS.has(`${comment?.lot || ""}|${comment?.name || ""}|${comment?.ts || ""}`);
+  var normalizeLotToken = (value) => String(value || "").replace(/^lot\s*/i, "").trim().replace(/\s+/g, "").toUpperCase();
   var normalizeLotLabel = (value) => {
     const raw = String(value || "").trim();
     if (!raw) return null;
     if (raw.toLowerCase() === "admin") return "ADMIN";
-    const stripped = raw.replace(/^lot\s*/i, "").trim();
-    if (!stripped) return null;
-    return `Lot ${stripped}`;
+    const token = normalizeLotToken(raw);
+    if (!token) return null;
+    const canonicalToken = RETIRED_LOT_NUMBER_REPLACEMENTS[token] || token;
+    return `Lot ${canonicalToken}`;
   };
   var normalizeLoginSecret = (value) => String(value || "").trim();
   var hashString = (value) => {
@@ -21634,7 +21640,36 @@ var FallingWatersPortal = (() => {
     return `h${(hash >>> 0).toString(16).padStart(8, "0")}`;
   };
   var buildPrimaryCredentialHash = (lotLabel, secret) => hashString(`${normalizeLotLabel(lotLabel) || String(lotLabel || "")}|${normalizeLoginSecret(secret)}`);
-  var buildLotLabels = (totalLots) => Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
+  var buildLotLabels = (totalLots) => {
+    const lotCount = Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS);
+    const labels = Array.from({ length: lotCount }, (_, idx) => {
+      const lotNumber = String(idx + 1);
+      const replacement = RETIRED_LOT_NUMBER_REPLACEMENTS[lotNumber];
+      return `Lot ${replacement || lotNumber}`;
+    });
+    labels.sort((a, b) => {
+      const left = normalizeLotToken(a);
+      const right = normalizeLotToken(b);
+      const leftMatch = left.match(/^(\d+)([A-Z]*)$/);
+      const rightMatch = right.match(/^(\d+)([A-Z]*)$/);
+      const leftNumber = leftMatch ? Number(leftMatch[1]) : Number.POSITIVE_INFINITY;
+      const rightNumber = rightMatch ? Number(rightMatch[1]) : Number.POSITIVE_INFINITY;
+      if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+      const leftSuffix = leftMatch?.[2] || "";
+      const rightSuffix = rightMatch?.[2] || "";
+      if (!leftSuffix && rightSuffix) return -1;
+      if (leftSuffix && !rightSuffix) return 1;
+      return leftSuffix.localeCompare(rightSuffix);
+    });
+    const deduped = [];
+    const seen = /* @__PURE__ */ new Set();
+    labels.forEach((label) => {
+      if (seen.has(label)) return;
+      seen.add(label);
+      deduped.push(label);
+    });
+    return deduped;
+  };
   var votesNeededForLots = (totalLots) => Math.ceil(Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2 / 3);
   var sanitizeDbApiBaseUrl = (inputValue, { allowEmpty = true } = {}) => {
     const raw = String(inputValue || "").trim();
@@ -21743,6 +21778,133 @@ var FallingWatersPortal = (() => {
   var normalizeCommentLots = (comment) => {
     const rawLots = Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot];
     return rawLots.map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
+  };
+  var isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  var normalizeLotKeyedObjectState = (value) => {
+    const source = isPlainObject(value) ? value : {};
+    const next = {};
+    let changed = false;
+    Object.entries(source).forEach(([rawLot, rawEntry]) => {
+      const normalizedLot = normalizeLotLabel(rawLot);
+      const targetLot = normalizedLot && normalizedLot !== "ADMIN" ? normalizedLot : rawLot;
+      if (targetLot !== rawLot) changed = true;
+      if (!Object.prototype.hasOwnProperty.call(next, targetLot)) {
+        next[targetLot] = rawEntry;
+        return;
+      }
+      const existing = next[targetLot];
+      if (isPlainObject(existing) && isPlainObject(rawEntry)) {
+        next[targetLot] = { ...existing, ...rawEntry };
+        changed = true;
+        return;
+      }
+      if ((existing === void 0 || existing === null || existing === "") && rawEntry !== void 0) {
+        next[targetLot] = rawEntry;
+        changed = true;
+        return;
+      }
+      if (existing !== rawEntry) changed = true;
+    });
+    return { value: next, changed };
+  };
+  var normalizeVoteLedgerState = (value) => {
+    const source = isPlainObject(value) ? value : {};
+    const next = {};
+    let changed = false;
+    Object.entries(source).forEach(([rawLot, rawChoice]) => {
+      const normalizedLot = normalizeLotLabel(rawLot);
+      const targetLot = normalizedLot && normalizedLot !== "ADMIN" ? normalizedLot : rawLot;
+      if (targetLot !== rawLot) changed = true;
+      const normalizedChoice = String(rawChoice || "").trim().toLowerCase();
+      if (!["eliminate", "permit", "undecided"].includes(normalizedChoice)) {
+        changed = true;
+        return;
+      }
+      if (!Object.prototype.hasOwnProperty.call(next, targetLot)) {
+        next[targetLot] = normalizedChoice;
+        return;
+      }
+      if (next[targetLot] === normalizedChoice) return;
+      changed = true;
+      if (next[targetLot] === "undecided" && normalizedChoice !== "undecided") {
+        next[targetLot] = normalizedChoice;
+      }
+    });
+    return { value: next, changed };
+  };
+  var normalizeCommentCollectionLots = (value) => {
+    const source = Array.isArray(value) ? value : [];
+    let changed = !Array.isArray(value);
+    const next = source.map((comment) => {
+      if (!comment || typeof comment !== "object") return comment;
+      const normalizedLots = [...new Set(normalizeCommentLots(comment))];
+      const previousLots = Array.isArray(comment.lots) ? comment.lots : [];
+      const previousLot = String(comment.lot || "").trim();
+      const nextLot = normalizedLots[0] || normalizeLotLabel(comment.lot) || previousLot;
+      const lotsChanged = previousLots.length !== normalizedLots.length || previousLots.some((lot, idx) => lot !== normalizedLots[idx]);
+      if (!lotsChanged && previousLot === nextLot) return comment;
+      changed = true;
+      return {
+        ...comment,
+        lot: nextLot,
+        lots: normalizedLots.length > 0 ? normalizedLots : previousLots
+      };
+    });
+    return { value: next, changed };
+  };
+  var normalizeUserProfileLots = (profile) => {
+    if (!profile || typeof profile !== "object") return { value: profile, changed: false };
+    const normalizedLots = normalizeUserLots(profile);
+    const previousLots = Array.isArray(profile.lots) ? profile.lots : [];
+    const lotsChanged = previousLots.length !== normalizedLots.length || previousLots.some((lot, idx) => lot !== normalizedLots[idx]);
+    const nextLotValue = profile.isAdmin ? "ADMIN" : normalizedLots.length === 0 ? String(profile.lot || "").trim() : normalizedLots.length === 1 ? normalizedLots[0] : normalizedLots.join(", ");
+    const lotChanged = String(profile.lot || "").trim() !== nextLotValue;
+    if (!lotsChanged && !lotChanged) return { value: profile, changed: false };
+    return {
+      value: {
+        ...profile,
+        lots: normalizedLots,
+        lot: nextLotValue
+      },
+      changed: true
+    };
+  };
+  var normalizeUserDirectoryLotsState = (value) => {
+    const source = isPlainObject(value) ? value : {};
+    const next = {};
+    let changed = false;
+    Object.entries(source).forEach(([key, record]) => {
+      if (!record || typeof record !== "object") {
+        next[key] = record;
+        return;
+      }
+      const normalized = normalizeUserProfileLots(record);
+      next[key] = normalized.value;
+      if (normalized.changed) changed = true;
+    });
+    return { value: next, changed };
+  };
+  var migrateLegacyVoteStorageLots = () => {
+    if (typeof localStorage === "undefined") return false;
+    const moves = [];
+    for (let idx = 0; idx < localStorage.length; idx += 1) {
+      const key = localStorage.key(idx);
+      if (!key || !key.startsWith("vote_")) continue;
+      const lotLabel = key.slice(5);
+      const normalizedLot = normalizeLotLabel(lotLabel);
+      if (!normalizedLot || normalizedLot === "ADMIN" || normalizedLot === lotLabel) continue;
+      const rawValue = localStorage.getItem(key);
+      if (rawValue === null) continue;
+      moves.push({ fromKey: key, toKey: `vote_${normalizedLot}`, rawValue });
+    }
+    if (moves.length === 0) return false;
+    moves.forEach(({ toKey, rawValue }) => {
+      if (localStorage.getItem(toKey) === null) localStorage.setItem(toKey, rawValue);
+    });
+    moves.forEach(({ fromKey }) => {
+      localStorage.removeItem(fromKey);
+    });
+    return true;
   };
   var userCanManageComment = (user, comment) => {
     if (!user || !comment) return false;
@@ -24272,8 +24434,9 @@ var FallingWatersPortal = (() => {
       const savedTotalLots = Number(store.get("fw_total_lots"));
       const effectiveTotalLots = Number.isInteger(savedTotalLots) && savedTotalLots >= MIN_TOTAL_LOTS && savedTotalLots <= MAX_TOTAL_LOTS ? savedTotalLots : DEFAULT_TOTAL_LOTS;
       const initialLotLabels = buildLotLabels(effectiveTotalLots);
-      const savedLedger = store.get("fw_vote_ledger");
-      if (savedLedger && typeof savedLedger === "object") {
+      const savedLedgerRaw = store.get("fw_vote_ledger");
+      const savedLedger = normalizeVoteLedgerState(savedLedgerRaw).value;
+      if (savedLedgerRaw && typeof savedLedgerRaw === "object") {
         return computeVoteTotalsFromLedger(savedLedger, initialLotLabels);
       }
       const savedVotes = store.get("fw_votes");
@@ -24298,32 +24461,30 @@ var FallingWatersPortal = (() => {
       const savedVersion = store.get("fw_comments_data_version");
       if (savedVersion !== COMMENTS_DATA_VERSION) {
         const cleaned = safeSavedComments.filter((comment) => !isLegacySampleComment(comment));
-        store.set("fw_comments", cleaned);
+        const normalized = normalizeCommentCollectionLots(cleaned).value;
+        store.set("fw_comments", normalized);
         store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
-        return cleaned;
+        return normalized;
       }
-      return safeSavedComments.length ? safeSavedComments : SEED_COMMENTS;
+      return normalizeCommentCollectionLots(safeSavedComments.length ? safeSavedComments : SEED_COMMENTS).value;
     });
     const [covenantDocs, setCovenantDocs] = (0, import_react.useState)(() => {
       const saved = store.get("fw_covenant_docs");
       return Array.isArray(saved) && saved.length ? saved : DEFAULT_COVENANT_DOCS;
     });
-    const [ownerActivity, setOwnerActivity] = (0, import_react.useState)(() => store.get("fw_owner_activity") || {});
-    const [voteLedger, setVoteLedger] = (0, import_react.useState)(() => store.get("fw_vote_ledger") || {});
+    const [ownerActivity, setOwnerActivity] = (0, import_react.useState)(() => normalizeLotKeyedObjectState(store.get("fw_owner_activity")).value);
+    const [voteLedger, setVoteLedger] = (0, import_react.useState)(() => normalizeVoteLedgerState(store.get("fw_vote_ledger")).value);
     const [primaryVoterRegistry, setPrimaryVoterRegistry] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_primary_voter_registry");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeLotKeyedObjectState(store.get("fw_primary_voter_registry")).value;
     });
     const [primaryVoterTransferAudit, setPrimaryVoterTransferAudit] = (0, import_react.useState)(
       () => normalizePrimaryVoterTransferAuditEntries(store.get(PRIMARY_VOTER_TRANSFER_AUDIT_KEY))
     );
     const [outreachState, setOutreachState] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_outreach_state");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeLotKeyedObjectState(store.get("fw_outreach_state")).value;
     });
     const [userDirectory, setUserDirectory] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_user_directory");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeUserDirectoryLotsState(store.get("fw_user_directory")).value;
     });
     const [adminAccessGrades, setAdminAccessGrades] = (0, import_react.useState)(() => {
       const saved = store.get("fw_admin_access_grades");
@@ -24338,8 +24499,7 @@ var FallingWatersPortal = (() => {
       return DEFAULT_TOTAL_LOTS;
     });
     const [eligibilityState, setEligibilityState] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_vote_eligibility");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeLotKeyedObjectState(store.get("fw_vote_eligibility")).value;
     });
     const [lastBackupExportAt, setLastBackupExportAt] = (0, import_react.useState)(() => {
       const saved = store.get(LAST_BACKUP_EXPORT_KEY);
@@ -24371,6 +24531,12 @@ var FallingWatersPortal = (() => {
     const [sharedSyncNonce, setSharedSyncNonce] = (0, import_react.useState)(0);
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
+    (0, import_react.useEffect)(() => {
+      const migratedLegacyVotes = migrateLegacyVoteStorageLots();
+      if (migratedLegacyVotes) {
+        setVoteLedger((prev) => normalizeVoteLedgerState(prev).value);
+      }
+    }, []);
     (0, import_react.useEffect)(() => {
       store.set("fw_votes", votes);
     }, [votes]);
@@ -25203,25 +25369,29 @@ var FallingWatersPortal = (() => {
         Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
           if (!String(key).startsWith("vote_")) return;
           if (!VALID_VOTE_CHOICES.has(choice)) return;
-          if (restoreMode === "missing" && store.get(key)) return;
-          store.set(key, choice);
+          const importedLot = normalizeLotLabel(String(key).slice(5));
+          const normalizedKey = importedLot ? `vote_${importedLot}` : key;
+          if (restoreMode === "missing" && store.get(normalizedKey)) return;
+          store.set(normalizedKey, choice);
         });
         Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
           store.set(`vote_${lotLabel}`, choice);
         });
+        migrateLegacyVoteStorageLots();
       }
-      const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
-      const nextComments = scopeFlags.comments ? restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments) : comments;
+      const importedComments = normalizeCommentCollectionLots(Array.isArray(candidate.fw_comments) ? candidate.fw_comments : []).value;
+      const nextCommentsRaw = scopeFlags.comments ? restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments) : comments;
+      const nextComments = normalizeCommentCollectionLots(nextCommentsRaw).value;
       const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
       const nextCovenantDocsRaw = scopeFlags.covenantDocs ? restoreMode === "replace" ? importedCovenantDocs : mergeCovenantDocsById(covenantDocs, importedCovenantDocs) : covenantDocs;
       const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
-      const nextOwnerActivity = scopeFlags.ownerActivity ? mergeObjectState(ownerActivity, candidate.fw_owner_activity) : ownerActivity;
-      const nextPrimaryRegistry = scopeFlags.primaryVoters ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry) : primaryVoterRegistry;
+      const nextOwnerActivity = scopeFlags.ownerActivity ? normalizeLotKeyedObjectState(mergeObjectState(ownerActivity, candidate.fw_owner_activity)).value : ownerActivity;
+      const nextPrimaryRegistry = scopeFlags.primaryVoters ? normalizeLotKeyedObjectState(mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)).value : primaryVoterRegistry;
       const importedTransferAudit = normalizePrimaryVoterTransferAuditEntries(candidate.fw_primary_voter_transfer_audit);
       const nextPrimaryTransferAudit = scopeFlags.primaryVoters ? restoreMode === "replace" ? importedTransferAudit : mergePrimaryVoterTransferAuditEntries(primaryVoterTransferAudit, importedTransferAudit) : primaryVoterTransferAudit;
-      const nextOutreach = scopeFlags.outreach ? mergeObjectState(outreachState, candidate.fw_outreach_state) : outreachState;
-      const nextUserDirectory = scopeFlags.userDirectory ? mergeObjectState(userDirectory, candidate.fw_user_directory) : userDirectory;
-      const nextEligibility = scopeFlags.eligibility ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility) : eligibilityState;
+      const nextOutreach = scopeFlags.outreach ? normalizeLotKeyedObjectState(mergeObjectState(outreachState, candidate.fw_outreach_state)).value : outreachState;
+      const nextUserDirectory = scopeFlags.userDirectory ? normalizeUserDirectoryLotsState(mergeObjectState(userDirectory, candidate.fw_user_directory)).value : userDirectory;
+      const nextEligibility = scopeFlags.eligibility ? normalizeLotKeyedObjectState(mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)).value : eligibilityState;
       const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
       const effectiveAdminEntries = scopeFlags.adminAccess ? (() => {
         if (restoreMode === "merge" || restoreMode === "missing") {
