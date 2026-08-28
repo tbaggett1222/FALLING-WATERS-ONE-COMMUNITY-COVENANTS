@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -2859,7 +2859,10 @@ function AdminVotingPage({
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
   const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
-  const normalizedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
+  const normalizedAdminTwoFactorRegistry = useMemo(
+    () => normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
+    [adminTwoFactorRegistry]
+  );
   const approvedAdminRows = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => {
     const nameKey = normalizeNameKey(entry);
     const gradeRecord = adminAccessGrades?.[nameKey] || {};

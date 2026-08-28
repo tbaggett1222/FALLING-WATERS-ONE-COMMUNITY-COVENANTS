@@ -23390,7 +23390,10 @@ var FallingWatersPortal = (() => {
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
     const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
-    const normalizedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
+    const normalizedAdminTwoFactorRegistry = (0, import_react.useMemo)(
+      () => normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
+      [adminTwoFactorRegistry]
+    );
     const approvedAdminRows = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => {
       const nameKey = normalizeNameKey(entry);
       const gradeRecord = adminAccessGrades?.[nameKey] || {};
