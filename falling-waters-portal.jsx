@@ -1584,6 +1584,23 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
       </div>
 
       <div style={S.card}>
+        <div style={S.cardTitle}>Why this matters — the urgent case for a unified CC&R</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginTop:12 }}>
+          {[
+            { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
+            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable Short-Term Rental (STR) restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
+            { icon:"🐻", title:"Safety and community character", text:"Short-Term Rental (STR) guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
+          ].map((item,i) => (
+            <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
+              <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
+              <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.forest }}>{item.title}</div>
+              <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{item.text}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={S.card}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, marginBottom:8, flexWrap:"wrap" }}>
           <div style={S.cardTitle}>Data integrity check (live)</div>
           <span style={S.badge(integrityPass ? C.success : C.danger, integrityPass ? C.successLight : C.dangerLight)}>
@@ -1605,23 +1622,6 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
               <div style={{ fontSize:12, color:C.muted, marginTop:6, fontFamily:"ui-monospace, SFMono-Regular, Menlo, monospace" }}>
                 {check.equation}
               </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={S.card}>
-        <div style={S.cardTitle}>Why this matters — the urgent case for a unified CC&R</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginTop:12 }}>
-          {[
-            { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
-            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable Short-Term Rental (STR) restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
-            { icon:"🐻", title:"Safety and community character", text:"Short-Term Rental (STR) guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
-          ].map((item,i) => (
-            <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
-              <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
-              <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.forest }}>{item.title}</div>
-              <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{item.text}</div>
             </div>
           ))}
         </div>
