@@ -21490,8 +21490,14 @@ var FallingWatersPortal = (() => {
   var DEFAULT_TOTAL_LOTS = 200;
   var MAX_TOTAL_LOTS = 500;
   var MIN_TOTAL_LOTS = 1;
+  var RETIRED_LOT_NUMBER_REPLACEMENTS = {
+    "26": "27R",
+    "27": "27R",
+    "28": "29R",
+    "29": "29R"
+  };
   var MOBILE_BREAKPOINT_PX = 920;
-  var MIN_LOGIN_SECRET_LENGTH = 4;
+  var MIN_LOGIN_SECRET_LENGTH = 8;
   var DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
   var MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
   var MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -21500,6 +21506,7 @@ var FallingWatersPortal = (() => {
   var DB_API_BASE_URL_KEY = "fw_db_api_base_url";
   var LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
   var PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
+  var ADMIN_TWO_FACTOR_REGISTRY_KEY = "fw_admin_two_factor_registry";
   var DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
@@ -21615,13 +21622,15 @@ var FallingWatersPortal = (() => {
   };
   var todayLabel = () => (/* @__PURE__ */ new Date()).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   var isLegacySampleComment = (comment) => LEGACY_SAMPLE_COMMENT_KEYS.has(`${comment?.lot || ""}|${comment?.name || ""}|${comment?.ts || ""}`);
+  var normalizeLotToken = (value) => String(value || "").replace(/^lot\s*/i, "").trim().replace(/\s+/g, "").toUpperCase();
   var normalizeLotLabel = (value) => {
     const raw = String(value || "").trim();
     if (!raw) return null;
     if (raw.toLowerCase() === "admin") return "ADMIN";
-    const stripped = raw.replace(/^lot\s*/i, "").trim();
-    if (!stripped) return null;
-    return `Lot ${stripped}`;
+    const token = normalizeLotToken(raw);
+    if (!token) return null;
+    const canonicalToken = RETIRED_LOT_NUMBER_REPLACEMENTS[token] || token;
+    return `Lot ${canonicalToken}`;
   };
   var normalizeLoginSecret = (value) => String(value || "").trim();
   var hashString = (value) => {
@@ -21633,7 +21642,36 @@ var FallingWatersPortal = (() => {
     return `h${(hash >>> 0).toString(16).padStart(8, "0")}`;
   };
   var buildPrimaryCredentialHash = (lotLabel, secret) => hashString(`${normalizeLotLabel(lotLabel) || String(lotLabel || "")}|${normalizeLoginSecret(secret)}`);
-  var buildLotLabels = (totalLots) => Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
+  var buildLotLabels = (totalLots) => {
+    const lotCount = Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS);
+    const labels = Array.from({ length: lotCount }, (_, idx) => {
+      const lotNumber = String(idx + 1);
+      const replacement = RETIRED_LOT_NUMBER_REPLACEMENTS[lotNumber];
+      return `Lot ${replacement || lotNumber}`;
+    });
+    labels.sort((a, b) => {
+      const left = normalizeLotToken(a);
+      const right = normalizeLotToken(b);
+      const leftMatch = left.match(/^(\d+)([A-Z]*)$/);
+      const rightMatch = right.match(/^(\d+)([A-Z]*)$/);
+      const leftNumber = leftMatch ? Number(leftMatch[1]) : Number.POSITIVE_INFINITY;
+      const rightNumber = rightMatch ? Number(rightMatch[1]) : Number.POSITIVE_INFINITY;
+      if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+      const leftSuffix = leftMatch?.[2] || "";
+      const rightSuffix = rightMatch?.[2] || "";
+      if (!leftSuffix && rightSuffix) return -1;
+      if (leftSuffix && !rightSuffix) return 1;
+      return leftSuffix.localeCompare(rightSuffix);
+    });
+    const deduped = [];
+    const seen = /* @__PURE__ */ new Set();
+    labels.forEach((label) => {
+      if (seen.has(label)) return;
+      seen.add(label);
+      deduped.push(label);
+    });
+    return deduped;
+  };
   var votesNeededForLots = (totalLots) => Math.ceil(Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2 / 3);
   var sanitizeDbApiBaseUrl = (inputValue, { allowEmpty = true } = {}) => {
     const raw = String(inputValue || "").trim();
@@ -21743,6 +21781,133 @@ var FallingWatersPortal = (() => {
     const rawLots = Array.isArray(comment?.lots) && comment.lots.length > 0 ? comment.lots : [comment?.lot];
     return rawLots.map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
   };
+  var isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+  var normalizeLotKeyedObjectState = (value) => {
+    const source = isPlainObject(value) ? value : {};
+    const next = {};
+    let changed = false;
+    Object.entries(source).forEach(([rawLot, rawEntry]) => {
+      const normalizedLot = normalizeLotLabel(rawLot);
+      const targetLot = normalizedLot && normalizedLot !== "ADMIN" ? normalizedLot : rawLot;
+      if (targetLot !== rawLot) changed = true;
+      if (!Object.prototype.hasOwnProperty.call(next, targetLot)) {
+        next[targetLot] = rawEntry;
+        return;
+      }
+      const existing = next[targetLot];
+      if (isPlainObject(existing) && isPlainObject(rawEntry)) {
+        next[targetLot] = { ...existing, ...rawEntry };
+        changed = true;
+        return;
+      }
+      if ((existing === void 0 || existing === null || existing === "") && rawEntry !== void 0) {
+        next[targetLot] = rawEntry;
+        changed = true;
+        return;
+      }
+      if (existing !== rawEntry) changed = true;
+    });
+    return { value: next, changed };
+  };
+  var normalizeVoteLedgerState = (value) => {
+    const source = isPlainObject(value) ? value : {};
+    const next = {};
+    let changed = false;
+    Object.entries(source).forEach(([rawLot, rawChoice]) => {
+      const normalizedLot = normalizeLotLabel(rawLot);
+      const targetLot = normalizedLot && normalizedLot !== "ADMIN" ? normalizedLot : rawLot;
+      if (targetLot !== rawLot) changed = true;
+      const normalizedChoice = String(rawChoice || "").trim().toLowerCase();
+      if (!["eliminate", "permit", "undecided"].includes(normalizedChoice)) {
+        changed = true;
+        return;
+      }
+      if (!Object.prototype.hasOwnProperty.call(next, targetLot)) {
+        next[targetLot] = normalizedChoice;
+        return;
+      }
+      if (next[targetLot] === normalizedChoice) return;
+      changed = true;
+      if (next[targetLot] === "undecided" && normalizedChoice !== "undecided") {
+        next[targetLot] = normalizedChoice;
+      }
+    });
+    return { value: next, changed };
+  };
+  var normalizeCommentCollectionLots = (value) => {
+    const source = Array.isArray(value) ? value : [];
+    let changed = !Array.isArray(value);
+    const next = source.map((comment) => {
+      if (!comment || typeof comment !== "object") return comment;
+      const normalizedLots = [...new Set(normalizeCommentLots(comment))];
+      const previousLots = Array.isArray(comment.lots) ? comment.lots : [];
+      const previousLot = String(comment.lot || "").trim();
+      const nextLot = normalizedLots[0] || normalizeLotLabel(comment.lot) || previousLot;
+      const lotsChanged = previousLots.length !== normalizedLots.length || previousLots.some((lot, idx) => lot !== normalizedLots[idx]);
+      if (!lotsChanged && previousLot === nextLot) return comment;
+      changed = true;
+      return {
+        ...comment,
+        lot: nextLot,
+        lots: normalizedLots.length > 0 ? normalizedLots : previousLots
+      };
+    });
+    return { value: next, changed };
+  };
+  var normalizeUserProfileLots = (profile) => {
+    if (!profile || typeof profile !== "object") return { value: profile, changed: false };
+    const normalizedLots = normalizeUserLots(profile);
+    const previousLots = Array.isArray(profile.lots) ? profile.lots : [];
+    const lotsChanged = previousLots.length !== normalizedLots.length || previousLots.some((lot, idx) => lot !== normalizedLots[idx]);
+    const nextLotValue = profile.isAdmin ? "ADMIN" : normalizedLots.length === 0 ? String(profile.lot || "").trim() : normalizedLots.length === 1 ? normalizedLots[0] : normalizedLots.join(", ");
+    const lotChanged = String(profile.lot || "").trim() !== nextLotValue;
+    if (!lotsChanged && !lotChanged) return { value: profile, changed: false };
+    return {
+      value: {
+        ...profile,
+        lots: normalizedLots,
+        lot: nextLotValue
+      },
+      changed: true
+    };
+  };
+  var normalizeUserDirectoryLotsState = (value) => {
+    const source = isPlainObject(value) ? value : {};
+    const next = {};
+    let changed = false;
+    Object.entries(source).forEach(([key, record]) => {
+      if (!record || typeof record !== "object") {
+        next[key] = record;
+        return;
+      }
+      const normalized = normalizeUserProfileLots(record);
+      next[key] = normalized.value;
+      if (normalized.changed) changed = true;
+    });
+    return { value: next, changed };
+  };
+  var migrateLegacyVoteStorageLots = () => {
+    if (typeof localStorage === "undefined") return false;
+    const moves = [];
+    for (let idx = 0; idx < localStorage.length; idx += 1) {
+      const key = localStorage.key(idx);
+      if (!key || !key.startsWith("vote_")) continue;
+      const lotLabel = key.slice(5);
+      const normalizedLot = normalizeLotLabel(lotLabel);
+      if (!normalizedLot || normalizedLot === "ADMIN" || normalizedLot === lotLabel) continue;
+      const rawValue = localStorage.getItem(key);
+      if (rawValue === null) continue;
+      moves.push({ fromKey: key, toKey: `vote_${normalizedLot}`, rawValue });
+    }
+    if (moves.length === 0) return false;
+    moves.forEach(({ toKey, rawValue }) => {
+      if (localStorage.getItem(toKey) === null) localStorage.setItem(toKey, rawValue);
+    });
+    moves.forEach(({ fromKey }) => {
+      localStorage.removeItem(fromKey);
+    });
+    return true;
+  };
   var userCanManageComment = (user, comment) => {
     if (!user || !comment) return false;
     if (user.isAdmin) return true;
@@ -21762,6 +21927,27 @@ var FallingWatersPortal = (() => {
   var accessRoleLabel = (role) => normalizeAccessRole(role) === ACCESS_ROLES.commentOnly ? "Comment-only household member" : "Primary voter";
   var isPrimaryVoter = (user) => !user?.isAdmin && normalizeAccessRole(user?.accessRole) === ACCESS_ROLES.primary;
   var normalizeNameKey = (name) => String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  var sanitizeBase32Secret = (secret) => String(secret || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+  var normalizeAdminTwoFactorRegistry = (registry) => {
+    const raw = registry && typeof registry === "object" ? registry : {};
+    const next = {};
+    Object.entries(raw).forEach(([key, value]) => {
+      const record = value && typeof value === "object" ? value : {};
+      const name = String(record.name || "").trim();
+      const normalizedNameKey = normalizeNameKey(name || key);
+      const secret = sanitizeBase32Secret(record.secret);
+      if (!normalizedNameKey || !secret) return;
+      const enabled = record.enabled !== false;
+      next[normalizedNameKey] = {
+        name: name || key,
+        secret,
+        enabled,
+        enrolledAt: String(record.enrolledAt || "").trim() || "",
+        updatedAt: String(record.updatedAt || "").trim() || ""
+      };
+    });
+    return next;
+  };
   var normalizeAdminGrade = (grade) => ADMIN_GRADE_OPTIONS.some((option) => option.value === grade) ? grade : DEFAULT_ADMIN_GRADE;
   var adminGradeLabel = (grade) => ADMIN_GRADE_OPTIONS.find((option) => option.value === normalizeAdminGrade(grade))?.label || "Full admin";
   var normalizeAdminAccessEntries = (entries) => {
@@ -22012,24 +22198,35 @@ var FallingWatersPortal = (() => {
   };
   var mergeCommentsBySignature = (existingComments, incomingComments) => {
     const list = [];
-    const seen = /* @__PURE__ */ new Set();
-    const add = (comment) => {
-      if (!comment || typeof comment !== "object") return;
-      const key = [
-        comment.id || "",
-        comment.name || "",
-        comment.lot || "",
-        comment.topic || "",
-        comment.stance || "",
-        comment.ts || "",
-        comment.text || ""
+    const indexByKey = /* @__PURE__ */ new Map();
+    const buildKey = (comment, idx, source) => {
+      const rawId = comment?.id;
+      const normalizedId = rawId === 0 || rawId ? String(rawId).trim() : "";
+      if (normalizedId) return `id:${normalizedId}`;
+      return [
+        source,
+        idx,
+        comment?.name || "",
+        comment?.lot || "",
+        comment?.topic || "",
+        comment?.stance || "",
+        comment?.ts || "",
+        comment?.text || ""
       ].join("|");
-      if (seen.has(key)) return;
-      seen.add(key);
+    };
+    const add = (comment, idx, source) => {
+      if (!comment || typeof comment !== "object") return;
+      const key = buildKey(comment, idx, source);
+      const existingIdx = indexByKey.get(key);
+      if (Number.isInteger(existingIdx)) {
+        list[existingIdx] = comment;
+        return;
+      }
+      indexByKey.set(key, list.length);
       list.push(comment);
     };
-    (Array.isArray(existingComments) ? existingComments : []).forEach(add);
-    (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+    (Array.isArray(existingComments) ? existingComments : []).forEach((comment, idx) => add(comment, idx, "existing"));
+    (Array.isArray(incomingComments) ? incomingComments : []).forEach((comment, idx) => add(comment, idx, "incoming"));
     return list;
   };
   var mergeCovenantDocsById = (existingDocs, incomingDocs) => {
@@ -22130,14 +22327,14 @@ var FallingWatersPortal = (() => {
     const mentionsMediation = /(mediation|arbitration|dispute resolution)/.test(text);
     if (mentionsStr) {
       if (mentionsLeaseYear) {
-        points.push("STR/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
+        points.push("Short-Term Rental (STR)/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
       } else if (mentionsSevenNight) {
-        points.push("STR/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
+        points.push("Short-Term Rental (STR)/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
       } else {
-        points.push("STR/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
+        points.push("Short-Term Rental (STR)/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
       }
     } else {
-      points.push("STR/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
+      points.push("Short-Term Rental (STR)/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
     }
     points.push(
       mentionsAmendSuperMajority ? "Governance signal: supermajority amendment language detected (2/3 or 67%)." : "Governance signal: no clear supermajority amendment threshold found in extracted text."
@@ -22335,8 +22532,10 @@ var FallingWatersPortal = (() => {
     const [pw, setPw] = (0, import_react.useState)("");
     const [accessRole, setAccessRole] = (0, import_react.useState)(ACCESS_ROLES.primary);
     const [err, setErr] = (0, import_react.useState)("");
-    const handle = (e) => {
+    const [busy, setBusy] = (0, import_react.useState)(false);
+    const handle = async (e) => {
       e.preventDefault();
+      if (busy) return;
       const trimmedName = name.trim();
       const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
       const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
@@ -22357,10 +22556,20 @@ var FallingWatersPortal = (() => {
         isAdmin,
         loginSecret: pw
       };
-      const loginError = onLogin(user);
+      setBusy(true);
+      let loginError = null;
+      try {
+        loginError = await onLogin(user);
+      } catch (error) {
+        loginError = error?.message || "Sign-in failed.";
+      } finally {
+        setBusy(false);
+      }
       if (loginError) {
         setErr(loginError);
+        return;
       }
+      setErr("");
     };
     return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s), name, and password to access the portal. Primary voter logins lock voting rights by lot to the registered primary voter identity, preventing duplicate voting from alternate IDs. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement(
       "input",
@@ -22369,6 +22578,7 @@ var FallingWatersPortal = (() => {
         placeholder: "e.g. Lot 36, Lot 37 (admins can leave blank)",
         value: lot,
         onChange: (e) => setLot(e.target.value),
+        disabled: busy,
         inputMode: "text",
         autoCapitalize: "none",
         autoCorrect: "off"
@@ -22380,6 +22590,7 @@ var FallingWatersPortal = (() => {
         placeholder: "First and last name",
         value: name,
         onChange: (e) => setName(e.target.value),
+        disabled: busy,
         autoCapitalize: "words",
         autoCorrect: "on",
         enterKeyHint: "next"
@@ -22389,14 +22600,15 @@ var FallingWatersPortal = (() => {
       {
         style: S.input,
         type: "password",
-        placeholder: `Min ${MIN_LOGIN_SECRET_LENGTH} characters`,
+        placeholder: `Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`,
         value: pw,
         onChange: (e) => setPw(e.target.value),
+        disabled: busy,
         autoCapitalize: "none",
         autoCorrect: "off",
         enterKeyHint: "go"
       }
-    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 } }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value), disabled: busy }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 }, disabled: busy }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " ", busy ? "Signing in..." : "Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
   }
   function HomePage({ votes, stats, totalLots, votesNeeded }) {
     const communityEngaged = Math.min(totalLots, stats.votedLots);
@@ -22427,18 +22639,18 @@ var FallingWatersPortal = (() => {
       { num: totalLots, label: "Total lots", accent: C.forest },
       { num: votesNeeded, label: "Votes needed (2/3)", accent: C.stone },
       { num: communityEngaged, label: "Owners engaged", accent: "#2563EB" },
-      { num: `${yesPct}%`, label: "Supporting STR elimination", accent: C.danger }
-    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, marginBottom: 16 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Overall engagement"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Owners who have participated in the survey process"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, communityEngaged, " of ", totalLots, " lots engaged"), /* @__PURE__ */ import_react.default.createElement("span", null, engPct, "%")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.meter }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.meterFill(engPct, C.forest) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6 } }, "Goal: 100% engagement before vote \xB7 ", notVotedLots, " owners not yet reached"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 10, fontSize: 12, color: C.muted, lineHeight: 1.55 } }, "Portal-tracked engagement: ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.loggedInLots), " lots logged in \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.commentedLots), " lots commented \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.votedLots), " lots cast a portal vote.")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "STR vote progress"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Current STR policy preference within the one-community CC&R campaign"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, votes.eliminate, " eliminate \xB7 ", votes.permit, " permit \xB7 ", votes.undecided, " undecided \xB7 ", notVotedLots, " not voted"), /* @__PURE__ */ import_react.default.createElement("span", null, yesPct, "% support elimination")), /* @__PURE__ */ import_react.default.createElement("div", { style: { height: 20, borderRadius: 10, overflow: "hidden", display: "flex", margin: "8px 0" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.eliminate / totalLots * 100}%`, background: C.danger, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.permit / totalLots * 100}%`, background: C.stone, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.undecided / totalLots * 100}%`, background: "#3B82F6", transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${notVotedLots / totalLots * 100}%`, background: C.parchmentDark, transition: "width 1s" } })), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: C.muted } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.danger, borderRadius: 2, display: "inline-block" } }), " Eliminate STRs (", votes.eliminate, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.stone, borderRadius: 2, display: "inline-block" } }), " Permit STRs (", votes.permit, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: "#3B82F6", borderRadius: 2, display: "inline-block" } }), " Undecided (", votes.undecided, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.parchmentDark, border: `1px solid ${C.border}`, borderRadius: 2, display: "inline-block" } }), " Not voted (", notVotedLots, ")")), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.alert("warn"), marginTop: 12, marginBottom: 0, fontSize: 12 } }, "Need ", votesNeeded, " votes to eliminate STRs. Currently ", Math.max(votesNeeded - votes.eliminate, 0), " votes short."))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Data integrity check (live)"), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(integrityPass ? C.success : C.danger, integrityPass ? C.successLight : C.dangerLight) }, integrityPass ? "PASS" : "REVIEW NEEDED")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "Calculated from current vote ledger and lot count in real time."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gap: 8 } }, integrityChecks.map((check, idx) => /* @__PURE__ */ import_react.default.createElement("div", { key: idx, style: { border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", background: C.white } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.forest } }, check.label), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(check.pass ? C.success : C.danger, check.pass ? C.successLight : C.dangerLight) }, check.pass ? "OK" : "Mismatch")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" } }, check.equation))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Why this matters \u2014 the urgent case for a unified CC&R"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 12 } }, [
+      { num: `${yesPct}%`, label: "Supporting Short-Term Rental (STR) elimination", accent: C.danger }
+    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, marginBottom: 16 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Overall engagement"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Owners who have participated in the survey process"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, communityEngaged, " of ", totalLots, " lots engaged"), /* @__PURE__ */ import_react.default.createElement("span", null, engPct, "%")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.meter }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.meterFill(engPct, C.forest) })), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6 } }, "Goal: 100% engagement before vote \xB7 ", notVotedLots, " owners not yet reached"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 10, fontSize: 12, color: C.muted, lineHeight: 1.55 } }, "Portal-tracked engagement: ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.loggedInLots), " lots logged in \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.commentedLots), " lots commented \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, stats.votedLots), " lots cast a portal vote.")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Short-Term Rental (STR) vote progress"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginBottom: 10 } }, "Current Short-Term Rental (STR) policy preference within the one-community CC&R campaign"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted, marginBottom: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", null, votes.eliminate, " eliminate \xB7 ", votes.permit, " permit \xB7 ", votes.undecided, " undecided \xB7 ", notVotedLots, " not voted"), /* @__PURE__ */ import_react.default.createElement("span", null, yesPct, "% support elimination")), /* @__PURE__ */ import_react.default.createElement("div", { style: { height: 20, borderRadius: 10, overflow: "hidden", display: "flex", margin: "8px 0" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.eliminate / totalLots * 100}%`, background: C.danger, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.permit / totalLots * 100}%`, background: C.stone, transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${votes.undecided / totalLots * 100}%`, background: "#3B82F6", transition: "width 1s" } }), /* @__PURE__ */ import_react.default.createElement("div", { style: { width: `${notVotedLots / totalLots * 100}%`, background: C.parchmentDark, transition: "width 1s" } })), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11, color: C.muted } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.danger, borderRadius: 2, display: "inline-block" } }), " Eliminate Short-Term Rentals (STRs) (", votes.eliminate, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.stone, borderRadius: 2, display: "inline-block" } }), " Permit Short-Term Rentals (STRs) (", votes.permit, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: "#3B82F6", borderRadius: 2, display: "inline-block" } }), " Undecided (", votes.undecided, ")"), /* @__PURE__ */ import_react.default.createElement("span", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: { width: 10, height: 10, background: C.parchmentDark, border: `1px solid ${C.border}`, borderRadius: 2, display: "inline-block" } }), " Not voted (", notVotedLots, ")")), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.alert("warn"), marginTop: 12, marginBottom: 0, fontSize: 12 } }, "Need ", votesNeeded, " votes to eliminate STRs. Currently ", Math.max(votesNeeded - votes.eliminate, 0), " votes short."))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Why this matters \u2014 the urgent case for a unified CC&R"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginTop: 12 } }, [
       { icon: "\u2696", title: "Three conflicting covenant sets", text: "Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
-      { icon: "\u{1F3E0}", title: "Short-term rental gap \u2014 confirmed by attorney", text: "Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
-      { icon: "\u{1F43B}", title: "Safety and community character", text: "STR guests don't always know our community rules \u2014 noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." }
-    ].map((item, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: { background: C.parchment, borderRadius: 6, padding: "14px 16px" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 20, marginBottom: 6 } }, item.icon), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 600, fontSize: 13, marginBottom: 6, color: C.forest } }, item.title), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6 } }, item.text))))));
+      { icon: "\u{1F3E0}", title: "Short-term rental gap \u2014 confirmed by attorney", text: "Our attorney confirmed that 2014-lot owners have no enforceable Short-Term Rental (STR) restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
+      { icon: "\u{1F43B}", title: "Safety and community character", text: "Short-Term Rental (STR) guests don't always know our community rules \u2014 noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." }
+    ].map((item, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: { background: C.parchment, borderRadius: 6, padding: "14px 16px" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 20, marginBottom: 6 } }, item.icon), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 600, fontSize: 13, marginBottom: 6, color: C.forest } }, item.title), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6 } }, item.text))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Data integrity check (live)"), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(integrityPass ? C.success : C.danger, integrityPass ? C.successLight : C.dangerLight) }, integrityPass ? "PASS" : "REVIEW NEEDED")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "Calculated from current vote ledger and lot count in real time."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gap: 8 } }, integrityChecks.map((check, idx) => /* @__PURE__ */ import_react.default.createElement("div", { key: idx, style: { border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", background: C.white } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: C.forest } }, check.label), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(check.pass ? C.success : C.danger, check.pass ? C.successLight : C.dangerLight) }, check.pass ? "OK" : "Mismatch")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 6, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" } }, check.equation))))));
   }
   var DEFAULT_COVENANT_DOCS = [
     { id: "2008", year: 2008, title: "Master Declaration of CC&Rs", preparer: "Clear Creek Properties LLC \xB7 Balch & Bingham LLP", filed: "May 28, 2008", ref: "Deed Book 1479, Page 194 \u2014 Gilmer County", status: "original", statusLabel: "Original", sections: [
       { heading: "Amendment threshold", text: "Section 14.2(c): 67% of total Class A votes in the Association. By-Laws set a quorum of 10% for meetings. This is the foundational threshold against which all subsequent amendment attempts must be measured." },
       { heading: "Leasing (Section 10.4)", text: "Lots may be leased for residential purposes only. All leases shall be in writing and for a term of at least one (1) year. No hardship system \u2014 leasing was broadly permitted with a 1-year minimum. This is the original standard the working group proposes to restore." },
-      { heading: "Short-term rentals", text: "Silent on STRs by name \u2014 Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
+      { heading: "Short-term rentals", text: "Silent on Short-Term Rentals (STRs) by name \u2014 Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
       { heading: "Georgia POA Act", text: "Explicitly opted OUT of O.C.G.A. \xA744-3-220. The 2008 document states it was not intended to create a property owners' development within the meaning of that Act. This is a developer protection, not an owner protection." },
       { heading: "Minimum home size", text: "Not specified in the declaration \u2014 deferred entirely to the Architectural Review Board (ARB) and design guidelines. No square footage minimums are set in the 2008 document itself." },
       { heading: "Assessment cap", text: "No annual increase cap. Budget may be disapproved by 67% of Class A votes. The Board sets amounts at its discretion." },
@@ -22447,7 +22659,7 @@ var FallingWatersPortal = (() => {
     ] },
     { id: "2014", year: 2014, title: "Declaration of Covenants, Reservations and Restrictions", preparer: "Highland Falls LLC (post-bankruptcy declarant)", filed: "April 14, 2014", ref: "Deed Book 1860, Pages 188-202 \u2014 Gilmer/Pickens Counties", status: "active2014", statusLabel: "Active \u2014 Phase II lots", sections: [
       { heading: "Amendment threshold", text: "67% of members voting at a duly noticed meeting, with a 50% quorum required. This is meaningfully different from the 2008 document \u2014 with 50% quorum (100 lots present), only 67 votes could pass an amendment. The lower turnout required makes this easier to satisfy." },
-      { heading: "Short-term rentals \u2014 THE CRITICAL GAP", text: "Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable STR restriction. This is the gap the unified CC&R must close." },
+      { heading: "Short-term rentals \u2014 THE CRITICAL GAP", text: "Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable Short-Term Rental (STR) restriction. This is the gap the unified CC&R must close." },
       { heading: "Long-term leasing", text: "Also not addressed. The 2014 document contains no leasing section whatsoever, creating uncertainty for tenants, lenders, and title companies on Phase II lots." },
       { heading: "Minimum home size", text: "1,400 sf for single-level residences; 1,800 sf for two-level residences; minimum 1,400 sf on first floor. The only document of the three to specify minimums. The working group proposes restoring this standard in the unified CC&R." },
       { heading: "Assessment cap", text: "Maximum 10% annual increase without a member vote. The only document with a cap. This provision protects owners from unchecked dues increases and was quietly removed in the 2021 document." },
@@ -22718,18 +22930,18 @@ var FallingWatersPortal = (() => {
       { topic: "Short-term rentals", c2008: "Silent \u2014 but 1-yr lease minimum effectively prohibits", c2014: "\u26A0 Completely silent \u2014 NO restriction confirmed by attorney", c2021: "Absolute ban \u2014 VRBO, Airbnb, HomeAway named (consent-form signers only)", risk: "critical", proposed: "Regulated permission: 7-night minimum stay, HOA registration, $1M liability insurance, occupancy limits, nuisance enforcement OR outright prohibition \u2014 community vote decides" },
       { topic: "Long-term leasing", c2014: "Not addressed", c2008: "Permitted; 1-year minimum; written lease required", c2021: "Near-total ban \u2014 hardship permit system only", risk: "high", proposed: "Restore 2008 standard: permitted, 1-year minimum, written lease, tenant gets docs, HOA notified within 30 days" },
       { topic: "Georgia POA Act", c2008: "Explicitly opted OUT", c2014: "Not addressed", c2021: "Explicitly opted IN", risk: "medium", proposed: "Adopt 2021 standard \u2014 submit to O.C.G.A. \xA744-3-220 for stronger enforcement authority and lender-friendly governance" },
-      { topic: "Minimum home size", c2008: "Not specified \u2014 deferred to ARB", c2014: "1,400 sf (1-level); 1,800 sf (2-level)", c2021: "Not specified \u2014 deferred to ACC", risk: "medium", proposed: "Restore 2014 standard with ACC variance process for unusual lots" },
+      { topic: "Minimum home size", c2008: "Not specified \u2014 deferred to Architectural Review Board (ARB)", c2014: "1,400 sf (1-level); 1,800 sf (2-level)", c2021: "Not specified \u2014 deferred to ACC", risk: "medium", proposed: "Restore 2014 standard with ACC variance process for unusual lots" },
       { topic: "Annual assessment cap", c2008: "No cap \u2014 67% vote to disapprove budget", c2014: "Max 10% increase without member vote", c2021: "No cap \u2014 Board full discretion", risk: "medium", proposed: "Restore a 15% cap without member vote; increases above 15% require simple majority vote" },
       { topic: "Dispute resolution", c2008: "Mediation/arbitration encouraged; 80% to sue", c2014: "Not addressed", c2021: "2/3 vote to sue; no mediation requirement", risk: "medium", proposed: "Restore 2008 mediation-first requirement; keep 2021 litigation threshold (2/3 vote)" },
       { topic: "Lake & wetlands", c2008: "Comprehensive \u2014 5 detailed sections", c2014: "Not addressed", c2021: "Comprehensive \u2014 mirrors 2008 with updates", risk: "low", proposed: "Retain 2021 lake/wetlands provisions verbatim" },
       { topic: "Duration", c2008: "Perpetual; 90% to terminate in first 20 yrs", c2014: "Expires Jan 1 2040; auto-renews 10 yrs", c2021: "Perpetual; auto-renews 20 yrs; 2/3 to change", risk: "low", proposed: "Adopt 2021 perpetual model for stability" },
-      { topic: "ACC / ARB authority", c2008: "ARB \u2014 Declarant appoints until all lots sold", c2014: "ACC appointed by Executive Board; detailed standards", c2021: "ACC 3\u20135 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk: "medium", proposed: "Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
+      { topic: "ACC / Architectural Review Board (ARB) authority", c2008: "Architectural Review Board (ARB) \u2014 Declarant appoints until all lots sold", c2014: "ACC appointed by Executive Board; detailed standards", c2021: "ACC 3\u20135 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk: "medium", proposed: "Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
       { topic: "Wildlife & outdoor safety rules", c2008: "Not addressed", c2014: "Not addressed", c2021: "Not addressed", risk: "new", proposed: "Future addition candidate: consider a dedicated wildlife and outdoor-safety section in a later amendment after one unified CC&R is adopted." }
     ];
     const risk = { critical: { label: "Critical", c: C.danger, bg: C.dangerLight }, high: { label: "High", c: "#9A3412", bg: "#FFEDD5" }, medium: { label: "Medium", c: C.amber, bg: C.amberLight }, low: { label: "Low", c: C.success, bg: C.successLight }, new: { label: "New provision", c: "#6B21A8", bg: "#F3E8FF" } };
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Attorney-confirmed:"), " Georgia will not impose a restriction not in an owner's chain of title. Owners whose title only includes the 2014 declaration have no short-term rental restriction today. The unified CC&R is the only way to establish consistent, enforceable rules for all 200 lots."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 12 } }, [
       { title: "Biggest legal mismatch", body: "Only the 2021 document uses the strict 2/3 of all lots threshold. 2008 and 2014 rely on quorum-based meeting votes.", color: C.stone },
-      { title: "Biggest STR mismatch", body: "2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color: C.danger },
+      { title: "Biggest Short-Term Rental (STR) mismatch", body: "2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color: C.danger },
       { title: "Biggest owner-protection mismatch", body: "2014 capped annual dues increases at 10%, but 2008 and 2021 do not include a cap.", color: "#1D4ED8" }
     ].map((item, idx) => /* @__PURE__ */ import_react.default.createElement("div", { key: idx, style: { ...S.card, marginBottom: 0, borderTop: `3px solid ${item.color}` } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 700, fontSize: 13, color: item.color, marginBottom: 6 } }, item.title), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6 } }, item.body)))), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, padding: 0, overflow: "hidden" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: { ...S.th, minWidth: 130 } }, "Provision"), /* @__PURE__ */ import_react.default.createElement("th", { style: { ...S.th, minWidth: 150 } }, "2008 Original"), /* @__PURE__ */ import_react.default.createElement("th", { style: { ...S.th, minWidth: 150 } }, "2014 Highland Falls"), /* @__PURE__ */ import_react.default.createElement("th", { style: { ...S.th, minWidth: 160 } }, "2021 Consolidated"), /* @__PURE__ */ import_react.default.createElement("th", { style: { ...S.th, minWidth: 80 } }, "Risk"), /* @__PURE__ */ import_react.default.createElement("th", { style: { ...S.th, minWidth: 200 } }, "Proposed unified standard"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, rows.map((r, i) => {
       const ri = risk[r.risk];
@@ -22771,8 +22983,8 @@ var FallingWatersPortal = (() => {
         source: "Uses the stricter 2021 threshold to prevent low-turnout governance changes."
       },
       {
-        article: "Article 3 \u2014 Leasing and STR Rule",
-        summary: "No rentals under 12 months unless the community later approves a regulated STR framework by the same 2/3 standard.",
+        article: "Article 3 \u2014 Leasing and Short-Term Rental (STR) Rule",
+        summary: "No rentals under 12 months unless the community later approves a regulated Short-Term Rental (STR) framework by the same 2/3 standard.",
         source: "Restores original 2008 long-term leasing posture while creating explicit, enforceable STR clarity."
       },
       {
@@ -22793,7 +23005,7 @@ var FallingWatersPortal = (() => {
     ];
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Draft proposal for One Community Covenant:"), " this page presents the unified CC&R structure owners are being asked to evaluate. Final legal text will follow attorney markup and owner feedback."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "What changes if we do nothing?"), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 10 } }, [
       {
-        title: "No single enforceable STR rule",
+        title: "No single enforceable Short-Term Rental (STR) rule",
         detail: "Some lots remain unrestricted while others are restricted, increasing conflict, perceived unfairness, and enforcement failures.",
         color: C.danger
       },
@@ -22829,7 +23041,7 @@ var FallingWatersPortal = (() => {
       { icon: "\u2696", title: "Enforcement and liability", text: "The HOA has limited enforcement capacity. Every STR guest who violates a rule requires the Association to identify them, trace them to an owner, and pursue enforcement \u2014 while the owner may be hundreds of miles away. The Association's liability exposure from guest incidents is also heightened when the lot is functioning commercially." },
       { icon: "\u{1F3DB}", title: "Legal history \u2014 STRs were never permitted", text: "The original 2008 declaration required all leases to be for at least one year, effectively prohibiting short-term rentals before Airbnb existed. No owner has ever had a legally clear right to operate an STR in Falling Waters. The unified CC&R makes explicit what the community intended from the beginning." }
     ];
-    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "STR & Unified CC&R Vote:"), " this section captures each lot's STR policy preference as part of the one-community covenant adoption effort."), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, background: `linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border: `1px solid ${C.danger}` } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 18, fontWeight: "bold", color: C.danger, marginBottom: 8 } }, "Short-Term Rentals \u2014 The Central Issue"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: "0 0 12px" } }, "Our attorney has confirmed: ", /* @__PURE__ */ import_react.default.createElement("strong", null, "owners whose chain of title only includes the 2014 declaration have no enforceable short-term rental restriction today."), " Georgia courts will not imply a restriction that is not in an owner's title. Without a unified CC&R, Falling Waters cannot establish a consistent, community-wide STR rule \u2014 whether permissive or restrictive."), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: 0 } }, "This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Every lot owner's voice matters \u2014 this is why we need 100% engagement."))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 20 } }, [
+    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Short-Term Rental (STR) & Unified CC&R Vote:"), " this section captures each lot's STR policy preference as part of the one-community covenant adoption effort."), /* @__PURE__ */ import_react.default.createElement("div", { style: { ...S.card, background: `linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border: `1px solid ${C.danger}` } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 18, fontWeight: "bold", color: C.danger, marginBottom: 8 } }, "Short-Term Rentals \u2014 The Central Issue"), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: "0 0 12px" } }, "Our attorney has confirmed: ", /* @__PURE__ */ import_react.default.createElement("strong", null, "owners whose chain of title only includes the 2014 declaration have no enforceable short-term rental restriction today."), " Georgia courts will not imply a restriction that is not in an owner's title. Without a unified CC&R, Falling Waters cannot establish a consistent, community-wide STR rule \u2014 whether permissive or restrictive."), /* @__PURE__ */ import_react.default.createElement("p", { style: { fontSize: 13, color: C.ink, lineHeight: 1.7, margin: 0 } }, "This is the third attempt to solve this problem. The 2021 consent-form effort and the 2026 draft revision both fell short. Your vote below determines whether the unified CC&R eliminates short-term rentals or permits them with regulation. ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Every lot owner's voice matters \u2014 this is why we need 100% engagement."))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 20 } }, [
       { label: "Eliminate STRs", count: votes.eliminate, pct: Math.round(votes.eliminate / totalLots * 100), color: C.danger, desc: "No rentals shorter than 12 months. Clear prohibition with 18-month transition for current operators." },
       { label: "Permit with regulation", count: votes.permit, pct: Math.round(votes.permit / totalLots * 100), color: C.stone, desc: "7-night minimum, HOA registration, $1M insurance, occupancy limits, strict nuisance enforcement." },
       { label: "Undecided response", count: votes.undecided, pct: Math.round(votes.undecided / totalLots * 100), color: "#3B82F6", desc: "Owners who participated but need more time or information before choosing eliminate/permit." },
@@ -23523,6 +23735,7 @@ var FallingWatersPortal = (() => {
           fw_user_directory: store.get("fw_user_directory"),
           fw_admin_access_entries: store.get("fw_admin_access_entries"),
           fw_admin_access_grades: store.get("fw_admin_access_grades"),
+          fw_admin_two_factor_registry: store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY),
           fw_total_lots: store.get("fw_total_lots"),
           fw_vote_eligibility: store.get("fw_vote_eligibility")
         };
@@ -23541,6 +23754,7 @@ var FallingWatersPortal = (() => {
           primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
           primary_voter_transfer_audit_records: transferAuditRows.length,
           admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
+          admin_two_factor_enabled: Object.values(normalizedAdminTwoFactorRegistry).filter((entry) => entry?.enabled && entry?.secret).length,
           user_directory_records: Object.keys(userDirectory || {}).length,
           covenant_docs: covenantDocCount,
           raw_storage_keys_exported: storageKeys.length,
@@ -24222,8 +24436,9 @@ var FallingWatersPortal = (() => {
       const savedTotalLots = Number(store.get("fw_total_lots"));
       const effectiveTotalLots = Number.isInteger(savedTotalLots) && savedTotalLots >= MIN_TOTAL_LOTS && savedTotalLots <= MAX_TOTAL_LOTS ? savedTotalLots : DEFAULT_TOTAL_LOTS;
       const initialLotLabels = buildLotLabels(effectiveTotalLots);
-      const savedLedger = store.get("fw_vote_ledger");
-      if (savedLedger && typeof savedLedger === "object") {
+      const savedLedgerRaw = store.get("fw_vote_ledger");
+      const savedLedger = normalizeVoteLedgerState(savedLedgerRaw).value;
+      if (savedLedgerRaw && typeof savedLedgerRaw === "object") {
         return computeVoteTotalsFromLedger(savedLedger, initialLotLabels);
       }
       const savedVotes = store.get("fw_votes");
@@ -24248,45 +24463,45 @@ var FallingWatersPortal = (() => {
       const savedVersion = store.get("fw_comments_data_version");
       if (savedVersion !== COMMENTS_DATA_VERSION) {
         const cleaned = safeSavedComments.filter((comment) => !isLegacySampleComment(comment));
-        store.set("fw_comments", cleaned);
+        const normalized = normalizeCommentCollectionLots(cleaned).value;
+        store.set("fw_comments", normalized);
         store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
-        return cleaned;
+        return normalized;
       }
-      return safeSavedComments.length ? safeSavedComments : SEED_COMMENTS;
+      return normalizeCommentCollectionLots(safeSavedComments.length ? safeSavedComments : SEED_COMMENTS).value;
     });
     const [covenantDocs, setCovenantDocs] = (0, import_react.useState)(() => {
       const saved = store.get("fw_covenant_docs");
       return Array.isArray(saved) && saved.length ? saved : DEFAULT_COVENANT_DOCS;
     });
-    const [ownerActivity, setOwnerActivity] = (0, import_react.useState)(() => store.get("fw_owner_activity") || {});
-    const [voteLedger, setVoteLedger] = (0, import_react.useState)(() => store.get("fw_vote_ledger") || {});
+    const [ownerActivity, setOwnerActivity] = (0, import_react.useState)(() => normalizeLotKeyedObjectState(store.get("fw_owner_activity")).value);
+    const [voteLedger, setVoteLedger] = (0, import_react.useState)(() => normalizeVoteLedgerState(store.get("fw_vote_ledger")).value);
     const [primaryVoterRegistry, setPrimaryVoterRegistry] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_primary_voter_registry");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeLotKeyedObjectState(store.get("fw_primary_voter_registry")).value;
     });
     const [primaryVoterTransferAudit, setPrimaryVoterTransferAudit] = (0, import_react.useState)(
       () => normalizePrimaryVoterTransferAuditEntries(store.get(PRIMARY_VOTER_TRANSFER_AUDIT_KEY))
     );
     const [outreachState, setOutreachState] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_outreach_state");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeLotKeyedObjectState(store.get("fw_outreach_state")).value;
     });
     const [userDirectory, setUserDirectory] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_user_directory");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeUserDirectoryLotsState(store.get("fw_user_directory")).value;
     });
     const [adminAccessGrades, setAdminAccessGrades] = (0, import_react.useState)(() => {
       const saved = store.get("fw_admin_access_grades");
       return saved && typeof saved === "object" ? saved : {};
     });
+    const [adminTwoFactorRegistry, setAdminTwoFactorRegistry] = (0, import_react.useState)(
+      () => normalizeAdminTwoFactorRegistry(store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY))
+    );
     const [totalLots, setTotalLots] = (0, import_react.useState)(() => {
       const saved = Number(store.get("fw_total_lots"));
       if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
       return DEFAULT_TOTAL_LOTS;
     });
     const [eligibilityState, setEligibilityState] = (0, import_react.useState)(() => {
-      const saved = store.get("fw_vote_eligibility");
-      return saved && typeof saved === "object" ? saved : {};
+      return normalizeLotKeyedObjectState(store.get("fw_vote_eligibility")).value;
     });
     const [lastBackupExportAt, setLastBackupExportAt] = (0, import_react.useState)(() => {
       const saved = store.get(LAST_BACKUP_EXPORT_KEY);
@@ -24313,15 +24528,28 @@ var FallingWatersPortal = (() => {
     const [sharedDataBusy, setSharedDataBusy] = (0, import_react.useState)(false);
     const [sharedDataMsg, setSharedDataMsg] = (0, import_react.useState)("");
     const [sharedDataErr, setSharedDataErr] = (0, import_react.useState)("");
-    const sharedSyncScopeQueueRef = useRef(/* @__PURE__ */ new Set());
+    const sharedSyncScopeQueueRef = (0, import_react.useRef)(/* @__PURE__ */ new Set());
+    const sharedSyncModeRef = (0, import_react.useRef)("merge");
     const [sharedSyncNonce, setSharedSyncNonce] = (0, import_react.useState)(0);
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
+    (0, import_react.useEffect)(() => {
+      const migratedLegacyVotes = migrateLegacyVoteStorageLots();
+      if (migratedLegacyVotes) {
+        setVoteLedger((prev) => normalizeVoteLedgerState(prev).value);
+      }
+    }, []);
     (0, import_react.useEffect)(() => {
       store.set("fw_votes", votes);
     }, [votes]);
     (0, import_react.useEffect)(() => {
       store.set("fw_comments", comments);
+    }, [comments]);
+    (0, import_react.useEffect)(() => {
+      const deduped = mergeCommentsBySignature([], comments);
+      if (deduped.length !== comments.length) {
+        setComments(deduped);
+      }
     }, [comments]);
     (0, import_react.useEffect)(() => {
       store.set("fw_covenant_docs", covenantDocs);
@@ -24350,6 +24578,9 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       store.set("fw_admin_access_grades", adminAccessGrades);
     }, [adminAccessGrades]);
+    (0, import_react.useEffect)(() => {
+      store.set(ADMIN_TWO_FACTOR_REGISTRY_KEY, adminTwoFactorRegistry);
+    }, [adminTwoFactorRegistry]);
     (0, import_react.useEffect)(() => {
       store.set("fw_total_lots", totalLots);
     }, [totalLots]);
@@ -24451,6 +24682,7 @@ var FallingWatersPortal = (() => {
           updatedAt: todayLabel()
         }
       }));
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
       return { message: `${safeName} grade set to ${adminGradeLabel(normalizedGrade)}.` };
     };
     const handleGrantAdminAccess = (name, grade = DEFAULT_ADMIN_GRADE) => {
@@ -24470,7 +24702,47 @@ var FallingWatersPortal = (() => {
           updatedAt: todayLabel()
         }
       }));
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
       return { message: exists ? `${safeName} already had admin rights; grade updated.` : `${safeName} now has admin rights.` };
+    };
+    const handleSetAdminTwoFactor = (name, options = {}) => {
+      const safeName = String(name || "").trim();
+      if (!safeName) return { error: "Admin name is required for 2FA settings." };
+      if (!isAdminUserAllowed(safeName, adminAccessEntries)) {
+        return { error: `${safeName} is not in the approved admin list.` };
+      }
+      const key = normalizeNameKey(safeName);
+      const enable = options?.enabled !== false;
+      const normalizedSecret = sanitizeBase32Secret(options?.secret);
+      if (!enable) {
+        setAdminTwoFactorRegistry((prev) => {
+          const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+          delete next[key];
+          return next;
+        });
+        queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+        return { message: `2FA disabled for ${safeName}.` };
+      }
+      if (normalizedSecret.length < 16) {
+        return { error: "2FA secret is invalid. Generate a new authenticator secret and try again." };
+      }
+      const nowLabel = todayLabel();
+      setAdminTwoFactorRegistry((prev) => {
+        const normalizedPrev = normalizeAdminTwoFactorRegistry(prev);
+        const existing = normalizedPrev[key] || {};
+        return {
+          ...normalizedPrev,
+          [key]: {
+            name: safeName,
+            secret: normalizedSecret,
+            enabled: true,
+            enrolledAt: existing.enrolledAt || nowLabel,
+            updatedAt: nowLabel
+          }
+        };
+      });
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+      return { message: `2FA enabled for ${safeName}. Use your authenticator app code at admin login.` };
     };
     const handleRevokeAdminAccess = (name) => {
       const safeName = String(name || "").trim();
@@ -24486,6 +24758,12 @@ var FallingWatersPortal = (() => {
         delete next[key];
         return next;
       });
+      setAdminTwoFactorRegistry((prev) => {
+        const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+        delete next[key];
+        return next;
+      });
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
       return { message: `${safeName} admin rights revoked.` };
     };
     const handleTransferPrimaryVoter = ({ lot, toName, note }) => {
@@ -24640,7 +24918,7 @@ var FallingWatersPortal = (() => {
       }
       return { registry: nextRegistry };
     };
-    const handleLogin = (u) => {
+    const handleLogin = async (u) => {
       const lots = normalizeUserLots(u);
       const hasAdminApproval = isAdminUserAllowed(u.name, adminAccessEntries);
       const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
@@ -24649,7 +24927,7 @@ var FallingWatersPortal = (() => {
         return "This account is not authorized for admin access. Contact the HOA administrator.";
       }
       const isAdmin = hasAdminApproval || requestedAdmin;
-      if (!isAdmin && loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+      if (loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
         return `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`;
       }
       const effectiveLots = isAdmin ? ["ADMIN"] : lots;
@@ -24677,6 +24955,10 @@ var FallingWatersPortal = (() => {
       if (!isAdmin) {
         lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
       }
+      queueSharedChangesSync(
+        isAdmin ? ["userDirectory"] : ["ownerActivity", "userDirectory", "primaryVoters"],
+        { mode: "merge" }
+      );
       return null;
     };
     const handleLogout = () => {
@@ -24722,7 +25004,7 @@ var FallingWatersPortal = (() => {
       setComments((prev) => [c, ...prev]);
       const commentLots = normalizeCommentLots(c);
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
-      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
     };
     const handleDeleteComment = (commentId) => {
       const targetId = String(commentId);
@@ -24751,7 +25033,7 @@ var FallingWatersPortal = (() => {
           return next;
         });
       }
-      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
       return { message: "Comment deleted." };
     };
     const handleUpdateComment = (commentId, updates = {}) => {
@@ -24796,7 +25078,7 @@ var FallingWatersPortal = (() => {
       }
       const commentLots = (Array.isArray(editedComment?.lots) ? editedComment.lots : [editedComment?.lot]).map((lot) => normalizeLotLabel(lot)).filter((lot) => !!lot && lot !== "ADMIN");
       commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
-      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+      queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
       return { message: "Comment updated." };
     };
     const handleAddDocument = (doc) => setCovenantDocs((prev) => {
@@ -24844,6 +25126,10 @@ var FallingWatersPortal = (() => {
       store.set("fw_user", updatedUser);
       setUser(updatedUser);
       trackUserAccess(updatedUser);
+      queueSharedChangesSync(
+        isAdmin ? ["userDirectory"] : ["ownerActivity", "userDirectory", "primaryVoters"],
+        { mode: "merge" }
+      );
       return null;
     };
     const recomputeVotesFromLedger = (ledger, lotLabels = allLotLabels) => {
@@ -25000,6 +25286,7 @@ var FallingWatersPortal = (() => {
           fw_user_directory: userDirectory,
           fw_admin_access_entries: adminAccessEntries,
           fw_admin_access_grades: adminAccessGrades,
+          fw_admin_two_factor_registry: adminTwoFactorRegistry,
           fw_total_lots: totalLots,
           fw_vote_eligibility: eligibilityState,
           fw_last_backup_export_at: lastBackupExportAt || null,
@@ -25092,25 +25379,29 @@ var FallingWatersPortal = (() => {
         Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
           if (!String(key).startsWith("vote_")) return;
           if (!VALID_VOTE_CHOICES.has(choice)) return;
-          if (restoreMode === "missing" && store.get(key)) return;
-          store.set(key, choice);
+          const importedLot = normalizeLotLabel(String(key).slice(5));
+          const normalizedKey = importedLot ? `vote_${importedLot}` : key;
+          if (restoreMode === "missing" && store.get(normalizedKey)) return;
+          store.set(normalizedKey, choice);
         });
         Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
           store.set(`vote_${lotLabel}`, choice);
         });
+        migrateLegacyVoteStorageLots();
       }
-      const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
-      const nextComments = scopeFlags.comments ? restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments) : comments;
+      const importedComments = normalizeCommentCollectionLots(Array.isArray(candidate.fw_comments) ? candidate.fw_comments : []).value;
+      const nextCommentsRaw = scopeFlags.comments ? restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments) : comments;
+      const nextComments = normalizeCommentCollectionLots(nextCommentsRaw).value;
       const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
       const nextCovenantDocsRaw = scopeFlags.covenantDocs ? restoreMode === "replace" ? importedCovenantDocs : mergeCovenantDocsById(covenantDocs, importedCovenantDocs) : covenantDocs;
       const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
-      const nextOwnerActivity = scopeFlags.ownerActivity ? mergeObjectState(ownerActivity, candidate.fw_owner_activity) : ownerActivity;
-      const nextPrimaryRegistry = scopeFlags.primaryVoters ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry) : primaryVoterRegistry;
+      const nextOwnerActivity = scopeFlags.ownerActivity ? normalizeLotKeyedObjectState(mergeObjectState(ownerActivity, candidate.fw_owner_activity)).value : ownerActivity;
+      const nextPrimaryRegistry = scopeFlags.primaryVoters ? normalizeLotKeyedObjectState(mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)).value : primaryVoterRegistry;
       const importedTransferAudit = normalizePrimaryVoterTransferAuditEntries(candidate.fw_primary_voter_transfer_audit);
       const nextPrimaryTransferAudit = scopeFlags.primaryVoters ? restoreMode === "replace" ? importedTransferAudit : mergePrimaryVoterTransferAuditEntries(primaryVoterTransferAudit, importedTransferAudit) : primaryVoterTransferAudit;
-      const nextOutreach = scopeFlags.outreach ? mergeObjectState(outreachState, candidate.fw_outreach_state) : outreachState;
-      const nextUserDirectory = scopeFlags.userDirectory ? mergeObjectState(userDirectory, candidate.fw_user_directory) : userDirectory;
-      const nextEligibility = scopeFlags.eligibility ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility) : eligibilityState;
+      const nextOutreach = scopeFlags.outreach ? normalizeLotKeyedObjectState(mergeObjectState(outreachState, candidate.fw_outreach_state)).value : outreachState;
+      const nextUserDirectory = scopeFlags.userDirectory ? normalizeUserDirectoryLotsState(mergeObjectState(userDirectory, candidate.fw_user_directory)).value : userDirectory;
+      const nextEligibility = scopeFlags.eligibility ? normalizeLotKeyedObjectState(mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)).value : eligibilityState;
       const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
       const effectiveAdminEntries = scopeFlags.adminAccess ? (() => {
         if (restoreMode === "merge" || restoreMode === "missing") {
@@ -25120,6 +25411,21 @@ var FallingWatersPortal = (() => {
         return nextAdminEntries.length > 0 ? nextAdminEntries : adminAccessEntries;
       })() : adminAccessEntries;
       const nextAdminGrades = scopeFlags.adminAccess ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades) : adminAccessGrades;
+      const importedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(candidate.fw_admin_two_factor_registry);
+      const nextAdminTwoFactorRegistry = scopeFlags.adminAccess ? (() => {
+        const merged = restoreMode === "replace" ? importedAdminTwoFactorRegistry : {
+          ...normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
+          ...importedAdminTwoFactorRegistry
+        };
+        const allowed = new Set(effectiveAdminEntries.map((entry) => normalizeNameKey(entry)));
+        const filtered = {};
+        Object.entries(merged).forEach(([key, value]) => {
+          if (allowed.has(key)) {
+            filtered[key] = value;
+          }
+        });
+        return filtered;
+      })() : adminTwoFactorRegistry;
       const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
       if (scopeFlags.covenantFiles) {
         if (restoreMode === "merge" || restoreMode === "missing") {
@@ -25159,6 +25465,7 @@ var FallingWatersPortal = (() => {
       if (scopeFlags.adminAccess) {
         setAdminAccessEntries(effectiveAdminEntries);
         setAdminAccessGrades(nextAdminGrades);
+        setAdminTwoFactorRegistry(nextAdminTwoFactorRegistry);
       }
       const restoredUserRaw = candidate.fw_user;
       const restoredUser = scopeFlags.sessionUser && restoredUserRaw && typeof restoredUserRaw === "object" ? (() => {
@@ -25218,11 +25525,40 @@ var FallingWatersPortal = (() => {
         message: normalized.value ? "Database API URL updated." : "Database API URL cleared (same-origin /api will be used)."
       };
     };
-    const resolveDbApiUrl = (path) => {
+    const isLoopbackHost = (host) => /^(localhost|127\.0\.0\.1)$/i.test(String(host || "").trim());
+    const buildDbApiRequestUrls = (path) => {
       const safePath = String(path || "");
-      const base = String(dbApiBaseUrl || "").trim();
-      if (!base) return safePath;
-      return `${base.replace(/\/+$/, "")}${safePath}`;
+      const urls = [];
+      const seen = /* @__PURE__ */ new Set();
+      const addBase = (baseValue) => {
+        const base = String(baseValue || "").trim();
+        const url = base ? `${base.replace(/\/+$/, "")}${safePath}` : safePath;
+        if (seen.has(url)) return;
+        seen.add(url);
+        urls.push(url);
+      };
+      const explicitBase = String(dbApiBaseUrl || "").trim();
+      addBase(explicitBase);
+      const normalizedDefault = sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true });
+      const defaultBase = String(normalizedDefault?.value || "").trim();
+      if (!defaultBase || defaultBase === explicitBase) return urls;
+      let shouldTryDefaultFallback = !explicitBase;
+      if (!shouldTryDefaultFallback && explicitBase) {
+        let explicitHost = "";
+        try {
+          explicitHost = String(new URL(explicitBase).hostname || "");
+        } catch {
+          explicitHost = "";
+        }
+        const pageHost = typeof window !== "undefined" ? String(window.location?.hostname || "") : "";
+        if (isLoopbackHost(explicitHost) && !isLoopbackHost(pageHost)) {
+          shouldTryDefaultFallback = true;
+        }
+      }
+      if (shouldTryDefaultFallback) {
+        addBase(defaultBase);
+      }
+      return urls.length > 0 ? urls : [safePath];
     };
     const buildDbApiNetworkErrorMessage = (requestUrl, error) => {
       const baseMessage = error?.message || "Network request failed.";
@@ -25253,38 +25589,46 @@ var FallingWatersPortal = (() => {
       return `Could not reach Database API (${baseMessage}). ${hints.join("; ")}. Request URL: ${requestUrl}`;
     };
     const callDbApi = async (path, options = {}) => {
-      const requestUrl = resolveDbApiUrl(path);
-      let response;
-      try {
-        response = await fetch(requestUrl, {
-          headers: {
-            "Content-Type": "application/json",
-            ...options.headers || {}
-          },
-          ...options
-        });
-      } catch (error) {
-        throw new Error(buildDbApiNetworkErrorMessage(requestUrl, error));
-      }
-      const text = await response.text();
-      let parsed = {};
-      try {
-        parsed = text ? JSON.parse(text) : {};
-      } catch {
-        parsed = {};
-      }
-      if (!response.ok || parsed?.ok === false) {
+      const requestUrls = buildDbApiRequestUrls(path);
+      const failedMessages = [];
+      for (const requestUrl of requestUrls) {
+        let response;
+        try {
+          response = await fetch(requestUrl, {
+            headers: {
+              "Content-Type": "application/json",
+              ...options.headers || {}
+            },
+            ...options
+          });
+        } catch (error) {
+          failedMessages.push(buildDbApiNetworkErrorMessage(requestUrl, error));
+          continue;
+        }
+        const text = await response.text();
+        let parsed = {};
+        try {
+          parsed = text ? JSON.parse(text) : {};
+        } catch {
+          parsed = {};
+        }
+        if (response.ok && parsed?.ok !== false) {
+          return parsed;
+        }
         if (parsed?.error) {
-          throw new Error(parsed.error);
+          failedMessages.push(parsed.error);
+          continue;
         }
         if (response.status === 404) {
-          throw new Error(
+          failedMessages.push(
             `Database API request failed (404). Check that the saved API URL is only the API host (example: http://localhost:8787), not a command, and that the server is running. Request URL: ${requestUrl}`
           );
+          continue;
         }
-        throw new Error(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
+        failedMessages.push(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
       }
-      return parsed;
+      const suffix = requestUrls.length > 1 ? ` Tried URLs: ${requestUrls.join(", ")}` : "";
+      throw new Error(`${failedMessages[failedMessages.length - 1] || "Database API request failed."}${suffix}`);
     };
     const handleTestDbConnection = async () => {
       const result = await callDbApi("/api/db/health", { method: "GET" });
@@ -25361,8 +25705,14 @@ var FallingWatersPortal = (() => {
       }
     };
     const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError: reportError2 = false } = {}) => {
-      if (!dbApiBaseUrl) {
-        return { skipped: true };
+      const explicitBase = String(dbApiBaseUrl || "").trim();
+      const defaultBase = String(sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true })?.value || "").trim();
+      if (!explicitBase && !defaultBase) {
+        const error = "Database API URL is not configured for shared sync.";
+        if (reportError2) {
+          setSharedDataErr(error);
+        }
+        return { skipped: true, error };
       }
       const scopes = buildScopedRestoreSelection(scopeKeys, false);
       if (!hasSelectedRestoreScope(scopes)) {
@@ -25378,18 +25728,23 @@ var FallingWatersPortal = (() => {
         return { error: message };
       }
     };
-    const queueSharedChangesSync = (scopeKeys = []) => {
+    const queueSharedChangesSync = (scopeKeys = [], { mode = "merge" } = {}) => {
       const keys = Array.isArray(scopeKeys) ? scopeKeys : [];
       if (keys.length === 0) return;
       keys.forEach((key) => sharedSyncScopeQueueRef.current.add(key));
+      if (mode === "replace") {
+        sharedSyncModeRef.current = "replace";
+      }
       setSharedSyncNonce((value) => value + 1);
     };
     (0, import_react.useEffect)(() => {
-      if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
+      if (sharedSyncNonce === 0) return;
       const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
       if (queuedScopes.length === 0) return;
+      const queuedMode = sharedSyncModeRef.current === "replace" ? "replace" : "merge";
       sharedSyncScopeQueueRef.current.clear();
-      void pushSharedChangesToDb(queuedScopes, { mode: "merge" });
+      sharedSyncModeRef.current = "merge";
+      void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
     }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
     (0, import_react.useEffect)(() => {
       if (!user || !dbApiBaseUrl) return;
@@ -25508,14 +25863,22 @@ var FallingWatersPortal = (() => {
       nonEligibleLots: nonEligibleLotsCount,
       nonEligibleVotedLots: nonEligibleVotedLotsCount
     };
-    if (!user) return /* @__PURE__ */ import_react.default.createElement(LoginScreen, { onLogin: handleLogin, adminAccessEntries });
+    if (!user) {
+      return /* @__PURE__ */ import_react.default.createElement(
+        LoginScreen,
+        {
+          onLogin: handleLogin,
+          adminAccessEntries
+        }
+      );
+    }
     const navItems = [
       { id: "home", label: "Overview", icon: /* @__PURE__ */ import_react.default.createElement(Icon.home, null) },
       { id: "documents", label: "CC&R Documents", icon: /* @__PURE__ */ import_react.default.createElement(Icon.doc, null) },
       { id: "comparison", label: "Side-by-side compare", icon: /* @__PURE__ */ import_react.default.createElement(Icon.compare, null) },
       { id: "proposed", label: "Proposed One CC&R", icon: /* @__PURE__ */ import_react.default.createElement(Icon.star, null) },
       { id: "risks", label: "Risks of inaction", icon: /* @__PURE__ */ import_react.default.createElement(Icon.home2, null) },
-      { id: "str", label: "STR & Unified CC&R vote", icon: /* @__PURE__ */ import_react.default.createElement(Icon.vote, null) },
+      { id: "str", label: "Short-Term Rental (STR) & Unified CC&R vote", icon: /* @__PURE__ */ import_react.default.createElement(Icon.vote, null) },
       ...!user.isAdmin ? [{ id: "profile", label: "My profile", icon: /* @__PURE__ */ import_react.default.createElement(Icon.user, null) }] : [],
       { id: "comments", label: "Community comments", icon: /* @__PURE__ */ import_react.default.createElement(Icon.chat, null) },
       { id: "dashboard", label: "Dashboard", icon: /* @__PURE__ */ import_react.default.createElement(Icon.dash, null) },
@@ -25528,7 +25891,7 @@ var FallingWatersPortal = (() => {
       comparison: "Side-by-side comparison",
       proposed: "Proposed One Community CC&R",
       risks: "Risks of inaction",
-      str: "STR & Unified CC&R vote",
+      str: "Short-Term Rental (STR) & Unified CC&R vote",
       profile: "Resident profile",
       comments: "Community comments",
       dashboard: "Campaign dashboard",
@@ -25627,7 +25990,7 @@ var FallingWatersPortal = (() => {
         disabled: sharedDataBusy
       },
       sharedDataBusy ? "Refreshing\u2026" : "Refresh shared data"
-    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "STR & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment, onDelete: handleDeleteComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
+    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "Short-Term Rental (STR) & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment, onDelete: handleDeleteComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
       DashboardPage,
       {
         votes,

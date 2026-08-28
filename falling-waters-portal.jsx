@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -35,8 +35,17 @@ const LEGACY_SAMPLE_COMMENT_KEYS = new Set([
 const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
+const RETIRED_LOT_NUMBER_REPLACEMENTS = {
+  "26": "27R",
+  "27": "27R",
+  "28": "29R",
+  "29": "29R",
+};
 const MOBILE_BREAKPOINT_PX = 920;
-const MIN_LOGIN_SECRET_LENGTH = 4;
+const MIN_LOGIN_SECRET_LENGTH = 8;
+const TWO_FACTOR_CODE_DIGITS = 6;
+const TWO_FACTOR_STEP_SECONDS = 30;
+const TWO_FACTOR_WINDOW_STEPS = 2;
 const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
 const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
 const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -45,6 +54,7 @@ const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
 const PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
+const ADMIN_TWO_FACTOR_REGISTRY_KEY = "fw_admin_two_factor_registry";
 const DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
@@ -159,13 +169,21 @@ const todayLabel = () =>
 const isLegacySampleComment = (comment) =>
   LEGACY_SAMPLE_COMMENT_KEYS.has(`${comment?.lot || ""}|${comment?.name || ""}|${comment?.ts || ""}`);
 
+const normalizeLotToken = (value) =>
+  String(value || "")
+    .replace(/^lot\s*/i, "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+
 const normalizeLotLabel = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return null;
   if (raw.toLowerCase() === "admin") return "ADMIN";
-  const stripped = raw.replace(/^lot\s*/i, "").trim();
-  if (!stripped) return null;
-  return `Lot ${stripped}`;
+  const token = normalizeLotToken(raw);
+  if (!token) return null;
+  const canonicalToken = RETIRED_LOT_NUMBER_REPLACEMENTS[token] || token;
+  return `Lot ${canonicalToken}`;
 };
 
 const normalizeLoginSecret = (value) => String(value || "").trim();
@@ -182,8 +200,38 @@ const hashString = (value) => {
 const buildPrimaryCredentialHash = (lotLabel, secret) =>
   hashString(`${normalizeLotLabel(lotLabel) || String(lotLabel || "")}|${normalizeLoginSecret(secret)}`);
 
-const buildLotLabels = (totalLots) =>
-  Array.from({ length: Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) }, (_, idx) => `Lot ${idx + 1}`);
+const buildLotLabels = (totalLots) => {
+  const lotCount = Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS);
+  const labels = Array.from({ length: lotCount }, (_, idx) => {
+    const lotNumber = String(idx + 1);
+    const replacement = RETIRED_LOT_NUMBER_REPLACEMENTS[lotNumber];
+    return `Lot ${replacement || lotNumber}`;
+  });
+
+  labels.sort((a, b) => {
+    const left = normalizeLotToken(a);
+    const right = normalizeLotToken(b);
+    const leftMatch = left.match(/^(\d+)([A-Z]*)$/);
+    const rightMatch = right.match(/^(\d+)([A-Z]*)$/);
+    const leftNumber = leftMatch ? Number(leftMatch[1]) : Number.POSITIVE_INFINITY;
+    const rightNumber = rightMatch ? Number(rightMatch[1]) : Number.POSITIVE_INFINITY;
+    if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+    const leftSuffix = leftMatch?.[2] || "";
+    const rightSuffix = rightMatch?.[2] || "";
+    if (!leftSuffix && rightSuffix) return -1;
+    if (leftSuffix && !rightSuffix) return 1;
+    return leftSuffix.localeCompare(rightSuffix);
+  });
+
+  const deduped = [];
+  const seen = new Set();
+  labels.forEach((label) => {
+    if (seen.has(label)) return;
+    seen.add(label);
+    deduped.push(label);
+  });
+  return deduped;
+};
 
 const votesNeededForLots = (totalLots) =>
   Math.ceil((Math.max(MIN_TOTAL_LOTS, Number(totalLots) || DEFAULT_TOTAL_LOTS) * 2) / 3);
@@ -317,6 +365,150 @@ const normalizeCommentLots = (comment) => {
     .filter((lot) => !!lot && lot !== "ADMIN");
 };
 
+const isPlainObject = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+
+const normalizeLotKeyedObjectState = (value) => {
+  const source = isPlainObject(value) ? value : {};
+  const next = {};
+  let changed = false;
+  Object.entries(source).forEach(([rawLot, rawEntry]) => {
+    const normalizedLot = normalizeLotLabel(rawLot);
+    const targetLot = normalizedLot && normalizedLot !== "ADMIN" ? normalizedLot : rawLot;
+    if (targetLot !== rawLot) changed = true;
+    if (!Object.prototype.hasOwnProperty.call(next, targetLot)) {
+      next[targetLot] = rawEntry;
+      return;
+    }
+    const existing = next[targetLot];
+    if (isPlainObject(existing) && isPlainObject(rawEntry)) {
+      next[targetLot] = { ...existing, ...rawEntry };
+      changed = true;
+      return;
+    }
+    if ((existing === undefined || existing === null || existing === "") && rawEntry !== undefined) {
+      next[targetLot] = rawEntry;
+      changed = true;
+      return;
+    }
+    if (existing !== rawEntry) changed = true;
+  });
+  return { value: next, changed };
+};
+
+const normalizeVoteLedgerState = (value) => {
+  const source = isPlainObject(value) ? value : {};
+  const next = {};
+  let changed = false;
+  Object.entries(source).forEach(([rawLot, rawChoice]) => {
+    const normalizedLot = normalizeLotLabel(rawLot);
+    const targetLot = normalizedLot && normalizedLot !== "ADMIN" ? normalizedLot : rawLot;
+    if (targetLot !== rawLot) changed = true;
+    const normalizedChoice = String(rawChoice || "").trim().toLowerCase();
+    if (!["eliminate", "permit", "undecided"].includes(normalizedChoice)) {
+      changed = true;
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(next, targetLot)) {
+      next[targetLot] = normalizedChoice;
+      return;
+    }
+    if (next[targetLot] === normalizedChoice) return;
+    changed = true;
+    if (next[targetLot] === "undecided" && normalizedChoice !== "undecided") {
+      next[targetLot] = normalizedChoice;
+    }
+  });
+  return { value: next, changed };
+};
+
+const normalizeCommentCollectionLots = (value) => {
+  const source = Array.isArray(value) ? value : [];
+  let changed = !Array.isArray(value);
+  const next = source.map((comment) => {
+    if (!comment || typeof comment !== "object") return comment;
+    const normalizedLots = [...new Set(normalizeCommentLots(comment))];
+    const previousLots = Array.isArray(comment.lots) ? comment.lots : [];
+    const previousLot = String(comment.lot || "").trim();
+    const nextLot = normalizedLots[0] || normalizeLotLabel(comment.lot) || previousLot;
+    const lotsChanged =
+      previousLots.length !== normalizedLots.length
+      || previousLots.some((lot, idx) => lot !== normalizedLots[idx]);
+    if (!lotsChanged && previousLot === nextLot) return comment;
+    changed = true;
+    return {
+      ...comment,
+      lot: nextLot,
+      lots: normalizedLots.length > 0 ? normalizedLots : previousLots,
+    };
+  });
+  return { value: next, changed };
+};
+
+const normalizeUserProfileLots = (profile) => {
+  if (!profile || typeof profile !== "object") return { value: profile, changed: false };
+  const normalizedLots = normalizeUserLots(profile);
+  const previousLots = Array.isArray(profile.lots) ? profile.lots : [];
+  const lotsChanged =
+    previousLots.length !== normalizedLots.length
+    || previousLots.some((lot, idx) => lot !== normalizedLots[idx]);
+  const nextLotValue = profile.isAdmin
+    ? "ADMIN"
+    : normalizedLots.length === 0
+      ? String(profile.lot || "").trim()
+      : normalizedLots.length === 1
+        ? normalizedLots[0]
+        : normalizedLots.join(", ");
+  const lotChanged = String(profile.lot || "").trim() !== nextLotValue;
+  if (!lotsChanged && !lotChanged) return { value: profile, changed: false };
+  return {
+    value: {
+      ...profile,
+      lots: normalizedLots,
+      lot: nextLotValue,
+    },
+    changed: true,
+  };
+};
+
+const normalizeUserDirectoryLotsState = (value) => {
+  const source = isPlainObject(value) ? value : {};
+  const next = {};
+  let changed = false;
+  Object.entries(source).forEach(([key, record]) => {
+    if (!record || typeof record !== "object") {
+      next[key] = record;
+      return;
+    }
+    const normalized = normalizeUserProfileLots(record);
+    next[key] = normalized.value;
+    if (normalized.changed) changed = true;
+  });
+  return { value: next, changed };
+};
+
+const migrateLegacyVoteStorageLots = () => {
+  if (typeof localStorage === "undefined") return false;
+  const moves = [];
+  for (let idx = 0; idx < localStorage.length; idx += 1) {
+    const key = localStorage.key(idx);
+    if (!key || !key.startsWith("vote_")) continue;
+    const lotLabel = key.slice(5);
+    const normalizedLot = normalizeLotLabel(lotLabel);
+    if (!normalizedLot || normalizedLot === "ADMIN" || normalizedLot === lotLabel) continue;
+    const rawValue = localStorage.getItem(key);
+    if (rawValue === null) continue;
+    moves.push({ fromKey: key, toKey: `vote_${normalizedLot}`, rawValue });
+  }
+  if (moves.length === 0) return false;
+  moves.forEach(({ toKey, rawValue }) => {
+    if (localStorage.getItem(toKey) === null) localStorage.setItem(toKey, rawValue);
+  });
+  moves.forEach(({ fromKey }) => {
+    localStorage.removeItem(fromKey);
+  });
+  return true;
+};
+
 const userCanManageComment = (user, comment) => {
   if (!user || !comment) return false;
   if (user.isAdmin) return true;
@@ -355,6 +547,154 @@ const isPrimaryVoter = (user) =>
 
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const normalizeTwoFactorCode = (value) =>
+  String(value || "").replace(/\D+/g, "").slice(0, TWO_FACTOR_CODE_DIGITS);
+
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+const sanitizeBase32Secret = (secret) =>
+  String(secret || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+
+const randomBytes = (length = 20) => {
+  const size = Math.max(1, Number(length) || 20);
+  const bytes = new Uint8Array(size);
+  if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+    return bytes;
+  }
+  for (let idx = 0; idx < size; idx += 1) {
+    bytes[idx] = Math.floor(Math.random() * 256);
+  }
+  return bytes;
+};
+
+const base32Encode = (bytes) => {
+  let output = "";
+  let buffer = 0;
+  let bitsLeft = 0;
+  bytes.forEach((byte) => {
+    buffer = (buffer << 8) | byte;
+    bitsLeft += 8;
+    while (bitsLeft >= 5) {
+      output += BASE32_ALPHABET[(buffer >>> (bitsLeft - 5)) & 31];
+      bitsLeft -= 5;
+    }
+  });
+  if (bitsLeft > 0) {
+    output += BASE32_ALPHABET[(buffer << (5 - bitsLeft)) & 31];
+  }
+  return output;
+};
+
+const base32Decode = (secret) => {
+  const normalized = sanitizeBase32Secret(secret);
+  if (!normalized) return new Uint8Array(0);
+  let buffer = 0;
+  let bitsLeft = 0;
+  const output = [];
+  for (let idx = 0; idx < normalized.length; idx += 1) {
+    const value = BASE32_ALPHABET.indexOf(normalized[idx]);
+    if (value === -1) continue;
+    buffer = (buffer << 5) | value;
+    bitsLeft += 5;
+    if (bitsLeft >= 8) {
+      output.push((buffer >>> (bitsLeft - 8)) & 255);
+      bitsLeft -= 8;
+    }
+  }
+  return new Uint8Array(output);
+};
+
+const generateTotpSecret = (byteLength = 20) => base32Encode(randomBytes(byteLength));
+
+const createCounterBuffer = (counter) => {
+  const safeCounter = Math.max(0, Number(counter) || 0);
+  const high = Math.floor(safeCounter / 0x100000000);
+  const low = safeCounter >>> 0;
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setUint32(0, high);
+  view.setUint32(4, low);
+  return buffer;
+};
+
+const computeTotpCode = async (secret, counter, digits = TWO_FACTOR_CODE_DIGITS) => {
+  const normalizedSecret = sanitizeBase32Secret(secret);
+  if (!normalizedSecret) return null;
+  if (typeof window === "undefined" || !window.crypto?.subtle) return null;
+  const secretBytes = base32Decode(normalizedSecret);
+  if (secretBytes.length === 0) return null;
+  const key = await window.crypto.subtle.importKey(
+    "raw",
+    secretBytes,
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const signatureBuffer = await window.crypto.subtle.sign("HMAC", key, createCounterBuffer(counter));
+  const signature = new Uint8Array(signatureBuffer);
+  const offset = signature[signature.length - 1] & 0x0f;
+  const code =
+    (((signature[offset] & 0x7f) << 24)
+      | ((signature[offset + 1] & 0xff) << 16)
+      | ((signature[offset + 2] & 0xff) << 8)
+      | (signature[offset + 3] & 0xff))
+      % (10 ** digits);
+  return String(code).padStart(digits, "0");
+};
+
+const verifyTotpCode = async (secret, code, options = {}) => {
+  const normalizedSecret = sanitizeBase32Secret(secret);
+  const normalizedCode = normalizeTwoFactorCode(code);
+  if (!normalizedSecret || normalizedCode.length !== TWO_FACTOR_CODE_DIGITS) return false;
+  const windowSteps = Number.isInteger(options.windowSteps)
+    ? Math.max(0, options.windowSteps)
+    : TWO_FACTOR_WINDOW_STEPS;
+  const atMs = Number(options.atMs) || Date.now();
+  const currentCounter = Math.floor(atMs / 1000 / TWO_FACTOR_STEP_SECONDS);
+  for (let delta = -windowSteps; delta <= windowSteps; delta += 1) {
+    const candidateCounter = currentCounter + delta;
+    if (candidateCounter < 0) continue;
+    const expectedCode = await computeTotpCode(normalizedSecret, candidateCounter, TWO_FACTOR_CODE_DIGITS);
+    if (expectedCode && expectedCode === normalizedCode) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const normalizeAdminTwoFactorRegistry = (registry) => {
+  const raw = registry && typeof registry === "object" ? registry : {};
+  const next = {};
+  Object.entries(raw).forEach(([key, value]) => {
+    const record = value && typeof value === "object" ? value : {};
+    const name = String(record.name || "").trim();
+    const normalizedNameKey = normalizeNameKey(name || key);
+    const secret = sanitizeBase32Secret(record.secret);
+    if (!normalizedNameKey || !secret) return;
+    const enabled = record.enabled !== false;
+    next[normalizedNameKey] = {
+      name: name || key,
+      secret,
+      enabled,
+      enrolledAt: String(record.enrolledAt || "").trim() || "",
+      updatedAt: String(record.updatedAt || "").trim() || "",
+    };
+  });
+  return next;
+};
+
+const adminTwoFactorStatus = (name, adminTwoFactorRegistry = {}) => {
+  const key = normalizeNameKey(name);
+  if (!key) return { enabled: false, record: null };
+  const normalized = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
+  const record = normalized[key] || null;
+  return {
+    enabled: !!(record?.enabled && sanitizeBase32Secret(record.secret)),
+    record,
+  };
+};
 
 const normalizeAdminGrade = (grade) =>
   ADMIN_GRADE_OPTIONS.some((option) => option.value === grade) ? grade : DEFAULT_ADMIN_GRADE;
@@ -652,24 +992,35 @@ const buildScopedRestoreSelection = (enabledScopeKeys = [], defaultValue = false
 
 const mergeCommentsBySignature = (existingComments, incomingComments) => {
   const list = [];
-  const seen = new Set();
-  const add = (comment) => {
-    if (!comment || typeof comment !== "object") return;
-    const key = [
-      comment.id || "",
-      comment.name || "",
-      comment.lot || "",
-      comment.topic || "",
-      comment.stance || "",
-      comment.ts || "",
-      comment.text || "",
+  const indexByKey = new Map();
+  const buildKey = (comment, idx, source) => {
+    const rawId = comment?.id;
+    const normalizedId = rawId === 0 || rawId ? String(rawId).trim() : "";
+    if (normalizedId) return `id:${normalizedId}`;
+    return [
+      source,
+      idx,
+      comment?.name || "",
+      comment?.lot || "",
+      comment?.topic || "",
+      comment?.stance || "",
+      comment?.ts || "",
+      comment?.text || "",
     ].join("|");
-    if (seen.has(key)) return;
-    seen.add(key);
+  };
+  const add = (comment, idx, source) => {
+    if (!comment || typeof comment !== "object") return;
+    const key = buildKey(comment, idx, source);
+    const existingIdx = indexByKey.get(key);
+    if (Number.isInteger(existingIdx)) {
+      list[existingIdx] = comment;
+      return;
+    }
+    indexByKey.set(key, list.length);
     list.push(comment);
   };
-  (Array.isArray(existingComments) ? existingComments : []).forEach(add);
-  (Array.isArray(incomingComments) ? incomingComments : []).forEach(add);
+  (Array.isArray(existingComments) ? existingComments : []).forEach((comment, idx) => add(comment, idx, "existing"));
+  (Array.isArray(incomingComments) ? incomingComments : []).forEach((comment, idx) => add(comment, idx, "incoming"));
   return list;
 };
 
@@ -779,14 +1130,14 @@ const summarizeUploadedCovenant = (rawText, existingDocsCount) => {
 
   if (mentionsStr) {
     if (mentionsLeaseYear) {
-      points.push("STR/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
+      points.push("Short-Term Rental (STR)/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
     } else if (mentionsSevenNight) {
-      points.push("STR/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
+      points.push("Short-Term Rental (STR)/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
     } else {
-      points.push("STR/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
+      points.push("Short-Term Rental (STR)/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
     }
   } else {
-    points.push("STR/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
+    points.push("Short-Term Rental (STR)/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
   }
 
   points.push(
@@ -1024,9 +1375,15 @@ const S = {
 
 // ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin, adminAccessEntries }) {
-  const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary); const [err, setErr] = useState("");
-  const handle = (e) => {
+  const [lot, setLot] = useState("");
+  const [name, setName] = useState("");
+  const [pw, setPw] = useState("");
+  const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const handle = async (e) => {
     e.preventDefault();
+    if (busy) return;
     const trimmedName = name.trim();
     const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
     const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
@@ -1047,10 +1404,20 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
       isAdmin,
       loginSecret: pw,
     };
-    const loginError = onLogin(user);
+    setBusy(true);
+    let loginError = null;
+    try {
+      loginError = await onLogin(user);
+    } catch (error) {
+      loginError = error?.message || "Sign-in failed.";
+    } finally {
+      setBusy(false);
+    }
     if (loginError) {
       setErr(loginError);
+      return;
     }
+    setErr("");
   };
   return (
     <div style={{ minHeight:"100vh", background:C.forest, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
@@ -1073,6 +1440,7 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
               placeholder="e.g. Lot 36, Lot 37 (admins can leave blank)"
               value={lot}
               onChange={e=>setLot(e.target.value)}
+              disabled={busy}
               inputMode="text"
               autoCapitalize="none"
               autoCorrect="off"
@@ -1085,6 +1453,7 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
               placeholder="First and last name"
               value={name}
               onChange={e=>setName(e.target.value)}
+              disabled={busy}
               autoCapitalize="words"
               autoCorrect="on"
               enterKeyHint="next"
@@ -1100,9 +1469,10 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
             <input
               style={S.input}
               type="password"
-              placeholder={`Min ${MIN_LOGIN_SECRET_LENGTH} characters`}
+              placeholder={`Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`}
               value={pw}
               onChange={e=>setPw(e.target.value)}
+              disabled={busy}
               autoCapitalize="none"
               autoCorrect="off"
               enterKeyHint="go"
@@ -1110,13 +1480,13 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
           </div>
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Access role</label>
-            <select style={S.select} value={accessRole} onChange={e=>setAccessRole(e.target.value)}>
+            <select style={S.select} value={accessRole} onChange={e=>setAccessRole(e.target.value)} disabled={busy}>
               <option value={ACCESS_ROLES.primary}>Primary voter (can vote + comment)</option>
               <option value={ACCESS_ROLES.commentOnly}>Comment-only household member</option>
             </select>
           </div>
-          <button type="submit" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", padding:"11px 20px", fontSize:14 }}>
-            <Icon.lock/> Enter the portal
+          <button type="submit" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", padding:"11px 20px", fontSize:14 }} disabled={busy}>
+            <Icon.lock/> {busy ? "Signing in..." : "Enter the portal"}
           </button>
         </form>
         <div style={{ fontSize:11, color:C.muted, marginTop:16, textAlign:"center", lineHeight:1.6 }}>
@@ -1173,7 +1543,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           { num:totalLots, label:"Total lots", accent:C.forest },
           { num:votesNeeded, label:"Votes needed (2/3)", accent:C.stone },
           { num:communityEngaged, label:"Owners engaged", accent:"#2563EB" },
-          { num:`${yesPct}%`, label:"Supporting STR elimination", accent:C.danger },
+          { num:`${yesPct}%`, label:"Supporting Short-Term Rental (STR) elimination", accent:C.danger },
         ].map((s,i) => (
           <div key={i} style={S.statCard(s.accent)}>
             <div style={S.statNum}>{s.num}</div>
@@ -1194,8 +1564,8 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           </div>
         </div>
         <div style={S.card}>
-          <div style={S.cardTitle}>STR vote progress</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current STR policy preference within the one-community CC&R campaign</div>
+          <div style={S.cardTitle}>Short-Term Rental (STR) vote progress</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current Short-Term Rental (STR) policy preference within the one-community CC&R campaign</div>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} undecided · {notVotedLots} not voted</span><span>{yesPct}% support elimination</span></div>
           <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
             <div style={{ width:`${(votes.eliminate/totalLots)*100}%`, background:C.danger, transition:"width 1s" }}/>
@@ -1204,12 +1574,29 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
             <div style={{ width:`${(notVotedLots/totalLots)*100}%`, background:C.parchmentDark, transition:"width 1s" }}/>
           </div>
           <div style={{ display:"flex", gap:14, flexWrap:"wrap", fontSize:11, color:C.muted }}>
-            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate STRs ({votes.eliminate})</span>
-            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit STRs ({votes.permit})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate Short-Term Rentals (STRs) ({votes.eliminate})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit Short-Term Rentals (STRs) ({votes.permit})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:"#3B82F6", borderRadius:2, display:"inline-block" }}/> Undecided ({votes.undecided})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({notVotedLots})</span>
           </div>
           <div style={{ ...S.alert("warn"), marginTop:12, marginBottom:0, fontSize:12 }}>Need {votesNeeded} votes to eliminate STRs. Currently {Math.max(votesNeeded - votes.eliminate, 0)} votes short.</div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Why this matters — the urgent case for a unified CC&R</div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginTop:12 }}>
+          {[
+            { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
+            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable Short-Term Rental (STR) restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
+            { icon:"🐻", title:"Safety and community character", text:"Short-Term Rental (STR) guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
+          ].map((item,i) => (
+            <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
+              <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
+              <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.forest }}>{item.title}</div>
+              <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{item.text}</div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -1239,23 +1626,6 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           ))}
         </div>
       </div>
-
-      <div style={S.card}>
-        <div style={S.cardTitle}>Why this matters — the urgent case for a unified CC&R</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginTop:12 }}>
-          {[
-            { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
-            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
-            { icon:"🐻", title:"Safety and community character", text:"STR guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
-          ].map((item,i) => (
-            <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
-              <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
-              <div style={{ fontWeight:600, fontSize:13, marginBottom:6, color:C.forest }}>{item.title}</div>
-              <div style={{ fontSize:12, color:C.muted, lineHeight:1.6 }}>{item.text}</div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
@@ -1265,7 +1635,7 @@ const DEFAULT_COVENANT_DOCS = [
     { id:"2008", year:2008, title:"Master Declaration of CC&Rs", preparer:"Clear Creek Properties LLC · Balch & Bingham LLP", filed:"May 28, 2008", ref:"Deed Book 1479, Page 194 — Gilmer County", status:"original", statusLabel:"Original", sections:[
       { heading:"Amendment threshold", text:"Section 14.2(c): 67% of total Class A votes in the Association. By-Laws set a quorum of 10% for meetings. This is the foundational threshold against which all subsequent amendment attempts must be measured." },
       { heading:"Leasing (Section 10.4)", text:"Lots may be leased for residential purposes only. All leases shall be in writing and for a term of at least one (1) year. No hardship system — leasing was broadly permitted with a 1-year minimum. This is the original standard the working group proposes to restore." },
-      { heading:"Short-term rentals", text:"Silent on STRs by name — Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
+      { heading:"Short-term rentals", text:"Silent on Short-Term Rentals (STRs) by name — Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
       { heading:"Georgia POA Act", text:"Explicitly opted OUT of O.C.G.A. §44-3-220. The 2008 document states it was not intended to create a property owners' development within the meaning of that Act. This is a developer protection, not an owner protection." },
       { heading:"Minimum home size", text:"Not specified in the declaration — deferred entirely to the Architectural Review Board (ARB) and design guidelines. No square footage minimums are set in the 2008 document itself." },
       { heading:"Assessment cap", text:"No annual increase cap. Budget may be disapproved by 67% of Class A votes. The Board sets amounts at its discretion." },
@@ -1274,7 +1644,7 @@ const DEFAULT_COVENANT_DOCS = [
     ]},
     { id:"2014", year:2014, title:"Declaration of Covenants, Reservations and Restrictions", preparer:"Highland Falls LLC (post-bankruptcy declarant)", filed:"April 14, 2014", ref:"Deed Book 1860, Pages 188-202 — Gilmer/Pickens Counties", status:"active2014", statusLabel:"Active — Phase II lots", sections:[
       { heading:"Amendment threshold", text:"67% of members voting at a duly noticed meeting, with a 50% quorum required. This is meaningfully different from the 2008 document — with 50% quorum (100 lots present), only 67 votes could pass an amendment. The lower turnout required makes this easier to satisfy." },
-      { heading:"Short-term rentals — THE CRITICAL GAP", text:"Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable STR restriction. This is the gap the unified CC&R must close." },
+      { heading:"Short-term rentals — THE CRITICAL GAP", text:"Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable Short-Term Rental (STR) restriction. This is the gap the unified CC&R must close." },
       { heading:"Long-term leasing", text:"Also not addressed. The 2014 document contains no leasing section whatsoever, creating uncertainty for tenants, lenders, and title companies on Phase II lots." },
       { heading:"Minimum home size", text:"1,400 sf for single-level residences; 1,800 sf for two-level residences; minimum 1,400 sf on first floor. The only document of the three to specify minimums. The working group proposes restoring this standard in the unified CC&R." },
       { heading:"Assessment cap", text:"Maximum 10% annual increase without a member vote. The only document with a cap. This provision protects owners from unchecked dues increases and was quietly removed in the 2021 document." },
@@ -1730,12 +2100,12 @@ function ComparisonPage() {
     { topic:"Short-term rentals", c2008:"Silent — but 1-yr lease minimum effectively prohibits", c2014:"⚠ Completely silent — NO restriction confirmed by attorney", c2021:"Absolute ban — VRBO, Airbnb, HomeAway named (consent-form signers only)", risk:"critical", proposed:"Regulated permission: 7-night minimum stay, HOA registration, $1M liability insurance, occupancy limits, nuisance enforcement OR outright prohibition — community vote decides" },
     { topic:"Long-term leasing", c2014:"Not addressed", c2008:"Permitted; 1-year minimum; written lease required", c2021:"Near-total ban — hardship permit system only", risk:"high", proposed:"Restore 2008 standard: permitted, 1-year minimum, written lease, tenant gets docs, HOA notified within 30 days" },
     { topic:"Georgia POA Act", c2008:"Explicitly opted OUT", c2014:"Not addressed", c2021:"Explicitly opted IN", risk:"medium", proposed:"Adopt 2021 standard — submit to O.C.G.A. §44-3-220 for stronger enforcement authority and lender-friendly governance" },
-    { topic:"Minimum home size", c2008:"Not specified — deferred to ARB", c2014:"1,400 sf (1-level); 1,800 sf (2-level)", c2021:"Not specified — deferred to ACC", risk:"medium", proposed:"Restore 2014 standard with ACC variance process for unusual lots" },
+    { topic:"Minimum home size", c2008:"Not specified — deferred to Architectural Review Board (ARB)", c2014:"1,400 sf (1-level); 1,800 sf (2-level)", c2021:"Not specified — deferred to ACC", risk:"medium", proposed:"Restore 2014 standard with ACC variance process for unusual lots" },
     { topic:"Annual assessment cap", c2008:"No cap — 67% vote to disapprove budget", c2014:"Max 10% increase without member vote", c2021:"No cap — Board full discretion", risk:"medium", proposed:"Restore a 15% cap without member vote; increases above 15% require simple majority vote" },
     { topic:"Dispute resolution", c2008:"Mediation/arbitration encouraged; 80% to sue", c2014:"Not addressed", c2021:"2/3 vote to sue; no mediation requirement", risk:"medium", proposed:"Restore 2008 mediation-first requirement; keep 2021 litigation threshold (2/3 vote)" },
     { topic:"Lake & wetlands", c2008:"Comprehensive — 5 detailed sections", c2014:"Not addressed", c2021:"Comprehensive — mirrors 2008 with updates", risk:"low", proposed:"Retain 2021 lake/wetlands provisions verbatim" },
     { topic:"Duration", c2008:"Perpetual; 90% to terminate in first 20 yrs", c2014:"Expires Jan 1 2040; auto-renews 10 yrs", c2021:"Perpetual; auto-renews 20 yrs; 2/3 to change", risk:"low", proposed:"Adopt 2021 perpetual model for stability" },
-    { topic:"ACC / ARB authority", c2008:"ARB — Declarant appoints until all lots sold", c2014:"ACC appointed by Executive Board; detailed standards", c2021:"ACC 3–5 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk:"medium", proposed:"Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
+    { topic:"ACC / Architectural Review Board (ARB) authority", c2008:"Architectural Review Board (ARB) — Declarant appoints until all lots sold", c2014:"ACC appointed by Executive Board; detailed standards", c2021:"ACC 3–5 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk:"medium", proposed:"Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
     { topic:"Wildlife & outdoor safety rules", c2008:"Not addressed", c2014:"Not addressed", c2021:"Not addressed", risk:"new", proposed:"Future addition candidate: consider a dedicated wildlife and outdoor-safety section in a later amendment after one unified CC&R is adopted." },
   ];
   const risk = { critical:{ label:"Critical", c:C.danger, bg:C.dangerLight }, high:{ label:"High", c:"#9A3412", bg:"#FFEDD5" }, medium:{ label:"Medium", c:C.amber, bg:C.amberLight }, low:{ label:"Low", c:C.success, bg:C.successLight }, new:{ label:"New provision", c:"#6B21A8", bg:"#F3E8FF" } };
@@ -1745,7 +2115,7 @@ function ComparisonPage() {
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginBottom:12 }}>
         {[
           { title:"Biggest legal mismatch", body:"Only the 2021 document uses the strict 2/3 of all lots threshold. 2008 and 2014 rely on quorum-based meeting votes.", color:C.stone },
-          { title:"Biggest STR mismatch", body:"2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color:C.danger },
+          { title:"Biggest Short-Term Rental (STR) mismatch", body:"2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color:C.danger },
           { title:"Biggest owner-protection mismatch", body:"2014 capped annual dues increases at 10%, but 2008 and 2021 do not include a cap.", color:"#1D4ED8" },
         ].map((item, idx) => (
           <div key={idx} style={{ ...S.card, marginBottom:0, borderTop:`3px solid ${item.color}` }}>
@@ -1833,9 +2203,9 @@ function ProposedCovenantPage() {
       source: "Uses the stricter 2021 threshold to prevent low-turnout governance changes.",
     },
     {
-      article: "Article 3 — Leasing and STR Rule",
+      article: "Article 3 — Leasing and Short-Term Rental (STR) Rule",
       summary:
-        "No rentals under 12 months unless the community later approves a regulated STR framework by the same 2/3 standard.",
+        "No rentals under 12 months unless the community later approves a regulated Short-Term Rental (STR) framework by the same 2/3 standard.",
       source: "Restores original 2008 long-term leasing posture while creating explicit, enforceable STR clarity.",
     },
     {
@@ -1869,7 +2239,7 @@ function ProposedCovenantPage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 10 }}>
           {[
             {
-              title: "No single enforceable STR rule",
+              title: "No single enforceable Short-Term Rental (STR) rule",
               detail:
                 "Some lots remain unrestricted while others are restricted, increasing conflict, perceived unfairness, and enforcement failures.",
               color: C.danger,
@@ -1958,7 +2328,7 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
   return (
     <div>
       <div style={S.alert("warn")}>
-        <strong>STR &amp; Unified CC&amp;R Vote:</strong> this section captures each lot's STR policy preference as part of the one-community covenant adoption effort.
+        <strong>Short-Term Rental (STR) &amp; Unified CC&amp;R Vote:</strong> this section captures each lot's STR policy preference as part of the one-community covenant adoption effort.
       </div>
       <div style={{ ...S.card, background:`linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border:`1px solid ${C.danger}` }}>
         <div style={{ fontFamily:"Georgia,serif", fontSize:18, fontWeight:"bold", color:C.danger, marginBottom:8 }}>Short-Term Rentals — The Central Issue</div>
@@ -2669,7 +3039,6 @@ function AdminVotingPage({
       setTransferLot(lotLabels[0] || "");
     }
   }, [lotLabels, transferLot]);
-
   const checklistRows = dbChecklist?.rows || [
     { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
     { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
@@ -2998,6 +3367,7 @@ function AdminVotingPage({
         fw_user_directory: store.get("fw_user_directory"),
         fw_admin_access_entries: store.get("fw_admin_access_entries"),
         fw_admin_access_grades: store.get("fw_admin_access_grades"),
+        fw_admin_two_factor_registry: store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY),
         fw_total_lots: store.get("fw_total_lots"),
         fw_vote_eligibility: store.get("fw_vote_eligibility"),
       };
@@ -3017,6 +3387,7 @@ function AdminVotingPage({
         primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
         primary_voter_transfer_audit_records: transferAuditRows.length,
         admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
+        admin_two_factor_enabled: Object.values(normalizedAdminTwoFactorRegistry).filter((entry) => entry?.enabled && entry?.secret).length,
         user_directory_records: Object.keys(userDirectory || {}).length,
         covenant_docs: covenantDocCount,
         raw_storage_keys_exported: storageKeys.length,
@@ -4279,8 +4650,9 @@ export default function App() {
         ? savedTotalLots
         : DEFAULT_TOTAL_LOTS;
     const initialLotLabels = buildLotLabels(effectiveTotalLots);
-    const savedLedger = store.get("fw_vote_ledger");
-    if (savedLedger && typeof savedLedger === "object") {
+    const savedLedgerRaw = store.get("fw_vote_ledger");
+    const savedLedger = normalizeVoteLedgerState(savedLedgerRaw).value;
+    if (savedLedgerRaw && typeof savedLedgerRaw === "object") {
       return computeVoteTotalsFromLedger(savedLedger, initialLotLabels);
     }
     const savedVotes = store.get("fw_votes");
@@ -4305,45 +4677,45 @@ export default function App() {
     const savedVersion = store.get("fw_comments_data_version");
     if (savedVersion !== COMMENTS_DATA_VERSION) {
       const cleaned = safeSavedComments.filter((comment) => !isLegacySampleComment(comment));
-      store.set("fw_comments", cleaned);
+      const normalized = normalizeCommentCollectionLots(cleaned).value;
+      store.set("fw_comments", normalized);
       store.set("fw_comments_data_version", COMMENTS_DATA_VERSION);
-      return cleaned;
+      return normalized;
     }
-    return safeSavedComments.length ? safeSavedComments : SEED_COMMENTS;
+    return normalizeCommentCollectionLots(safeSavedComments.length ? safeSavedComments : SEED_COMMENTS).value;
   });
   const [covenantDocs, setCovenantDocs] = useState(() => {
     const saved = store.get("fw_covenant_docs");
     return Array.isArray(saved) && saved.length ? saved : DEFAULT_COVENANT_DOCS;
   });
-  const [ownerActivity, setOwnerActivity] = useState(() => store.get("fw_owner_activity") || {});
-  const [voteLedger, setVoteLedger] = useState(() => store.get("fw_vote_ledger") || {});
+  const [ownerActivity, setOwnerActivity] = useState(() => normalizeLotKeyedObjectState(store.get("fw_owner_activity")).value);
+  const [voteLedger, setVoteLedger] = useState(() => normalizeVoteLedgerState(store.get("fw_vote_ledger")).value);
   const [primaryVoterRegistry, setPrimaryVoterRegistry] = useState(() => {
-    const saved = store.get("fw_primary_voter_registry");
-    return saved && typeof saved === "object" ? saved : {};
+    return normalizeLotKeyedObjectState(store.get("fw_primary_voter_registry")).value;
   });
   const [primaryVoterTransferAudit, setPrimaryVoterTransferAudit] = useState(() =>
     normalizePrimaryVoterTransferAuditEntries(store.get(PRIMARY_VOTER_TRANSFER_AUDIT_KEY))
   );
   const [outreachState, setOutreachState] = useState(() => {
-    const saved = store.get("fw_outreach_state");
-    return saved && typeof saved === "object" ? saved : {};
+    return normalizeLotKeyedObjectState(store.get("fw_outreach_state")).value;
   });
   const [userDirectory, setUserDirectory] = useState(() => {
-    const saved = store.get("fw_user_directory");
-    return saved && typeof saved === "object" ? saved : {};
+    return normalizeUserDirectoryLotsState(store.get("fw_user_directory")).value;
   });
   const [adminAccessGrades, setAdminAccessGrades] = useState(() => {
     const saved = store.get("fw_admin_access_grades");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [adminTwoFactorRegistry, setAdminTwoFactorRegistry] = useState(() =>
+    normalizeAdminTwoFactorRegistry(store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY))
+  );
   const [totalLots, setTotalLots] = useState(() => {
     const saved = Number(store.get("fw_total_lots"));
     if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
     return DEFAULT_TOTAL_LOTS;
   });
   const [eligibilityState, setEligibilityState] = useState(() => {
-    const saved = store.get("fw_vote_eligibility");
-    return saved && typeof saved === "object" ? saved : {};
+    return normalizeLotKeyedObjectState(store.get("fw_vote_eligibility")).value;
   });
   const [lastBackupExportAt, setLastBackupExportAt] = useState(() => {
     const saved = store.get(LAST_BACKUP_EXPORT_KEY);
@@ -4375,12 +4747,26 @@ export default function App() {
   const [sharedDataMsg, setSharedDataMsg] = useState("");
   const [sharedDataErr, setSharedDataErr] = useState("");
   const sharedSyncScopeQueueRef = useRef(new Set());
+  const sharedSyncModeRef = useRef("merge");
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
 
+  useEffect(() => {
+    const migratedLegacyVotes = migrateLegacyVoteStorageLots();
+    if (migratedLegacyVotes) {
+      setVoteLedger((prev) => normalizeVoteLedgerState(prev).value);
+    }
+  }, []);
+
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
   useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+  useEffect(() => {
+    const deduped = mergeCommentsBySignature([], comments);
+    if (deduped.length !== comments.length) {
+      setComments(deduped);
+    }
+  }, [comments]);
   useEffect(() => { store.set("fw_covenant_docs", covenantDocs); }, [covenantDocs]);
   useEffect(() => { store.set("fw_owner_activity", ownerActivity); }, [ownerActivity]);
   useEffect(() => { store.set("fw_vote_ledger", voteLedger); }, [voteLedger]);
@@ -4390,6 +4776,7 @@ export default function App() {
   useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
   useEffect(() => { store.set("fw_admin_access_entries", adminAccessEntries); }, [adminAccessEntries]);
   useEffect(() => { store.set("fw_admin_access_grades", adminAccessGrades); }, [adminAccessGrades]);
+  useEffect(() => { store.set(ADMIN_TWO_FACTOR_REGISTRY_KEY, adminTwoFactorRegistry); }, [adminTwoFactorRegistry]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
@@ -4488,6 +4875,7 @@ export default function App() {
         updatedAt: todayLabel(),
       },
     }));
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
     return { message: `${safeName} grade set to ${adminGradeLabel(normalizedGrade)}.` };
   };
 
@@ -4508,7 +4896,48 @@ export default function App() {
         updatedAt: todayLabel(),
       },
     }));
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
     return { message: exists ? `${safeName} already had admin rights; grade updated.` : `${safeName} now has admin rights.` };
+  };
+
+  const handleSetAdminTwoFactor = (name, options = {}) => {
+    const safeName = String(name || "").trim();
+    if (!safeName) return { error: "Admin name is required for 2FA settings." };
+    if (!isAdminUserAllowed(safeName, adminAccessEntries)) {
+      return { error: `${safeName} is not in the approved admin list.` };
+    }
+    const key = normalizeNameKey(safeName);
+    const enable = options?.enabled !== false;
+    const normalizedSecret = sanitizeBase32Secret(options?.secret);
+    if (!enable) {
+      setAdminTwoFactorRegistry((prev) => {
+        const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+        delete next[key];
+        return next;
+      });
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+      return { message: `2FA disabled for ${safeName}.` };
+    }
+    if (normalizedSecret.length < 16) {
+      return { error: "2FA secret is invalid. Generate a new authenticator secret and try again." };
+    }
+    const nowLabel = todayLabel();
+    setAdminTwoFactorRegistry((prev) => {
+      const normalizedPrev = normalizeAdminTwoFactorRegistry(prev);
+      const existing = normalizedPrev[key] || {};
+      return {
+        ...normalizedPrev,
+        [key]: {
+          name: safeName,
+          secret: normalizedSecret,
+          enabled: true,
+          enrolledAt: existing.enrolledAt || nowLabel,
+          updatedAt: nowLabel,
+        },
+      };
+    });
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+    return { message: `2FA enabled for ${safeName}. Use your authenticator app code at admin login.` };
   };
 
   const handleRevokeAdminAccess = (name) => {
@@ -4525,6 +4954,12 @@ export default function App() {
       delete next[key];
       return next;
     });
+    setAdminTwoFactorRegistry((prev) => {
+      const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+      delete next[key];
+      return next;
+    });
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
     return { message: `${safeName} admin rights revoked.` };
   };
 
@@ -4700,7 +5135,7 @@ export default function App() {
     return { registry: nextRegistry };
   };
 
-  const handleLogin = (u) => {
+  const handleLogin = async (u) => {
     const lots = normalizeUserLots(u);
     const hasAdminApproval = isAdminUserAllowed(u.name, adminAccessEntries);
     const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
@@ -4709,7 +5144,7 @@ export default function App() {
       return "This account is not authorized for admin access. Contact the HOA administrator.";
     }
     const isAdmin = hasAdminApproval || requestedAdmin;
-    if (!isAdmin && loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+    if (loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
       return `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`;
     }
     const effectiveLots = isAdmin ? ["ADMIN"] : lots;
@@ -4737,6 +5172,12 @@ export default function App() {
     if (!isAdmin) {
       lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
     }
+    queueSharedChangesSync(
+      isAdmin
+        ? ["userDirectory"]
+        : ["ownerActivity", "userDirectory", "primaryVoters"],
+      { mode: "merge" }
+    );
     return null;
   };
   const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
@@ -4783,7 +5224,7 @@ export default function App() {
     setComments(prev => [c, ...prev]);
     const commentLots = normalizeCommentLots(c);
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: c.name }));
-    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
   };
   const handleDeleteComment = (commentId) => {
     const targetId = String(commentId);
@@ -4812,7 +5253,7 @@ export default function App() {
         return next;
       });
     }
-    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
     return { message: "Comment deleted." };
   };
   const handleUpdateComment = (commentId, updates = {}) => {
@@ -4866,7 +5307,7 @@ export default function App() {
       .map((lot) => normalizeLotLabel(lot))
       .filter((lot) => !!lot && lot !== "ADMIN");
     commentLots.forEach((lot) => trackOwner(lot, { commented: true, name: editedComment?.name || user?.name || "" }));
-    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"]);
+    queueSharedChangesSync(["comments", "ownerActivity", "userDirectory"], { mode: "replace" });
     return { message: "Comment updated." };
   };
   const handleAddDocument = (doc) =>
@@ -4915,6 +5356,12 @@ export default function App() {
     store.set("fw_user", updatedUser);
     setUser(updatedUser);
     trackUserAccess(updatedUser);
+    queueSharedChangesSync(
+      isAdmin
+        ? ["userDirectory"]
+        : ["ownerActivity", "userDirectory", "primaryVoters"],
+      { mode: "merge" }
+    );
     return null;
   };
 
@@ -5095,6 +5542,7 @@ export default function App() {
         fw_user_directory: userDirectory,
         fw_admin_access_entries: adminAccessEntries,
         fw_admin_access_grades: adminAccessGrades,
+        fw_admin_two_factor_registry: adminTwoFactorRegistry,
         fw_total_lots: totalLots,
         fw_vote_eligibility: eligibilityState,
         fw_last_backup_export_at: lastBackupExportAt || null,
@@ -5208,19 +5656,23 @@ export default function App() {
       Object.entries(importedLegacyVotes).forEach(([key, choice]) => {
         if (!String(key).startsWith("vote_")) return;
         if (!VALID_VOTE_CHOICES.has(choice)) return;
-        if (restoreMode === "missing" && store.get(key)) return;
-        store.set(key, choice);
+        const importedLot = normalizeLotLabel(String(key).slice(5));
+        const normalizedKey = importedLot ? `vote_${importedLot}` : key;
+        if (restoreMode === "missing" && store.get(normalizedKey)) return;
+        store.set(normalizedKey, choice);
       });
       Object.entries(nextVoteLedger).forEach(([lotLabel, choice]) => {
         store.set(`vote_${lotLabel}`, choice);
       });
+      migrateLegacyVoteStorageLots();
     }
 
-    const importedComments = Array.isArray(candidate.fw_comments) ? candidate.fw_comments : [];
-    const nextComments =
+    const importedComments = normalizeCommentCollectionLots(Array.isArray(candidate.fw_comments) ? candidate.fw_comments : []).value;
+    const nextCommentsRaw =
       scopeFlags.comments
         ? (restoreMode === "replace" ? importedComments : mergeCommentsBySignature(comments, importedComments))
         : comments;
+    const nextComments = normalizeCommentCollectionLots(nextCommentsRaw).value;
 
     const importedCovenantDocs = Array.isArray(candidate.fw_covenant_docs) ? candidate.fw_covenant_docs : [];
     const nextCovenantDocsRaw =
@@ -5230,10 +5682,10 @@ export default function App() {
     const nextCovenantDocs = consolidateCovenantDocs(nextCovenantDocsRaw).docs;
 
     const nextOwnerActivity = scopeFlags.ownerActivity
-      ? mergeObjectState(ownerActivity, candidate.fw_owner_activity)
+      ? normalizeLotKeyedObjectState(mergeObjectState(ownerActivity, candidate.fw_owner_activity)).value
       : ownerActivity;
     const nextPrimaryRegistry = scopeFlags.primaryVoters
-      ? mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)
+      ? normalizeLotKeyedObjectState(mergeObjectState(primaryVoterRegistry, candidate.fw_primary_voter_registry)).value
       : primaryVoterRegistry;
     const importedTransferAudit = normalizePrimaryVoterTransferAuditEntries(candidate.fw_primary_voter_transfer_audit);
     const nextPrimaryTransferAudit = scopeFlags.primaryVoters
@@ -5244,13 +5696,13 @@ export default function App() {
       )
       : primaryVoterTransferAudit;
     const nextOutreach = scopeFlags.outreach
-      ? mergeObjectState(outreachState, candidate.fw_outreach_state)
+      ? normalizeLotKeyedObjectState(mergeObjectState(outreachState, candidate.fw_outreach_state)).value
       : outreachState;
     const nextUserDirectory = scopeFlags.userDirectory
-      ? mergeObjectState(userDirectory, candidate.fw_user_directory)
+      ? normalizeUserDirectoryLotsState(mergeObjectState(userDirectory, candidate.fw_user_directory)).value
       : userDirectory;
     const nextEligibility = scopeFlags.eligibility
-      ? mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)
+      ? normalizeLotKeyedObjectState(mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)).value
       : eligibilityState;
     const nextAdminEntries = normalizeAdminAccessEntries(candidate.fw_admin_access_entries);
     const effectiveAdminEntries = scopeFlags.adminAccess
@@ -5265,6 +5717,26 @@ export default function App() {
     const nextAdminGrades = scopeFlags.adminAccess
       ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades)
       : adminAccessGrades;
+    const importedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(candidate.fw_admin_two_factor_registry);
+    const nextAdminTwoFactorRegistry = scopeFlags.adminAccess
+      ? (() => {
+          const merged =
+            restoreMode === "replace"
+              ? importedAdminTwoFactorRegistry
+              : {
+                  ...normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
+                  ...importedAdminTwoFactorRegistry,
+                };
+          const allowed = new Set(effectiveAdminEntries.map((entry) => normalizeNameKey(entry)));
+          const filtered = {};
+          Object.entries(merged).forEach(([key, value]) => {
+            if (allowed.has(key)) {
+              filtered[key] = value;
+            }
+          });
+          return filtered;
+        })()
+      : adminTwoFactorRegistry;
     const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
     if (scopeFlags.covenantFiles) {
       if (restoreMode === "merge" || restoreMode === "missing") {
@@ -5305,6 +5777,7 @@ export default function App() {
     if (scopeFlags.adminAccess) {
       setAdminAccessEntries(effectiveAdminEntries);
       setAdminAccessGrades(nextAdminGrades);
+      setAdminTwoFactorRegistry(nextAdminTwoFactorRegistry);
     }
 
     const restoredUserRaw = candidate.fw_user;
@@ -5381,11 +5854,44 @@ export default function App() {
     };
   };
 
-  const resolveDbApiUrl = (path) => {
+  const isLoopbackHost = (host) => /^(localhost|127\.0\.0\.1)$/i.test(String(host || "").trim());
+
+  const buildDbApiRequestUrls = (path) => {
     const safePath = String(path || "");
-    const base = String(dbApiBaseUrl || "").trim();
-    if (!base) return safePath;
-    return `${base.replace(/\/+$/, "")}${safePath}`;
+    const urls = [];
+    const seen = new Set();
+    const addBase = (baseValue) => {
+      const base = String(baseValue || "").trim();
+      const url = base ? `${base.replace(/\/+$/, "")}${safePath}` : safePath;
+      if (seen.has(url)) return;
+      seen.add(url);
+      urls.push(url);
+    };
+
+    const explicitBase = String(dbApiBaseUrl || "").trim();
+    addBase(explicitBase);
+
+    const normalizedDefault = sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true });
+    const defaultBase = String(normalizedDefault?.value || "").trim();
+    if (!defaultBase || defaultBase === explicitBase) return urls;
+
+    let shouldTryDefaultFallback = !explicitBase;
+    if (!shouldTryDefaultFallback && explicitBase) {
+      let explicitHost = "";
+      try {
+        explicitHost = String(new URL(explicitBase).hostname || "");
+      } catch {
+        explicitHost = "";
+      }
+      const pageHost = typeof window !== "undefined" ? String(window.location?.hostname || "") : "";
+      if (isLoopbackHost(explicitHost) && !isLoopbackHost(pageHost)) {
+        shouldTryDefaultFallback = true;
+      }
+    }
+    if (shouldTryDefaultFallback) {
+      addBase(defaultBase);
+    }
+    return urls.length > 0 ? urls : [safePath];
   };
 
   const buildDbApiNetworkErrorMessage = (requestUrl, error) => {
@@ -5421,38 +5927,46 @@ export default function App() {
   };
 
   const callDbApi = async (path, options = {}) => {
-    const requestUrl = resolveDbApiUrl(path);
-    let response;
-    try {
-      response = await fetch(requestUrl, {
-        headers: {
-          "Content-Type": "application/json",
-          ...(options.headers || {}),
-        },
-        ...options,
-      });
-    } catch (error) {
-      throw new Error(buildDbApiNetworkErrorMessage(requestUrl, error));
-    }
-    const text = await response.text();
-    let parsed = {};
-    try {
-      parsed = text ? JSON.parse(text) : {};
-    } catch {
-      parsed = {};
-    }
-    if (!response.ok || parsed?.ok === false) {
+    const requestUrls = buildDbApiRequestUrls(path);
+    const failedMessages = [];
+    for (const requestUrl of requestUrls) {
+      let response;
+      try {
+        response = await fetch(requestUrl, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          },
+          ...options,
+        });
+      } catch (error) {
+        failedMessages.push(buildDbApiNetworkErrorMessage(requestUrl, error));
+        continue;
+      }
+      const text = await response.text();
+      let parsed = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = {};
+      }
+      if (response.ok && parsed?.ok !== false) {
+        return parsed;
+      }
       if (parsed?.error) {
-        throw new Error(parsed.error);
+        failedMessages.push(parsed.error);
+        continue;
       }
       if (response.status === 404) {
-        throw new Error(
+        failedMessages.push(
           `Database API request failed (404). Check that the saved API URL is only the API host (example: http://localhost:8787), not a command, and that the server is running. Request URL: ${requestUrl}`
         );
+        continue;
       }
-      throw new Error(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
+      failedMessages.push(`Database API request failed (${response.status}). Request URL: ${requestUrl}`);
     }
-    return parsed;
+    const suffix = requestUrls.length > 1 ? ` Tried URLs: ${requestUrls.join(", ")}` : "";
+    throw new Error(`${failedMessages[failedMessages.length - 1] || "Database API request failed."}${suffix}`);
   };
 
   const handleTestDbConnection = async () => {
@@ -5536,8 +6050,14 @@ export default function App() {
   };
 
   const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError = false } = {}) => {
-    if (!dbApiBaseUrl) {
-      return { skipped: true };
+    const explicitBase = String(dbApiBaseUrl || "").trim();
+    const defaultBase = String(sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true })?.value || "").trim();
+    if (!explicitBase && !defaultBase) {
+      const error = "Database API URL is not configured for shared sync.";
+      if (reportError) {
+        setSharedDataErr(error);
+      }
+      return { skipped: true, error };
     }
     const scopes = buildScopedRestoreSelection(scopeKeys, false);
     if (!hasSelectedRestoreScope(scopes)) {
@@ -5554,19 +6074,24 @@ export default function App() {
     }
   };
 
-  const queueSharedChangesSync = (scopeKeys = []) => {
+  const queueSharedChangesSync = (scopeKeys = [], { mode = "merge" } = {}) => {
     const keys = Array.isArray(scopeKeys) ? scopeKeys : [];
     if (keys.length === 0) return;
     keys.forEach((key) => sharedSyncScopeQueueRef.current.add(key));
+    if (mode === "replace") {
+      sharedSyncModeRef.current = "replace";
+    }
     setSharedSyncNonce((value) => value + 1);
   };
 
   useEffect(() => {
-    if (!dbApiBaseUrl || sharedSyncNonce === 0) return;
+    if (sharedSyncNonce === 0) return;
     const queuedScopes = Array.from(sharedSyncScopeQueueRef.current);
     if (queuedScopes.length === 0) return;
+    const queuedMode = sharedSyncModeRef.current === "replace" ? "replace" : "merge";
     sharedSyncScopeQueueRef.current.clear();
-    void pushSharedChangesToDb(queuedScopes, { mode: "merge" });
+    sharedSyncModeRef.current = "merge";
+    void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
   }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
 
   useEffect(() => {
@@ -5695,7 +6220,14 @@ export default function App() {
     nonEligibleVotedLots: nonEligibleVotedLotsCount,
   };
 
-  if (!user) return <LoginScreen onLogin={handleLogin} adminAccessEntries={adminAccessEntries}/>;
+  if (!user) {
+    return (
+      <LoginScreen
+        onLogin={handleLogin}
+        adminAccessEntries={adminAccessEntries}
+      />
+    );
+  }
 
   const navItems = [
     { id:"home", label:"Overview", icon:<Icon.home/> },
@@ -5703,7 +6235,7 @@ export default function App() {
     { id:"comparison", label:"Side-by-side compare", icon:<Icon.compare/> },
     { id:"proposed", label:"Proposed One CC&R", icon:<Icon.star/> },
     { id:"risks", label:"Risks of inaction", icon:<Icon.home2/> },
-    { id:"str", label:"STR & Unified CC&R vote", icon:<Icon.vote/> },
+    { id:"str", label:"Short-Term Rental (STR) & Unified CC&R vote", icon:<Icon.vote/> },
     ...(!user.isAdmin ? [{ id:"profile", label:"My profile", icon:<Icon.user/> }] : []),
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
@@ -5717,7 +6249,7 @@ export default function App() {
     comparison:"Side-by-side comparison",
     proposed:"Proposed One Community CC&R",
     risks:"Risks of inaction",
-    str:"STR & Unified CC&R vote",
+    str:"Short-Term Rental (STR) & Unified CC&R vote",
     profile:"Resident profile",
     comments:"Community comments",
     dashboard:"Campaign dashboard",
@@ -5849,7 +6381,7 @@ export default function App() {
             >
               {sharedDataBusy ? "Refreshing…" : "Refresh shared data"}
             </button>
-            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>STR & Unified CC&R vote →</button>}
+            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>Short-Term Rental (STR) & Unified CC&R vote →</button>}
           </div>
         </div>
         <div style={contentStyle}>

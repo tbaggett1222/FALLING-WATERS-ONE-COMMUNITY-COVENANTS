@@ -55,7 +55,7 @@ const SCOPE_CONFIG = {
     includesAssets: false,
   },
   adminAccess: {
-    stateKeys: ["fw_admin_access_entries", "fw_admin_access_grades"],
+    stateKeys: ["fw_admin_access_entries", "fw_admin_access_grades", "fw_admin_two_factor_registry"],
     recordScopes: ["adminAccess", "adminAccessGrades"],
     includesAssets: false,
   },
@@ -165,6 +165,7 @@ const serializeBackup = (backup) => {
       : [],
     fw_admin_access_entries: Array.isArray(payload.fw_admin_access_entries) ? payload.fw_admin_access_entries : [],
     fw_admin_access_grades: payload.fw_admin_access_grades ?? {},
+    fw_admin_two_factor_registry: payload.fw_admin_two_factor_registry ?? {},
   };
 
   const rowsByScope = {
@@ -485,6 +486,7 @@ const buildBackupFromDatabase = async () => {
     fw_user_directory: userDirectory,
     fw_admin_access_entries: adminAccessEntries,
     fw_admin_access_grades: adminAccessGrades,
+    fw_admin_two_factor_registry: stateMap.fw_admin_two_factor_registry ?? {},
     fw_total_lots: stateMap.fw_total_lots ?? null,
     fw_vote_eligibility: voteEligibility,
     legacy_vote_entries: legacyVoteEntries,
