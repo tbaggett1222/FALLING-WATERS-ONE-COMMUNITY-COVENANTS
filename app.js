@@ -24955,6 +24955,10 @@ var FallingWatersPortal = (() => {
       if (!isAdmin) {
         lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
       }
+      queueSharedChangesSync(
+        isAdmin ? ["userDirectory"] : ["ownerActivity", "userDirectory", "primaryVoters"],
+        { mode: "merge" }
+      );
       return null;
     };
     const handleLogout = () => {
@@ -25122,6 +25126,10 @@ var FallingWatersPortal = (() => {
       store.set("fw_user", updatedUser);
       setUser(updatedUser);
       trackUserAccess(updatedUser);
+      queueSharedChangesSync(
+        isAdmin ? ["userDirectory"] : ["ownerActivity", "userDirectory", "primaryVoters"],
+        { mode: "merge" }
+      );
       return null;
     };
     const recomputeVotesFromLedger = (ledger, lotLabels = allLotLabels) => {
