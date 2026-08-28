@@ -21492,7 +21492,7 @@ var FallingWatersPortal = (() => {
   var MIN_TOTAL_LOTS = 1;
   var MOBILE_BREAKPOINT_PX = 920;
   var MIN_LOGIN_SECRET_LENGTH = 4;
-  var ADMIN_MIN_LOGIN_SECRET_LENGTH = 10;
+  var ADMIN_MIN_LOGIN_SECRET_LENGTH = 8;
   var TWO_FACTOR_CODE_DIGITS = 6;
   var TWO_FACTOR_STEP_SECONDS = 30;
   var TWO_FACTOR_WINDOW_STEPS = 1;
@@ -21767,7 +21767,6 @@ var FallingWatersPortal = (() => {
   var accessRoleLabel = (role) => normalizeAccessRole(role) === ACCESS_ROLES.commentOnly ? "Comment-only household member" : "Primary voter";
   var isPrimaryVoter = (user) => !user?.isAdmin && normalizeAccessRole(user?.accessRole) === ACCESS_ROLES.primary;
   var normalizeNameKey = (name) => String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
-  var isNumericOnlySecret = (secret) => /^\d+$/.test(String(secret || "").trim());
   var normalizeTwoFactorCode = (value) => String(value || "").replace(/\D+/g, "").slice(0, TWO_FACTOR_CODE_DIGITS);
   var BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   var sanitizeBase32Secret = (secret) => String(secret || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
@@ -22555,7 +22554,7 @@ var FallingWatersPortal = (() => {
       {
         style: S.input,
         type: "password",
-        placeholder: `Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH} and not numbers only`,
+        placeholder: `Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH}`,
         value: pw,
         onChange: (e) => setPw(e.target.value),
         disabled: busy,
@@ -25004,9 +25003,6 @@ var FallingWatersPortal = (() => {
       if (isAdmin) {
         if (loginSecret.length < ADMIN_MIN_LOGIN_SECRET_LENGTH) {
           return `Admin password must be at least ${ADMIN_MIN_LOGIN_SECRET_LENGTH} characters.`;
-        }
-        if (isNumericOnlySecret(loginSecret)) {
-          return "Admin password cannot be numbers only. Include letters or symbols.";
         }
         const twoFactor = adminTwoFactorStatus(u.name, adminTwoFactorRegistry);
         if (twoFactor.enabled) {

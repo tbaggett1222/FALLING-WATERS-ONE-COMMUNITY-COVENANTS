@@ -37,7 +37,7 @@ const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
 const MOBILE_BREAKPOINT_PX = 920;
 const MIN_LOGIN_SECRET_LENGTH = 4;
-const ADMIN_MIN_LOGIN_SECRET_LENGTH = 10;
+const ADMIN_MIN_LOGIN_SECRET_LENGTH = 8;
 const TWO_FACTOR_CODE_DIGITS = 6;
 const TWO_FACTOR_STEP_SECONDS = 30;
 const TWO_FACTOR_WINDOW_STEPS = 1;
@@ -360,8 +360,6 @@ const isPrimaryVoter = (user) =>
 
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
-
-const isNumericOnlySecret = (secret) => /^\d+$/.test(String(secret || "").trim());
 
 const normalizeTwoFactorCode = (value) =>
   String(value || "").replace(/\D+/g, "").slice(0, TWO_FACTOR_CODE_DIGITS);
@@ -1292,7 +1290,7 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
             <input
               style={S.input}
               type="password"
-              placeholder={`Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH} and not numbers only`}
+              placeholder={`Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH}`}
               value={pw}
               onChange={e=>setPw(e.target.value)}
               disabled={busy}
@@ -5145,9 +5143,6 @@ export default function App() {
     if (isAdmin) {
       if (loginSecret.length < ADMIN_MIN_LOGIN_SECRET_LENGTH) {
         return `Admin password must be at least ${ADMIN_MIN_LOGIN_SECRET_LENGTH} characters.`;
-      }
-      if (isNumericOnlySecret(loginSecret)) {
-        return "Admin password cannot be numbers only. Include letters or symbols.";
       }
       const twoFactor = adminTwoFactorStatus(u.name, adminTwoFactorRegistry);
       if (twoFactor.enabled) {
