@@ -23282,6 +23282,11 @@ var FallingWatersPortal = (() => {
     const [msg, setMsg] = (0, import_react.useState)("");
     const [err, setErr] = (0, import_react.useState)("");
     const lots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+    const normalizeLotInputDisplay = (value) => {
+      const parsedLots = parseLotsInput(value).filter((lot) => lot !== "ADMIN");
+      if (parsedLots.length === 0) return String(value || "");
+      return parsedLots.join(", ");
+    };
     const save = (e) => {
       e.preventDefault();
       const parsedLots = parseLotsInput(lotsInput).filter((lot) => lot !== "ADMIN");
@@ -23300,6 +23305,10 @@ var FallingWatersPortal = (() => {
         setErr(updateError);
         setMsg("");
         return;
+      }
+      const canonicalLotsInput = parsedLots.join(", ");
+      if (canonicalLotsInput && canonicalLotsInput !== lotsInput) {
+        setLotsInput(canonicalLotsInput);
       }
       setErr("");
       setMsg(
@@ -23322,12 +23331,13 @@ var FallingWatersPortal = (() => {
         style: S.input,
         value: lotsInput,
         onChange: (e) => setLotsInput(e.target.value),
+        onBlur: () => setLotsInput(normalizeLotInputDisplay(lotsInput)),
         placeholder: "e.g. Lot 36, Lot 37",
         autoCapitalize: "none",
         autoCorrect: "off",
         inputMode: "text"
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 6 } }, "Separate multiple lots with commas. Example: Lot 36, Lot 37.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (official lot voting)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: S.btn("primary") }, "Save profile"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Current lot voting status"), lots.length === 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, "No lots assigned."), lots.map((lot) => {
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 6 } }, "Separate multiple lots with commas. Example: Lot 36, Lot 37."), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Combined-lot support: entering Lot 26 or Lot 27 will save as Lot 27R, and Lot 28 or Lot 29 will save as Lot 29R.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (official lot voting)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: S.btn("primary") }, "Save profile"))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Current lot voting status"), lots.length === 0 && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, "No lots assigned."), lots.map((lot) => {
       const currentChoice = voteLedger[lot] || store.get(`vote_${lot}`) || null;
       return /* @__PURE__ */ import_react.default.createElement("div", { key: lot, style: { border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontWeight: 700, color: C.forest, fontSize: 13 } }, lot), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, marginTop: 4 } }, "Vote: ", choiceLabel(currentChoice)));
     }))));

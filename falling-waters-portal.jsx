@@ -2822,6 +2822,11 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const lots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+  const normalizeLotInputDisplay = (value) => {
+    const parsedLots = parseLotsInput(value).filter((lot) => lot !== "ADMIN");
+    if (parsedLots.length === 0) return String(value || "");
+    return parsedLots.join(", ");
+  };
 
   const save = (e) => {
     e.preventDefault();
@@ -2841,6 +2846,10 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
       setErr(updateError);
       setMsg("");
       return;
+    }
+    const canonicalLotsInput = parsedLots.join(", ");
+    if (canonicalLotsInput && canonicalLotsInput !== lotsInput) {
+      setLotsInput(canonicalLotsInput);
     }
     setErr("");
     setMsg(
@@ -2878,6 +2887,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
                 style={S.input}
                 value={lotsInput}
                 onChange={(e) => setLotsInput(e.target.value)}
+                onBlur={() => setLotsInput(normalizeLotInputDisplay(lotsInput))}
                 placeholder="e.g. Lot 36, Lot 37"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -2885,6 +2895,9 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
                 Separate multiple lots with commas. Example: Lot 36, Lot 37.
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                Combined-lot support: entering Lot 26 or Lot 27 will save as Lot 27R, and Lot 28 or Lot 29 will save as Lot 29R.
               </div>
             </div>
             <div style={{ marginBottom: 12 }}>
