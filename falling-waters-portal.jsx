@@ -40,7 +40,7 @@ const MIN_LOGIN_SECRET_LENGTH = 4;
 const ADMIN_MIN_LOGIN_SECRET_LENGTH = 8;
 const TWO_FACTOR_CODE_DIGITS = 6;
 const TWO_FACTOR_STEP_SECONDS = 30;
-const TWO_FACTOR_WINDOW_STEPS = 1;
+const TWO_FACTOR_WINDOW_STEPS = 2;
 const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
 const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
 const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -1314,6 +1314,9 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
                 autoCorrect="off"
                 disabled={busy}
               />
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                Codes refresh every {TWO_FACTOR_STEP_SECONDS} seconds. Use the newest code from your authenticator app (do not reuse an older code).
+              </div>
             </div>
           )}
           <div style={{ marginBottom:20 }}>
@@ -5155,7 +5158,7 @@ export default function App() {
         }
         const verified = await verifyTotpCode(twoFactor.record?.secret, providedCode);
         if (!verified) {
-          return "Authenticator code is incorrect or expired. Try the current code and check your device clock.";
+          return `Authenticator code is incorrect or expired. Codes rotate every ${TWO_FACTOR_STEP_SECONDS} seconds and cannot be reused. Enter the latest code and check your phone clock is set to automatic time.`;
         }
       }
     }

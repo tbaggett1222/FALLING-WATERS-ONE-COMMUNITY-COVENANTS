@@ -21495,7 +21495,7 @@ var FallingWatersPortal = (() => {
   var ADMIN_MIN_LOGIN_SECRET_LENGTH = 8;
   var TWO_FACTOR_CODE_DIGITS = 6;
   var TWO_FACTOR_STEP_SECONDS = 30;
-  var TWO_FACTOR_WINDOW_STEPS = 1;
+  var TWO_FACTOR_WINDOW_STEPS = 2;
   var DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
   var MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
   var MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -22576,7 +22576,7 @@ var FallingWatersPortal = (() => {
         autoCorrect: "off",
         disabled: busy
       }
-    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value), disabled: busy }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 }, disabled: busy }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " ", busy ? "Signing in..." : "Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 } }, "Codes refresh every ", TWO_FACTOR_STEP_SECONDS, " seconds. Use the newest code from your authenticator app (do not reuse an older code).")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value), disabled: busy }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 }, disabled: busy }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " ", busy ? "Signing in..." : "Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
   }
   function HomePage({ votes, stats, totalLots, votesNeeded }) {
     const communityEngaged = Math.min(totalLots, stats.votedLots);
@@ -25015,7 +25015,7 @@ var FallingWatersPortal = (() => {
           }
           const verified = await verifyTotpCode(twoFactor.record?.secret, providedCode);
           if (!verified) {
-            return "Authenticator code is incorrect or expired. Try the current code and check your device clock.";
+            return `Authenticator code is incorrect or expired. Codes rotate every ${TWO_FACTOR_STEP_SECONDS} seconds and cannot be reused. Enter the latest code and check your phone clock is set to automatic time.`;
           }
         }
       }
