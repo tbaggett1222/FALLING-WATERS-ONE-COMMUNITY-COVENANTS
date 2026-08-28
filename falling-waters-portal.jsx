@@ -942,14 +942,14 @@ const summarizeUploadedCovenant = (rawText, existingDocsCount) => {
 
   if (mentionsStr) {
     if (mentionsLeaseYear) {
-      points.push("STR/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
+      points.push("Short-Term Rental (STR)/Leasing signal: text references minimum one-year (or 12-month) leasing, aligning with stricter anti-STR posture.");
     } else if (mentionsSevenNight) {
-      points.push("STR/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
+      points.push("Short-Term Rental (STR)/Leasing signal: text references 7-night minimum or regulated short-term stays, suggesting a permit-with-rules model.");
     } else {
-      points.push("STR/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
+      points.push("Short-Term Rental (STR)/Leasing signal: text contains short-term rental language; verify whether it is a ban, regulated allowance, or undefined.");
     }
   } else {
-    points.push("STR/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
+    points.push("Short-Term Rental (STR)/Leasing signal: no explicit short-term rental keywords detected; this may recreate enforceability ambiguity for some lots.");
   }
 
   points.push(
@@ -1355,7 +1355,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           { num:totalLots, label:"Total lots", accent:C.forest },
           { num:votesNeeded, label:"Votes needed (2/3)", accent:C.stone },
           { num:communityEngaged, label:"Owners engaged", accent:"#2563EB" },
-          { num:`${yesPct}%`, label:"Supporting STR elimination", accent:C.danger },
+          { num:`${yesPct}%`, label:"Supporting Short-Term Rental (STR) elimination", accent:C.danger },
         ].map((s,i) => (
           <div key={i} style={S.statCard(s.accent)}>
             <div style={S.statNum}>{s.num}</div>
@@ -1376,8 +1376,8 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           </div>
         </div>
         <div style={S.card}>
-          <div style={S.cardTitle}>STR vote progress</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current STR policy preference within the one-community CC&R campaign</div>
+          <div style={S.cardTitle}>Short-Term Rental (STR) vote progress</div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:10 }}>Current Short-Term Rental (STR) policy preference within the one-community CC&R campaign</div>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:C.muted, marginBottom:4 }}><span>{votes.eliminate} eliminate · {votes.permit} permit · {votes.undecided} undecided · {notVotedLots} not voted</span><span>{yesPct}% support elimination</span></div>
           <div style={{ height:20, borderRadius:10, overflow:"hidden", display:"flex", margin:"8px 0" }}>
             <div style={{ width:`${(votes.eliminate/totalLots)*100}%`, background:C.danger, transition:"width 1s" }}/>
@@ -1386,8 +1386,8 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
             <div style={{ width:`${(notVotedLots/totalLots)*100}%`, background:C.parchmentDark, transition:"width 1s" }}/>
           </div>
           <div style={{ display:"flex", gap:14, flexWrap:"wrap", fontSize:11, color:C.muted }}>
-            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate STRs ({votes.eliminate})</span>
-            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit STRs ({votes.permit})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.danger, borderRadius:2, display:"inline-block" }}/> Eliminate Short-Term Rentals (STRs) ({votes.eliminate})</span>
+            <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.stone, borderRadius:2, display:"inline-block" }}/> Permit Short-Term Rentals (STRs) ({votes.permit})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:"#3B82F6", borderRadius:2, display:"inline-block" }}/> Undecided ({votes.undecided})</span>
             <span style={{ display:"flex", alignItems:"center", gap:4 }}><span style={{ width:10, height:10, background:C.parchmentDark, border:`1px solid ${C.border}`, borderRadius:2, display:"inline-block" }}/> Not voted ({notVotedLots})</span>
           </div>
@@ -1427,8 +1427,8 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginTop:12 }}>
           {[
             { icon:"⚖", title:"Three conflicting covenant sets", text:"Falling Waters currently operates under 2008, 2014, and 2021 declarations simultaneously. Title companies flag this when you try to sell. Lenders may decline to finance. Every month without a unified CC&R is a month this problem compounds." },
-            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable STR restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
-            { icon:"🐻", title:"Safety and community character", text:"STR guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
+            { icon:"🏠", title:"Short-term rental gap — confirmed by attorney", text:"Our attorney confirmed that 2014-lot owners have no enforceable Short-Term Rental (STR) restriction in their chain of title. Without a unified CC&R, the community cannot establish consistent STR rules. The STR question can only be settled by the vote you're being asked to participate in." },
+            { icon:"🐻", title:"Safety and community character", text:"Short-Term Rental (STR) guests don't always know our community rules — noise, parking, and fire safety. Wildlife-specific restrictions can be addressed in a future CC&R amendment. A unified CC&R with clear STR rules and guest conduct standards gives the HOA enforceable authority over behavior that puts residents at risk." },
           ].map((item,i) => (
             <div key={i} style={{ background:C.parchment, borderRadius:6, padding:"14px 16px" }}>
               <div style={{ fontSize:20, marginBottom:6 }}>{item.icon}</div>
@@ -1447,7 +1447,7 @@ const DEFAULT_COVENANT_DOCS = [
     { id:"2008", year:2008, title:"Master Declaration of CC&Rs", preparer:"Clear Creek Properties LLC · Balch & Bingham LLP", filed:"May 28, 2008", ref:"Deed Book 1479, Page 194 — Gilmer County", status:"original", statusLabel:"Original", sections:[
       { heading:"Amendment threshold", text:"Section 14.2(c): 67% of total Class A votes in the Association. By-Laws set a quorum of 10% for meetings. This is the foundational threshold against which all subsequent amendment attempts must be measured." },
       { heading:"Leasing (Section 10.4)", text:"Lots may be leased for residential purposes only. All leases shall be in writing and for a term of at least one (1) year. No hardship system — leasing was broadly permitted with a 1-year minimum. This is the original standard the working group proposes to restore." },
-      { heading:"Short-term rentals", text:"Silent on STRs by name — Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
+      { heading:"Short-term rentals", text:"Silent on Short-Term Rentals (STRs) by name — Airbnb/VRBO didn't exist in 2008. However, the 1-year minimum lease requirement in Section 10.4 effectively prohibited rentals shorter than 12 months from day one. Our attorney has confirmed this." },
       { heading:"Georgia POA Act", text:"Explicitly opted OUT of O.C.G.A. §44-3-220. The 2008 document states it was not intended to create a property owners' development within the meaning of that Act. This is a developer protection, not an owner protection." },
       { heading:"Minimum home size", text:"Not specified in the declaration — deferred entirely to the Architectural Review Board (ARB) and design guidelines. No square footage minimums are set in the 2008 document itself." },
       { heading:"Assessment cap", text:"No annual increase cap. Budget may be disapproved by 67% of Class A votes. The Board sets amounts at its discretion." },
@@ -1456,7 +1456,7 @@ const DEFAULT_COVENANT_DOCS = [
     ]},
     { id:"2014", year:2014, title:"Declaration of Covenants, Reservations and Restrictions", preparer:"Highland Falls LLC (post-bankruptcy declarant)", filed:"April 14, 2014", ref:"Deed Book 1860, Pages 188-202 — Gilmer/Pickens Counties", status:"active2014", statusLabel:"Active — Phase II lots", sections:[
       { heading:"Amendment threshold", text:"67% of members voting at a duly noticed meeting, with a 50% quorum required. This is meaningfully different from the 2008 document — with 50% quorum (100 lots present), only 67 votes could pass an amendment. The lower turnout required makes this easier to satisfy." },
-      { heading:"Short-term rentals — THE CRITICAL GAP", text:"Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable STR restriction. This is the gap the unified CC&R must close." },
+      { heading:"Short-term rentals — THE CRITICAL GAP", text:"Completely silent. No rental restriction of any kind appears in this document. Our attorney has confirmed that under Georgia law, which disfavors restrictions on land use, a 2014-lot owner whose chain of title does not include the 2008 document has no enforceable Short-Term Rental (STR) restriction. This is the gap the unified CC&R must close." },
       { heading:"Long-term leasing", text:"Also not addressed. The 2014 document contains no leasing section whatsoever, creating uncertainty for tenants, lenders, and title companies on Phase II lots." },
       { heading:"Minimum home size", text:"1,400 sf for single-level residences; 1,800 sf for two-level residences; minimum 1,400 sf on first floor. The only document of the three to specify minimums. The working group proposes restoring this standard in the unified CC&R." },
       { heading:"Assessment cap", text:"Maximum 10% annual increase without a member vote. The only document with a cap. This provision protects owners from unchecked dues increases and was quietly removed in the 2021 document." },
@@ -1912,12 +1912,12 @@ function ComparisonPage() {
     { topic:"Short-term rentals", c2008:"Silent — but 1-yr lease minimum effectively prohibits", c2014:"⚠ Completely silent — NO restriction confirmed by attorney", c2021:"Absolute ban — VRBO, Airbnb, HomeAway named (consent-form signers only)", risk:"critical", proposed:"Regulated permission: 7-night minimum stay, HOA registration, $1M liability insurance, occupancy limits, nuisance enforcement OR outright prohibition — community vote decides" },
     { topic:"Long-term leasing", c2014:"Not addressed", c2008:"Permitted; 1-year minimum; written lease required", c2021:"Near-total ban — hardship permit system only", risk:"high", proposed:"Restore 2008 standard: permitted, 1-year minimum, written lease, tenant gets docs, HOA notified within 30 days" },
     { topic:"Georgia POA Act", c2008:"Explicitly opted OUT", c2014:"Not addressed", c2021:"Explicitly opted IN", risk:"medium", proposed:"Adopt 2021 standard — submit to O.C.G.A. §44-3-220 for stronger enforcement authority and lender-friendly governance" },
-    { topic:"Minimum home size", c2008:"Not specified — deferred to ARB", c2014:"1,400 sf (1-level); 1,800 sf (2-level)", c2021:"Not specified — deferred to ACC", risk:"medium", proposed:"Restore 2014 standard with ACC variance process for unusual lots" },
+    { topic:"Minimum home size", c2008:"Not specified — deferred to Architectural Review Board (ARB)", c2014:"1,400 sf (1-level); 1,800 sf (2-level)", c2021:"Not specified — deferred to ACC", risk:"medium", proposed:"Restore 2014 standard with ACC variance process for unusual lots" },
     { topic:"Annual assessment cap", c2008:"No cap — 67% vote to disapprove budget", c2014:"Max 10% increase without member vote", c2021:"No cap — Board full discretion", risk:"medium", proposed:"Restore a 15% cap without member vote; increases above 15% require simple majority vote" },
     { topic:"Dispute resolution", c2008:"Mediation/arbitration encouraged; 80% to sue", c2014:"Not addressed", c2021:"2/3 vote to sue; no mediation requirement", risk:"medium", proposed:"Restore 2008 mediation-first requirement; keep 2021 litigation threshold (2/3 vote)" },
     { topic:"Lake & wetlands", c2008:"Comprehensive — 5 detailed sections", c2014:"Not addressed", c2021:"Comprehensive — mirrors 2008 with updates", risk:"low", proposed:"Retain 2021 lake/wetlands provisions verbatim" },
     { topic:"Duration", c2008:"Perpetual; 90% to terminate in first 20 yrs", c2014:"Expires Jan 1 2040; auto-renews 10 yrs", c2021:"Perpetual; auto-renews 20 yrs; 2/3 to change", risk:"low", proposed:"Adopt 2021 perpetual model for stability" },
-    { topic:"ACC / ARB authority", c2008:"ARB — Declarant appoints until all lots sold", c2014:"ACC appointed by Executive Board; detailed standards", c2021:"ACC 3–5 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk:"medium", proposed:"Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
+    { topic:"ACC / Architectural Review Board (ARB) authority", c2008:"Architectural Review Board (ARB) — Declarant appoints until all lots sold", c2014:"ACC appointed by Executive Board; detailed standards", c2021:"ACC 3–5 members; 2-year terms; 'BOD?ACC' confusion in 2026 draft", risk:"medium", proposed:"Clearly separate: ACC handles architecture, Board handles governance; Board appoints ACC but cannot override architectural decisions" },
     { topic:"Wildlife & outdoor safety rules", c2008:"Not addressed", c2014:"Not addressed", c2021:"Not addressed", risk:"new", proposed:"Future addition candidate: consider a dedicated wildlife and outdoor-safety section in a later amendment after one unified CC&R is adopted." },
   ];
   const risk = { critical:{ label:"Critical", c:C.danger, bg:C.dangerLight }, high:{ label:"High", c:"#9A3412", bg:"#FFEDD5" }, medium:{ label:"Medium", c:C.amber, bg:C.amberLight }, low:{ label:"Low", c:C.success, bg:C.successLight }, new:{ label:"New provision", c:"#6B21A8", bg:"#F3E8FF" } };
@@ -1927,7 +1927,7 @@ function ComparisonPage() {
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:12, marginBottom:12 }}>
         {[
           { title:"Biggest legal mismatch", body:"Only the 2021 document uses the strict 2/3 of all lots threshold. 2008 and 2014 rely on quorum-based meeting votes.", color:C.stone },
-          { title:"Biggest STR mismatch", body:"2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color:C.danger },
+          { title:"Biggest Short-Term Rental (STR) mismatch", body:"2014 has no STR language, 2008 implied restriction by 1-year leases, and 2021 has explicit prohibition only for consent-form signers.", color:C.danger },
           { title:"Biggest owner-protection mismatch", body:"2014 capped annual dues increases at 10%, but 2008 and 2021 do not include a cap.", color:"#1D4ED8" },
         ].map((item, idx) => (
           <div key={idx} style={{ ...S.card, marginBottom:0, borderTop:`3px solid ${item.color}` }}>
@@ -2015,9 +2015,9 @@ function ProposedCovenantPage() {
       source: "Uses the stricter 2021 threshold to prevent low-turnout governance changes.",
     },
     {
-      article: "Article 3 — Leasing and STR Rule",
+      article: "Article 3 — Leasing and Short-Term Rental (STR) Rule",
       summary:
-        "No rentals under 12 months unless the community later approves a regulated STR framework by the same 2/3 standard.",
+        "No rentals under 12 months unless the community later approves a regulated Short-Term Rental (STR) framework by the same 2/3 standard.",
       source: "Restores original 2008 long-term leasing posture while creating explicit, enforceable STR clarity.",
     },
     {
@@ -2051,7 +2051,7 @@ function ProposedCovenantPage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginTop: 10 }}>
           {[
             {
-              title: "No single enforceable STR rule",
+              title: "No single enforceable Short-Term Rental (STR) rule",
               detail:
                 "Some lots remain unrestricted while others are restricted, increasing conflict, perceived unfairness, and enforcement failures.",
               color: C.danger,
@@ -2140,7 +2140,7 @@ function STRPage({ user, votes, voteLedger, onVote, totalLots, votesNeeded }) {
   return (
     <div>
       <div style={S.alert("warn")}>
-        <strong>STR &amp; Unified CC&amp;R Vote:</strong> this section captures each lot's STR policy preference as part of the one-community covenant adoption effort.
+        <strong>Short-Term Rental (STR) &amp; Unified CC&amp;R Vote:</strong> this section captures each lot's STR policy preference as part of the one-community covenant adoption effort.
       </div>
       <div style={{ ...S.card, background:`linear-gradient(135deg, ${C.dangerLight}, #FFF7ED)`, border:`1px solid ${C.danger}` }}>
         <div style={{ fontFamily:"Georgia,serif", fontSize:18, fontWeight:"bold", color:C.danger, marginBottom:8 }}>Short-Term Rentals — The Central Issue</div>
@@ -6026,7 +6026,7 @@ export default function App() {
     { id:"comparison", label:"Side-by-side compare", icon:<Icon.compare/> },
     { id:"proposed", label:"Proposed One CC&R", icon:<Icon.star/> },
     { id:"risks", label:"Risks of inaction", icon:<Icon.home2/> },
-    { id:"str", label:"STR & Unified CC&R vote", icon:<Icon.vote/> },
+    { id:"str", label:"Short-Term Rental (STR) & Unified CC&R vote", icon:<Icon.vote/> },
     ...(!user.isAdmin ? [{ id:"profile", label:"My profile", icon:<Icon.user/> }] : []),
     { id:"comments", label:"Community comments", icon:<Icon.chat/> },
     { id:"dashboard", label:"Dashboard", icon:<Icon.dash/> },
@@ -6040,7 +6040,7 @@ export default function App() {
     comparison:"Side-by-side comparison",
     proposed:"Proposed One Community CC&R",
     risks:"Risks of inaction",
-    str:"STR & Unified CC&R vote",
+    str:"Short-Term Rental (STR) & Unified CC&R vote",
     profile:"Resident profile",
     comments:"Community comments",
     dashboard:"Campaign dashboard",
@@ -6172,7 +6172,7 @@ export default function App() {
             >
               {sharedDataBusy ? "Refreshing…" : "Refresh shared data"}
             </button>
-            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>STR & Unified CC&R vote →</button>}
+            {page !== "str" && <button style={S.btn("stone")} onClick={() => setPage("str")}>Short-Term Rental (STR) & Unified CC&R vote →</button>}
           </div>
         </div>
         <div style={contentStyle}>
