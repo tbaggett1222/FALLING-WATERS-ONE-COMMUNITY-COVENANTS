@@ -37,7 +37,9 @@ const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
 const RETIRED_LOT_NUMBER_REPLACEMENTS = {
   "26": "27R",
+  "27": "27R",
   "28": "29R",
+  "29": "29R",
 };
 const MOBILE_BREAKPOINT_PX = 920;
 const MIN_LOGIN_SECRET_LENGTH = 8;

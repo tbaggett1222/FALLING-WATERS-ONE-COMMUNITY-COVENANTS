@@ -21492,7 +21492,9 @@ var FallingWatersPortal = (() => {
   var MIN_TOTAL_LOTS = 1;
   var RETIRED_LOT_NUMBER_REPLACEMENTS = {
     "26": "27R",
-    "28": "29R"
+    "27": "27R",
+    "28": "29R",
+    "29": "29R"
   };
   var MOBILE_BREAKPOINT_PX = 920;
   var MIN_LOGIN_SECRET_LENGTH = 8;
