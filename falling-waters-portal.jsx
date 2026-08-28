@@ -37,6 +37,10 @@ const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
 const MOBILE_BREAKPOINT_PX = 920;
 const MIN_LOGIN_SECRET_LENGTH = 4;
+const ADMIN_MIN_LOGIN_SECRET_LENGTH = 10;
+const TWO_FACTOR_CODE_DIGITS = 6;
+const TWO_FACTOR_STEP_SECONDS = 30;
+const TWO_FACTOR_WINDOW_STEPS = 1;
 const DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
 const MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
 const MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -45,6 +49,7 @@ const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
 const PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
+const ADMIN_TWO_FACTOR_REGISTRY_KEY = "fw_admin_two_factor_registry";
 const DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
 const MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
@@ -355,6 +360,156 @@ const isPrimaryVoter = (user) =>
 
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const isNumericOnlySecret = (secret) => /^\d+$/.test(String(secret || "").trim());
+
+const normalizeTwoFactorCode = (value) =>
+  String(value || "").replace(/\D+/g, "").slice(0, TWO_FACTOR_CODE_DIGITS);
+
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+const sanitizeBase32Secret = (secret) =>
+  String(secret || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+
+const randomBytes = (length = 20) => {
+  const size = Math.max(1, Number(length) || 20);
+  const bytes = new Uint8Array(size);
+  if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+    return bytes;
+  }
+  for (let idx = 0; idx < size; idx += 1) {
+    bytes[idx] = Math.floor(Math.random() * 256);
+  }
+  return bytes;
+};
+
+const base32Encode = (bytes) => {
+  let output = "";
+  let buffer = 0;
+  let bitsLeft = 0;
+  bytes.forEach((byte) => {
+    buffer = (buffer << 8) | byte;
+    bitsLeft += 8;
+    while (bitsLeft >= 5) {
+      output += BASE32_ALPHABET[(buffer >>> (bitsLeft - 5)) & 31];
+      bitsLeft -= 5;
+    }
+  });
+  if (bitsLeft > 0) {
+    output += BASE32_ALPHABET[(buffer << (5 - bitsLeft)) & 31];
+  }
+  return output;
+};
+
+const base32Decode = (secret) => {
+  const normalized = sanitizeBase32Secret(secret);
+  if (!normalized) return new Uint8Array(0);
+  let buffer = 0;
+  let bitsLeft = 0;
+  const output = [];
+  for (let idx = 0; idx < normalized.length; idx += 1) {
+    const value = BASE32_ALPHABET.indexOf(normalized[idx]);
+    if (value === -1) continue;
+    buffer = (buffer << 5) | value;
+    bitsLeft += 5;
+    if (bitsLeft >= 8) {
+      output.push((buffer >>> (bitsLeft - 8)) & 255);
+      bitsLeft -= 8;
+    }
+  }
+  return new Uint8Array(output);
+};
+
+const generateTotpSecret = (byteLength = 20) => base32Encode(randomBytes(byteLength));
+
+const createCounterBuffer = (counter) => {
+  const safeCounter = Math.max(0, Number(counter) || 0);
+  const high = Math.floor(safeCounter / 0x100000000);
+  const low = safeCounter >>> 0;
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setUint32(0, high);
+  view.setUint32(4, low);
+  return buffer;
+};
+
+const computeTotpCode = async (secret, counter, digits = TWO_FACTOR_CODE_DIGITS) => {
+  const normalizedSecret = sanitizeBase32Secret(secret);
+  if (!normalizedSecret) return null;
+  if (typeof window === "undefined" || !window.crypto?.subtle) return null;
+  const secretBytes = base32Decode(normalizedSecret);
+  if (secretBytes.length === 0) return null;
+  const key = await window.crypto.subtle.importKey(
+    "raw",
+    secretBytes,
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const signatureBuffer = await window.crypto.subtle.sign("HMAC", key, createCounterBuffer(counter));
+  const signature = new Uint8Array(signatureBuffer);
+  const offset = signature[signature.length - 1] & 0x0f;
+  const code =
+    (((signature[offset] & 0x7f) << 24)
+      | ((signature[offset + 1] & 0xff) << 16)
+      | ((signature[offset + 2] & 0xff) << 8)
+      | (signature[offset + 3] & 0xff))
+      % (10 ** digits);
+  return String(code).padStart(digits, "0");
+};
+
+const verifyTotpCode = async (secret, code, options = {}) => {
+  const normalizedSecret = sanitizeBase32Secret(secret);
+  const normalizedCode = normalizeTwoFactorCode(code);
+  if (!normalizedSecret || normalizedCode.length !== TWO_FACTOR_CODE_DIGITS) return false;
+  const windowSteps = Number.isInteger(options.windowSteps)
+    ? Math.max(0, options.windowSteps)
+    : TWO_FACTOR_WINDOW_STEPS;
+  const atMs = Number(options.atMs) || Date.now();
+  const currentCounter = Math.floor(atMs / 1000 / TWO_FACTOR_STEP_SECONDS);
+  for (let delta = -windowSteps; delta <= windowSteps; delta += 1) {
+    const candidateCounter = currentCounter + delta;
+    if (candidateCounter < 0) continue;
+    const expectedCode = await computeTotpCode(normalizedSecret, candidateCounter, TWO_FACTOR_CODE_DIGITS);
+    if (expectedCode && expectedCode === normalizedCode) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const normalizeAdminTwoFactorRegistry = (registry) => {
+  const raw = registry && typeof registry === "object" ? registry : {};
+  const next = {};
+  Object.entries(raw).forEach(([key, value]) => {
+    const record = value && typeof value === "object" ? value : {};
+    const name = String(record.name || "").trim();
+    const normalizedNameKey = normalizeNameKey(name || key);
+    const secret = sanitizeBase32Secret(record.secret);
+    if (!normalizedNameKey || !secret) return;
+    const enabled = record.enabled !== false;
+    next[normalizedNameKey] = {
+      name: name || key,
+      secret,
+      enabled,
+      enrolledAt: String(record.enrolledAt || "").trim() || "",
+      updatedAt: String(record.updatedAt || "").trim() || "",
+    };
+  });
+  return next;
+};
+
+const adminTwoFactorStatus = (name, adminTwoFactorRegistry = {}) => {
+  const key = normalizeNameKey(name);
+  if (!key) return { enabled: false, record: null };
+  const normalized = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
+  const record = normalized[key] || null;
+  return {
+    enabled: !!(record?.enabled && sanitizeBase32Secret(record.secret)),
+    record,
+  };
+};
 
 const normalizeAdminGrade = (grade) =>
   ADMIN_GRADE_OPTIONS.some((option) => option.value === grade) ? grade : DEFAULT_ADMIN_GRADE;
@@ -1034,12 +1189,20 @@ const S = {
 };
 
 // ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, adminAccessEntries }) {
-  const [lot, setLot] = useState(""); const [name, setName] = useState(""); const [pw, setPw] = useState(""); const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary); const [err, setErr] = useState("");
-  const handle = (e) => {
+function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
+  const [lot, setLot] = useState("");
+  const [name, setName] = useState("");
+  const [pw, setPw] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const handle = async (e) => {
     e.preventDefault();
+    if (busy) return;
     const trimmedName = name.trim();
     const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
+    const twoFactorState = adminTwoFactorStatus(trimmedName, adminTwoFactorRegistry);
     const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
     if ((!hasAdminApproval && lots.length === 0) || !trimmedName || pw.length < MIN_LOGIN_SECRET_LENGTH) {
       setErr(`Please enter your name, lot number(s), and a password (min ${MIN_LOGIN_SECRET_LENGTH} characters).`);
@@ -1057,11 +1220,27 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
       accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole),
       isAdmin,
       loginSecret: pw,
+      twoFactorCode: normalizeTwoFactorCode(otpCode),
     };
-    const loginError = onLogin(user);
+    if (isAdmin && twoFactorState.enabled && normalizeTwoFactorCode(otpCode).length !== TWO_FACTOR_CODE_DIGITS) {
+      setErr(`Enter the ${TWO_FACTOR_CODE_DIGITS}-digit authenticator code for admin sign-in.`);
+      return;
+    }
+    setBusy(true);
+    let loginError = null;
+    try {
+      loginError = await onLogin(user);
+    } catch (error) {
+      loginError = error?.message || "Sign-in failed.";
+    } finally {
+      setBusy(false);
+    }
     if (loginError) {
       setErr(loginError);
+      return;
     }
+    setErr("");
+    setOtpCode("");
   };
   return (
     <div style={{ minHeight:"100vh", background:C.forest, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
@@ -1084,6 +1263,7 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
               placeholder="e.g. Lot 36, Lot 37 (admins can leave blank)"
               value={lot}
               onChange={e=>setLot(e.target.value)}
+              disabled={busy}
               inputMode="text"
               autoCapitalize="none"
               autoCorrect="off"
@@ -1096,6 +1276,7 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
               placeholder="First and last name"
               value={name}
               onChange={e=>setName(e.target.value)}
+              disabled={busy}
               autoCapitalize="words"
               autoCorrect="on"
               enterKeyHint="next"
@@ -1111,23 +1292,41 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
             <input
               style={S.input}
               type="password"
-              placeholder={`Min ${MIN_LOGIN_SECRET_LENGTH} characters`}
+              placeholder={`Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH} and not numbers only`}
               value={pw}
               onChange={e=>setPw(e.target.value)}
+              disabled={busy}
               autoCapitalize="none"
               autoCorrect="off"
               enterKeyHint="go"
             />
           </div>
+          {isAdminUserAllowed(name.trim(), adminAccessEntries) && (
+            <div style={{ marginBottom: 20 }}>
+              <label style={S.label}>Authenticator code (admin 2FA)</label>
+              <input
+                style={S.input}
+                type="text"
+                value={otpCode}
+                onChange={(e) => setOtpCode(normalizeTwoFactorCode(e.target.value))}
+                placeholder={`${TWO_FACTOR_CODE_DIGITS}-digit code (required only if admin 2FA is enabled)`}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoCapitalize="none"
+                autoCorrect="off"
+                disabled={busy}
+              />
+            </div>
+          )}
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Access role</label>
-            <select style={S.select} value={accessRole} onChange={e=>setAccessRole(e.target.value)}>
+            <select style={S.select} value={accessRole} onChange={e=>setAccessRole(e.target.value)} disabled={busy}>
               <option value={ACCESS_ROLES.primary}>Primary voter (can vote + comment)</option>
               <option value={ACCESS_ROLES.commentOnly}>Comment-only household member</option>
             </select>
           </div>
-          <button type="submit" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", padding:"11px 20px", fontSize:14 }}>
-            <Icon.lock/> Enter the portal
+          <button type="submit" style={{ ...S.btn("primary"), width:"100%", justifyContent:"center", padding:"11px 20px", fontSize:14 }} disabled={busy}>
+            <Icon.lock/> {busy ? "Signing in..." : "Enter the portal"}
           </button>
         </form>
         <div style={{ fontSize:11, color:C.muted, marginTop:16, textAlign:"center", lineHeight:1.6 }}>
@@ -2559,6 +2758,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
 function AdminVotingPage({
+  currentUserName,
   comments,
   ownerActivity,
   voteLedger,
@@ -2569,6 +2769,7 @@ function AdminVotingPage({
   userDirectory,
   adminAccessEntries,
   adminAccessGrades,
+  adminTwoFactorRegistry,
   totalLots,
   votesNeeded,
   isMobile,
@@ -2593,6 +2794,7 @@ function AdminVotingPage({
   onSetAdminAccessGrade,
   onGrantAdminAccess,
   onRevokeAdminAccess,
+  onSetAdminTwoFactor,
   onTransferPrimaryVoter,
 }) {
   const [filter, setFilter] = useState("all");
@@ -2627,6 +2829,11 @@ function AdminVotingPage({
   const [transferNote, setTransferNote] = useState("");
   const [transferMsg, setTransferMsg] = useState("");
   const [transferErr, setTransferErr] = useState("");
+  const [twoFactorAdminName, setTwoFactorAdminName] = useState("");
+  const [twoFactorSecret, setTwoFactorSecret] = useState("");
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
+  const [twoFactorMsg, setTwoFactorMsg] = useState("");
+  const [twoFactorErr, setTwoFactorErr] = useState("");
   const effectiveBackupHealthThresholdDays =
     Number.isInteger(Number(backupHealthThresholdDays)) &&
     Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
@@ -2654,17 +2861,28 @@ function AdminVotingPage({
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
   const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
+  const normalizedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
   const approvedAdminRows = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => {
     const nameKey = normalizeNameKey(entry);
     const gradeRecord = adminAccessGrades?.[nameKey] || {};
     const grade = normalizeAdminGrade(gradeRecord.grade || DEFAULT_ADMIN_GRADE);
+    const twoFactorRecord = normalizedAdminTwoFactorRegistry[nameKey] || null;
     return {
       name: entry,
       nameKey,
       grade,
       gradeUpdatedAt: gradeRecord.updatedAt || "",
+      twoFactorEnabled: !!(twoFactorRecord?.enabled && twoFactorRecord?.secret),
+      twoFactorUpdatedAt: twoFactorRecord?.updatedAt || "",
+      twoFactorEnrolledAt: twoFactorRecord?.enrolledAt || "",
     };
   });
+  const selectedTwoFactorKey = normalizeNameKey(twoFactorAdminName);
+  const selectedTwoFactorRecord = selectedTwoFactorKey ? normalizedAdminTwoFactorRegistry[selectedTwoFactorKey] : null;
+  const normalizedTwoFactorSecret = sanitizeBase32Secret(twoFactorSecret);
+  const twoFactorUri = normalizedTwoFactorSecret
+    ? `otpauth://totp/${encodeURIComponent("FallingWatersHOA")}:${encodeURIComponent(twoFactorAdminName || "admin")}?secret=${normalizedTwoFactorSecret}&issuer=${encodeURIComponent("FallingWatersHOA")}&digits=${TWO_FACTOR_CODE_DIGITS}&period=${TWO_FACTOR_STEP_SECONDS}`
+    : "";
 
   useEffect(() => {
     setLotCountInput(String(totalLots));
@@ -2680,6 +2898,24 @@ function AdminVotingPage({
       setTransferLot(lotLabels[0] || "");
     }
   }, [lotLabels, transferLot]);
+  useEffect(() => {
+    if (approvedAdminRows.length === 0) {
+      setTwoFactorAdminName("");
+      return;
+    }
+    const currentName = String(currentUserName || "").trim();
+    const preferred = approvedAdminRows.find((row) => normalizeNameKey(row.name) === normalizeNameKey(currentName));
+    const hasCurrentSelection = approvedAdminRows.some((row) => row.name === twoFactorAdminName);
+    if (!hasCurrentSelection) {
+      setTwoFactorAdminName(preferred?.name || approvedAdminRows[0].name);
+    }
+  }, [approvedAdminRows, currentUserName, twoFactorAdminName]);
+  useEffect(() => {
+    const key = normalizeNameKey(twoFactorAdminName);
+    const record = key ? normalizedAdminTwoFactorRegistry[key] : null;
+    setTwoFactorSecret(record?.secret || "");
+    setTwoFactorEnabled(!!(record?.enabled && record?.secret));
+  }, [twoFactorAdminName, normalizedAdminTwoFactorRegistry]);
 
   const checklistRows = dbChecklist?.rows || [
     { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
@@ -3009,6 +3245,7 @@ function AdminVotingPage({
         fw_user_directory: store.get("fw_user_directory"),
         fw_admin_access_entries: store.get("fw_admin_access_entries"),
         fw_admin_access_grades: store.get("fw_admin_access_grades"),
+        fw_admin_two_factor_registry: store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY),
         fw_total_lots: store.get("fw_total_lots"),
         fw_vote_eligibility: store.get("fw_vote_eligibility"),
       };
@@ -3028,6 +3265,7 @@ function AdminVotingPage({
         primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
         primary_voter_transfer_audit_records: transferAuditRows.length,
         admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
+        admin_two_factor_enabled: Object.values(normalizedAdminTwoFactorRegistry).filter((entry) => entry?.enabled && entry?.secret).length,
         user_directory_records: Object.keys(userDirectory || {}).length,
         covenant_docs: covenantDocCount,
         raw_storage_keys_exported: storageKeys.length,
@@ -3101,6 +3339,35 @@ function AdminVotingPage({
     }
     setGradeMsg(result?.message || `Admin access removed for ${name}.`);
     setTimeout(() => setGradeMsg(""), 3500);
+  };
+
+  const generateAdminTwoFactorSecret = () => {
+    setTwoFactorErr("");
+    setTwoFactorMsg("");
+    const generated = generateTotpSecret(20);
+    setTwoFactorSecret(generated);
+    setTwoFactorEnabled(true);
+    setTwoFactorMsg("New authenticator secret generated. Save settings to enforce 2FA.");
+    setTimeout(() => setTwoFactorMsg(""), 4500);
+  };
+
+  const saveAdminTwoFactor = () => {
+    setTwoFactorErr("");
+    setTwoFactorMsg("");
+    if (!twoFactorAdminName) {
+      setTwoFactorErr("Select an approved admin name first.");
+      return;
+    }
+    const result = onSetAdminTwoFactor?.(twoFactorAdminName, {
+      enabled: twoFactorEnabled,
+      secret: twoFactorSecret,
+    });
+    if (result?.error) {
+      setTwoFactorErr(result.error);
+      return;
+    }
+    setTwoFactorMsg(result?.message || "2FA settings saved.");
+    setTimeout(() => setTwoFactorMsg(""), 4500);
   };
 
   const handleImport = async (event) => {
@@ -3488,6 +3755,7 @@ function AdminVotingPage({
               <tr>
                 <th style={S.th}>Approved admin</th>
                 <th style={S.th}>Access grade</th>
+                <th style={S.th}>2FA status</th>
                 <th style={S.th}>Last updated</th>
                 <th style={S.th}>Actions</th>
               </tr>
@@ -3495,7 +3763,7 @@ function AdminVotingPage({
             <tbody>
               {approvedAdminRows.length === 0 && (
                 <tr>
-                  <td style={S.td} colSpan={4}>No admin names configured.</td>
+                  <td style={S.td} colSpan={5}>No admin names configured.</td>
                 </tr>
               )}
               {approvedAdminRows.map((row) => (
@@ -3512,6 +3780,14 @@ function AdminVotingPage({
                       ))}
                     </select>
                   </td>
+                  <td style={S.td}>
+                    <span style={S.badge(row.twoFactorEnabled ? C.success : C.amber, row.twoFactorEnabled ? C.successLight : C.amberLight)}>
+                      {row.twoFactorEnabled ? "Enabled" : "Not enabled"}
+                    </span>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                      {row.twoFactorUpdatedAt ? `Updated ${row.twoFactorUpdatedAt}` : "No authenticator secret saved"}
+                    </div>
+                  </td>
                   <td style={S.td}>{row.gradeUpdatedAt || "—"}</td>
                   <td style={S.td}>
                     <button
@@ -3526,6 +3802,78 @@ function AdminVotingPage({
             </tbody>
           </table>
         </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Admin sign-in 2FA (authenticator app)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Enable two-factor authentication for each approved admin. Once enabled, that admin must provide a valid 6-digit authenticator code at login.
+        </div>
+        {twoFactorErr && <div style={S.alert("danger")}>{twoFactorErr}</div>}
+        {twoFactorMsg && <div style={S.alert("success")}>{twoFactorMsg}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, alignItems: "end", marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>Admin account</label>
+            <select
+              style={S.select}
+              value={twoFactorAdminName}
+              onChange={(event) => setTwoFactorAdminName(event.target.value)}
+              disabled={approvedAdminRows.length === 0}
+            >
+              {approvedAdminRows.length === 0 && <option value="">No admins available</option>}
+              {approvedAdminRows.map((row) => (
+                <option key={row.nameKey} value={row.name}>{row.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>2FA status</label>
+            <select
+              style={S.select}
+              value={twoFactorEnabled ? "enabled" : "disabled"}
+              onChange={(event) => setTwoFactorEnabled(event.target.value === "enabled")}
+              disabled={!twoFactorAdminName}
+            >
+              <option value="enabled">Enabled (require code)</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={S.label}>Authenticator secret (Base32)</label>
+          <input
+            style={S.input}
+            value={twoFactorSecret}
+            onChange={(event) => setTwoFactorSecret(sanitizeBase32Secret(event.target.value))}
+            placeholder="Generate secret or paste existing key"
+            autoCapitalize="none"
+            autoCorrect="off"
+            inputMode="text"
+            disabled={!twoFactorAdminName}
+          />
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+            Add this key to Google Authenticator, Microsoft Authenticator, or 1Password. Only letters A-Z and numbers 2-7 are valid.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={generateAdminTwoFactorSecret} disabled={!twoFactorAdminName}>
+            Generate new secret
+          </button>
+          <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={saveAdminTwoFactor} disabled={!twoFactorAdminName}>
+            Save 2FA settings
+          </button>
+        </div>
+        {selectedTwoFactorRecord?.enrolledAt && (
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
+            Current enrollment for {twoFactorAdminName}: enabled on {selectedTwoFactorRecord.enrolledAt}
+          </div>
+        )}
+        {twoFactorUri && (
+          <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", background: C.parchment }}>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Manual setup URI (advanced)</div>
+            <div style={{ fontSize: 11, color: C.ink, lineHeight: 1.5, wordBreak: "break-all" }}>{twoFactorUri}</div>
+          </div>
+        )}
       </div>
 
       <div style={S.card}>
@@ -4347,6 +4695,9 @@ export default function App() {
     const saved = store.get("fw_admin_access_grades");
     return saved && typeof saved === "object" ? saved : {};
   });
+  const [adminTwoFactorRegistry, setAdminTwoFactorRegistry] = useState(() =>
+    normalizeAdminTwoFactorRegistry(store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY))
+  );
   const [totalLots, setTotalLots] = useState(() => {
     const saved = Number(store.get("fw_total_lots"));
     if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
@@ -4408,6 +4759,7 @@ export default function App() {
   useEffect(() => { store.set("fw_user_directory", userDirectory); }, [userDirectory]);
   useEffect(() => { store.set("fw_admin_access_entries", adminAccessEntries); }, [adminAccessEntries]);
   useEffect(() => { store.set("fw_admin_access_grades", adminAccessGrades); }, [adminAccessGrades]);
+  useEffect(() => { store.set(ADMIN_TWO_FACTOR_REGISTRY_KEY, adminTwoFactorRegistry); }, [adminTwoFactorRegistry]);
   useEffect(() => { store.set("fw_total_lots", totalLots); }, [totalLots]);
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
@@ -4443,6 +4795,18 @@ export default function App() {
       setPage("home");
     }
   }, [adminAccessEntries, user]);
+  useEffect(() => {
+    if (!user?.isAdmin) return;
+    const twoFactor = adminTwoFactorStatus(user.name, adminTwoFactorRegistry);
+    if (!twoFactor.enabled) return;
+    const verifiedAtMs = Number(user.twoFactorVerifiedAtMs) || 0;
+    const maxSessionMs = 8 * 60 * 60 * 1000;
+    if (!verifiedAtMs || Date.now() - verifiedAtMs > maxSessionMs) {
+      store.set("fw_user", null);
+      setUser(null);
+      setPage("home");
+    }
+  }, [adminTwoFactorRegistry, user]);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -4506,6 +4870,7 @@ export default function App() {
         updatedAt: todayLabel(),
       },
     }));
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
     return { message: `${safeName} grade set to ${adminGradeLabel(normalizedGrade)}.` };
   };
 
@@ -4526,7 +4891,48 @@ export default function App() {
         updatedAt: todayLabel(),
       },
     }));
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
     return { message: exists ? `${safeName} already had admin rights; grade updated.` : `${safeName} now has admin rights.` };
+  };
+
+  const handleSetAdminTwoFactor = (name, options = {}) => {
+    const safeName = String(name || "").trim();
+    if (!safeName) return { error: "Admin name is required for 2FA settings." };
+    if (!isAdminUserAllowed(safeName, adminAccessEntries)) {
+      return { error: `${safeName} is not in the approved admin list.` };
+    }
+    const key = normalizeNameKey(safeName);
+    const enable = options?.enabled !== false;
+    const normalizedSecret = sanitizeBase32Secret(options?.secret);
+    if (!enable) {
+      setAdminTwoFactorRegistry((prev) => {
+        const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+        delete next[key];
+        return next;
+      });
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+      return { message: `2FA disabled for ${safeName}.` };
+    }
+    if (normalizedSecret.length < 16) {
+      return { error: "2FA secret is invalid. Generate a new authenticator secret and try again." };
+    }
+    const nowLabel = todayLabel();
+    setAdminTwoFactorRegistry((prev) => {
+      const normalizedPrev = normalizeAdminTwoFactorRegistry(prev);
+      const existing = normalizedPrev[key] || {};
+      return {
+        ...normalizedPrev,
+        [key]: {
+          name: safeName,
+          secret: normalizedSecret,
+          enabled: true,
+          enrolledAt: existing.enrolledAt || nowLabel,
+          updatedAt: nowLabel,
+        },
+      };
+    });
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+    return { message: `2FA enabled for ${safeName}. Use your authenticator app code at admin login.` };
   };
 
   const handleRevokeAdminAccess = (name) => {
@@ -4543,6 +4949,12 @@ export default function App() {
       delete next[key];
       return next;
     });
+    setAdminTwoFactorRegistry((prev) => {
+      const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+      delete next[key];
+      return next;
+    });
+    queueSharedChangesSync(["adminAccess"], { mode: "replace" });
     return { message: `${safeName} admin rights revoked.` };
   };
 
@@ -4718,7 +5130,7 @@ export default function App() {
     return { registry: nextRegistry };
   };
 
-  const handleLogin = (u) => {
+  const handleLogin = async (u) => {
     const lots = normalizeUserLots(u);
     const hasAdminApproval = isAdminUserAllowed(u.name, adminAccessEntries);
     const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
@@ -4730,6 +5142,26 @@ export default function App() {
     if (!isAdmin && loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
       return `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`;
     }
+    if (isAdmin) {
+      if (loginSecret.length < ADMIN_MIN_LOGIN_SECRET_LENGTH) {
+        return `Admin password must be at least ${ADMIN_MIN_LOGIN_SECRET_LENGTH} characters.`;
+      }
+      if (isNumericOnlySecret(loginSecret)) {
+        return "Admin password cannot be numbers only. Include letters or symbols.";
+      }
+      const twoFactor = adminTwoFactorStatus(u.name, adminTwoFactorRegistry);
+      if (twoFactor.enabled) {
+        const providedCode = normalizeTwoFactorCode(u.twoFactorCode);
+        if (providedCode.length !== TWO_FACTOR_CODE_DIGITS) {
+          return `Enter the ${TWO_FACTOR_CODE_DIGITS}-digit authenticator code for admin sign-in.`;
+        }
+        const verified = await verifyTotpCode(twoFactor.record?.secret, providedCode);
+        if (!verified) {
+          return "Authenticator code is incorrect or expired. Try the current code and check your device clock.";
+        }
+      }
+    }
+    const twoFactorVerifiedAtMs = isAdmin ? Date.now() : null;
     const effectiveLots = isAdmin ? ["ADMIN"] : lots;
     const normalizedUser = {
       ...u,
@@ -4738,6 +5170,7 @@ export default function App() {
       userId: u.userId || generateUserId(u.name),
       lots: effectiveLots,
       lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
+      twoFactorVerifiedAtMs,
     };
     if (!isAdmin) {
       const check = reconcilePrimaryVoterRegistry(normalizedUser, null, {
@@ -4748,6 +5181,7 @@ export default function App() {
     }
     const persistedUser = { ...normalizedUser };
     delete persistedUser.loginSecret;
+    delete persistedUser.twoFactorCode;
     store.set("fw_user", persistedUser);
     setUser(persistedUser);
     setPage(isAdmin ? "admin-votes" : "home");
@@ -5113,6 +5547,7 @@ export default function App() {
         fw_user_directory: userDirectory,
         fw_admin_access_entries: adminAccessEntries,
         fw_admin_access_grades: adminAccessGrades,
+        fw_admin_two_factor_registry: adminTwoFactorRegistry,
         fw_total_lots: totalLots,
         fw_vote_eligibility: eligibilityState,
         fw_last_backup_export_at: lastBackupExportAt || null,
@@ -5283,6 +5718,26 @@ export default function App() {
     const nextAdminGrades = scopeFlags.adminAccess
       ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades)
       : adminAccessGrades;
+    const importedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(candidate.fw_admin_two_factor_registry);
+    const nextAdminTwoFactorRegistry = scopeFlags.adminAccess
+      ? (() => {
+          const merged =
+            restoreMode === "replace"
+              ? importedAdminTwoFactorRegistry
+              : {
+                  ...normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
+                  ...importedAdminTwoFactorRegistry,
+                };
+          const allowed = new Set(effectiveAdminEntries.map((entry) => normalizeNameKey(entry)));
+          const filtered = {};
+          Object.entries(merged).forEach(([key, value]) => {
+            if (allowed.has(key)) {
+              filtered[key] = value;
+            }
+          });
+          return filtered;
+        })()
+      : adminTwoFactorRegistry;
     const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
     if (scopeFlags.covenantFiles) {
       if (restoreMode === "merge" || restoreMode === "missing") {
@@ -5323,6 +5778,7 @@ export default function App() {
     if (scopeFlags.adminAccess) {
       setAdminAccessEntries(effectiveAdminEntries);
       setAdminAccessGrades(nextAdminGrades);
+      setAdminTwoFactorRegistry(nextAdminTwoFactorRegistry);
     }
 
     const restoredUserRaw = candidate.fw_user;
@@ -5765,7 +6221,15 @@ export default function App() {
     nonEligibleVotedLots: nonEligibleVotedLotsCount,
   };
 
-  if (!user) return <LoginScreen onLogin={handleLogin} adminAccessEntries={adminAccessEntries}/>;
+  if (!user) {
+    return (
+      <LoginScreen
+        onLogin={handleLogin}
+        adminAccessEntries={adminAccessEntries}
+        adminTwoFactorRegistry={adminTwoFactorRegistry}
+      />
+    );
+  }
 
   const navItems = [
     { id:"home", label:"Overview", icon:<Icon.home/> },
@@ -5958,6 +6422,7 @@ export default function App() {
           )}
           {page === "admin-votes" && user.isAdmin && (
             <AdminVotingPage
+              currentUserName={user?.name || ""}
               comments={comments}
               ownerActivity={ownerActivity}
               voteLedger={voteLedger}
@@ -5968,6 +6433,7 @@ export default function App() {
               userDirectory={userDirectory}
               adminAccessEntries={adminAccessEntries}
               adminAccessGrades={adminAccessGrades}
+              adminTwoFactorRegistry={adminTwoFactorRegistry}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
               isMobile={isMobile}
@@ -5992,6 +6458,7 @@ export default function App() {
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
               onGrantAdminAccess={handleGrantAdminAccess}
               onRevokeAdminAccess={handleRevokeAdminAccess}
+              onSetAdminTwoFactor={handleSetAdminTwoFactor}
               onTransferPrimaryVoter={handleTransferPrimaryVoter}
             />
           )}

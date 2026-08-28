@@ -21492,6 +21492,10 @@ var FallingWatersPortal = (() => {
   var MIN_TOTAL_LOTS = 1;
   var MOBILE_BREAKPOINT_PX = 920;
   var MIN_LOGIN_SECRET_LENGTH = 4;
+  var ADMIN_MIN_LOGIN_SECRET_LENGTH = 10;
+  var TWO_FACTOR_CODE_DIGITS = 6;
+  var TWO_FACTOR_STEP_SECONDS = 30;
+  var TWO_FACTOR_WINDOW_STEPS = 1;
   var DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS = 7;
   var MIN_BACKUP_HEALTH_MAX_AGE_DAYS = 1;
   var MAX_BACKUP_HEALTH_MAX_AGE_DAYS = 60;
@@ -21500,6 +21504,7 @@ var FallingWatersPortal = (() => {
   var DB_API_BASE_URL_KEY = "fw_db_api_base_url";
   var LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
   var PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
+  var ADMIN_TWO_FACTOR_REGISTRY_KEY = "fw_admin_two_factor_registry";
   var DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
   var MAX_INLINE_ATTACHMENT_BYTES = 1024 * 1024 * 1.5;
   var MAX_UPLOAD_BYTES = 1024 * 1024 * 12;
@@ -21762,6 +21767,134 @@ var FallingWatersPortal = (() => {
   var accessRoleLabel = (role) => normalizeAccessRole(role) === ACCESS_ROLES.commentOnly ? "Comment-only household member" : "Primary voter";
   var isPrimaryVoter = (user) => !user?.isAdmin && normalizeAccessRole(user?.accessRole) === ACCESS_ROLES.primary;
   var normalizeNameKey = (name) => String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  var isNumericOnlySecret = (secret) => /^\d+$/.test(String(secret || "").trim());
+  var normalizeTwoFactorCode = (value) => String(value || "").replace(/\D+/g, "").slice(0, TWO_FACTOR_CODE_DIGITS);
+  var BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  var sanitizeBase32Secret = (secret) => String(secret || "").toUpperCase().replace(/[^A-Z2-7]/g, "");
+  var randomBytes = (length = 20) => {
+    const size = Math.max(1, Number(length) || 20);
+    const bytes = new Uint8Array(size);
+    if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+      return bytes;
+    }
+    for (let idx = 0; idx < size; idx += 1) {
+      bytes[idx] = Math.floor(Math.random() * 256);
+    }
+    return bytes;
+  };
+  var base32Encode = (bytes) => {
+    let output = "";
+    let buffer = 0;
+    let bitsLeft = 0;
+    bytes.forEach((byte) => {
+      buffer = buffer << 8 | byte;
+      bitsLeft += 8;
+      while (bitsLeft >= 5) {
+        output += BASE32_ALPHABET[buffer >>> bitsLeft - 5 & 31];
+        bitsLeft -= 5;
+      }
+    });
+    if (bitsLeft > 0) {
+      output += BASE32_ALPHABET[buffer << 5 - bitsLeft & 31];
+    }
+    return output;
+  };
+  var base32Decode = (secret) => {
+    const normalized = sanitizeBase32Secret(secret);
+    if (!normalized) return new Uint8Array(0);
+    let buffer = 0;
+    let bitsLeft = 0;
+    const output = [];
+    for (let idx = 0; idx < normalized.length; idx += 1) {
+      const value = BASE32_ALPHABET.indexOf(normalized[idx]);
+      if (value === -1) continue;
+      buffer = buffer << 5 | value;
+      bitsLeft += 5;
+      if (bitsLeft >= 8) {
+        output.push(buffer >>> bitsLeft - 8 & 255);
+        bitsLeft -= 8;
+      }
+    }
+    return new Uint8Array(output);
+  };
+  var generateTotpSecret = (byteLength = 20) => base32Encode(randomBytes(byteLength));
+  var createCounterBuffer = (counter) => {
+    const safeCounter = Math.max(0, Number(counter) || 0);
+    const high = Math.floor(safeCounter / 4294967296);
+    const low = safeCounter >>> 0;
+    const buffer = new ArrayBuffer(8);
+    const view = new DataView(buffer);
+    view.setUint32(0, high);
+    view.setUint32(4, low);
+    return buffer;
+  };
+  var computeTotpCode = async (secret, counter, digits = TWO_FACTOR_CODE_DIGITS) => {
+    const normalizedSecret = sanitizeBase32Secret(secret);
+    if (!normalizedSecret) return null;
+    if (typeof window === "undefined" || !window.crypto?.subtle) return null;
+    const secretBytes = base32Decode(normalizedSecret);
+    if (secretBytes.length === 0) return null;
+    const key = await window.crypto.subtle.importKey(
+      "raw",
+      secretBytes,
+      { name: "HMAC", hash: "SHA-1" },
+      false,
+      ["sign"]
+    );
+    const signatureBuffer = await window.crypto.subtle.sign("HMAC", key, createCounterBuffer(counter));
+    const signature = new Uint8Array(signatureBuffer);
+    const offset = signature[signature.length - 1] & 15;
+    const code = ((signature[offset] & 127) << 24 | (signature[offset + 1] & 255) << 16 | (signature[offset + 2] & 255) << 8 | signature[offset + 3] & 255) % 10 ** digits;
+    return String(code).padStart(digits, "0");
+  };
+  var verifyTotpCode = async (secret, code, options = {}) => {
+    const normalizedSecret = sanitizeBase32Secret(secret);
+    const normalizedCode = normalizeTwoFactorCode(code);
+    if (!normalizedSecret || normalizedCode.length !== TWO_FACTOR_CODE_DIGITS) return false;
+    const windowSteps = Number.isInteger(options.windowSteps) ? Math.max(0, options.windowSteps) : TWO_FACTOR_WINDOW_STEPS;
+    const atMs = Number(options.atMs) || Date.now();
+    const currentCounter = Math.floor(atMs / 1e3 / TWO_FACTOR_STEP_SECONDS);
+    for (let delta = -windowSteps; delta <= windowSteps; delta += 1) {
+      const candidateCounter = currentCounter + delta;
+      if (candidateCounter < 0) continue;
+      const expectedCode = await computeTotpCode(normalizedSecret, candidateCounter, TWO_FACTOR_CODE_DIGITS);
+      if (expectedCode && expectedCode === normalizedCode) {
+        return true;
+      }
+    }
+    return false;
+  };
+  var normalizeAdminTwoFactorRegistry = (registry) => {
+    const raw = registry && typeof registry === "object" ? registry : {};
+    const next = {};
+    Object.entries(raw).forEach(([key, value]) => {
+      const record = value && typeof value === "object" ? value : {};
+      const name = String(record.name || "").trim();
+      const normalizedNameKey = normalizeNameKey(name || key);
+      const secret = sanitizeBase32Secret(record.secret);
+      if (!normalizedNameKey || !secret) return;
+      const enabled = record.enabled !== false;
+      next[normalizedNameKey] = {
+        name: name || key,
+        secret,
+        enabled,
+        enrolledAt: String(record.enrolledAt || "").trim() || "",
+        updatedAt: String(record.updatedAt || "").trim() || ""
+      };
+    });
+    return next;
+  };
+  var adminTwoFactorStatus = (name, adminTwoFactorRegistry = {}) => {
+    const key = normalizeNameKey(name);
+    if (!key) return { enabled: false, record: null };
+    const normalized = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
+    const record = normalized[key] || null;
+    return {
+      enabled: !!(record?.enabled && sanitizeBase32Secret(record.secret)),
+      record
+    };
+  };
   var normalizeAdminGrade = (grade) => ADMIN_GRADE_OPTIONS.some((option) => option.value === grade) ? grade : DEFAULT_ADMIN_GRADE;
   var adminGradeLabel = (grade) => ADMIN_GRADE_OPTIONS.find((option) => option.value === normalizeAdminGrade(grade))?.label || "Full admin";
   var normalizeAdminAccessEntries = (entries) => {
@@ -22340,16 +22473,20 @@ var FallingWatersPortal = (() => {
     statNum: { fontSize: 28, fontWeight: 700, color: C.forest, fontFamily: "Georgia,serif" },
     statLabel: { fontSize: 12, color: C.muted, marginTop: 2 }
   };
-  function LoginScreen({ onLogin, adminAccessEntries }) {
+  function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
     const [lot, setLot] = (0, import_react.useState)("");
     const [name, setName] = (0, import_react.useState)("");
     const [pw, setPw] = (0, import_react.useState)("");
+    const [otpCode, setOtpCode] = (0, import_react.useState)("");
     const [accessRole, setAccessRole] = (0, import_react.useState)(ACCESS_ROLES.primary);
     const [err, setErr] = (0, import_react.useState)("");
-    const handle = (e) => {
+    const [busy, setBusy] = (0, import_react.useState)(false);
+    const handle = async (e) => {
       e.preventDefault();
+      if (busy) return;
       const trimmedName = name.trim();
       const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
+      const twoFactorState = adminTwoFactorStatus(trimmedName, adminTwoFactorRegistry);
       const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
       if (!hasAdminApproval && lots.length === 0 || !trimmedName || pw.length < MIN_LOGIN_SECRET_LENGTH) {
         setErr(`Please enter your name, lot number(s), and a password (min ${MIN_LOGIN_SECRET_LENGTH} characters).`);
@@ -22366,12 +22503,28 @@ var FallingWatersPortal = (() => {
         name: trimmedName,
         accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole),
         isAdmin,
-        loginSecret: pw
+        loginSecret: pw,
+        twoFactorCode: normalizeTwoFactorCode(otpCode)
       };
-      const loginError = onLogin(user);
+      if (isAdmin && twoFactorState.enabled && normalizeTwoFactorCode(otpCode).length !== TWO_FACTOR_CODE_DIGITS) {
+        setErr(`Enter the ${TWO_FACTOR_CODE_DIGITS}-digit authenticator code for admin sign-in.`);
+        return;
+      }
+      setBusy(true);
+      let loginError = null;
+      try {
+        loginError = await onLogin(user);
+      } catch (error) {
+        loginError = error?.message || "Sign-in failed.";
+      } finally {
+        setBusy(false);
+      }
       if (loginError) {
         setErr(loginError);
+        return;
       }
+      setErr("");
+      setOtpCode("");
     };
     return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s), name, and password to access the portal. Primary voter logins lock voting rights by lot to the registered primary voter identity, preventing duplicate voting from alternate IDs. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement(
       "input",
@@ -22380,6 +22533,7 @@ var FallingWatersPortal = (() => {
         placeholder: "e.g. Lot 36, Lot 37 (admins can leave blank)",
         value: lot,
         onChange: (e) => setLot(e.target.value),
+        disabled: busy,
         inputMode: "text",
         autoCapitalize: "none",
         autoCorrect: "off"
@@ -22391,6 +22545,7 @@ var FallingWatersPortal = (() => {
         placeholder: "First and last name",
         value: name,
         onChange: (e) => setName(e.target.value),
+        disabled: busy,
         autoCapitalize: "words",
         autoCorrect: "on",
         enterKeyHint: "next"
@@ -22400,14 +22555,29 @@ var FallingWatersPortal = (() => {
       {
         style: S.input,
         type: "password",
-        placeholder: `Min ${MIN_LOGIN_SECRET_LENGTH} characters`,
+        placeholder: `Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH} and not numbers only`,
         value: pw,
         onChange: (e) => setPw(e.target.value),
+        disabled: busy,
         autoCapitalize: "none",
         autoCorrect: "off",
         enterKeyHint: "go"
       }
-    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value) }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 } }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
+    )), isAdminUserAllowed(name.trim(), adminAccessEntries) && /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Authenticator code (admin 2FA)"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        type: "text",
+        value: otpCode,
+        onChange: (e) => setOtpCode(normalizeTwoFactorCode(e.target.value)),
+        placeholder: `${TWO_FACTOR_CODE_DIGITS}-digit code (required only if admin 2FA is enabled)`,
+        inputMode: "numeric",
+        autoComplete: "one-time-code",
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        disabled: busy
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value), disabled: busy }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 }, disabled: busy }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " ", busy ? "Signing in..." : "Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
   }
   function HomePage({ votes, stats, totalLots, votesNeeded }) {
     const communityEngaged = Math.min(totalLots, stats.votedLots);
@@ -23132,6 +23302,7 @@ var FallingWatersPortal = (() => {
     }))));
   }
   function AdminVotingPage({
+    currentUserName,
     comments,
     ownerActivity,
     voteLedger,
@@ -23142,6 +23313,7 @@ var FallingWatersPortal = (() => {
     userDirectory,
     adminAccessEntries,
     adminAccessGrades,
+    adminTwoFactorRegistry,
     totalLots,
     votesNeeded,
     isMobile,
@@ -23166,6 +23338,7 @@ var FallingWatersPortal = (() => {
     onSetAdminAccessGrade,
     onGrantAdminAccess,
     onRevokeAdminAccess,
+    onSetAdminTwoFactor,
     onTransferPrimaryVoter
   }) {
     const [filter, setFilter] = (0, import_react.useState)("all");
@@ -23200,6 +23373,11 @@ var FallingWatersPortal = (() => {
     const [transferNote, setTransferNote] = (0, import_react.useState)("");
     const [transferMsg, setTransferMsg] = (0, import_react.useState)("");
     const [transferErr, setTransferErr] = (0, import_react.useState)("");
+    const [twoFactorAdminName, setTwoFactorAdminName] = (0, import_react.useState)("");
+    const [twoFactorSecret, setTwoFactorSecret] = (0, import_react.useState)("");
+    const [twoFactorEnabled, setTwoFactorEnabled] = (0, import_react.useState)(false);
+    const [twoFactorMsg, setTwoFactorMsg] = (0, import_react.useState)("");
+    const [twoFactorErr, setTwoFactorErr] = (0, import_react.useState)("");
     const effectiveBackupHealthThresholdDays = Number.isInteger(Number(backupHealthThresholdDays)) && Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS ? Number(backupHealthThresholdDays) : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
     const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
     const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
@@ -23213,17 +23391,26 @@ var FallingWatersPortal = (() => {
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
     const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
+    const normalizedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry);
     const approvedAdminRows = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => {
       const nameKey = normalizeNameKey(entry);
       const gradeRecord = adminAccessGrades?.[nameKey] || {};
       const grade = normalizeAdminGrade(gradeRecord.grade || DEFAULT_ADMIN_GRADE);
+      const twoFactorRecord = normalizedAdminTwoFactorRegistry[nameKey] || null;
       return {
         name: entry,
         nameKey,
         grade,
-        gradeUpdatedAt: gradeRecord.updatedAt || ""
+        gradeUpdatedAt: gradeRecord.updatedAt || "",
+        twoFactorEnabled: !!(twoFactorRecord?.enabled && twoFactorRecord?.secret),
+        twoFactorUpdatedAt: twoFactorRecord?.updatedAt || "",
+        twoFactorEnrolledAt: twoFactorRecord?.enrolledAt || ""
       };
     });
+    const selectedTwoFactorKey = normalizeNameKey(twoFactorAdminName);
+    const selectedTwoFactorRecord = selectedTwoFactorKey ? normalizedAdminTwoFactorRegistry[selectedTwoFactorKey] : null;
+    const normalizedTwoFactorSecret = sanitizeBase32Secret(twoFactorSecret);
+    const twoFactorUri = normalizedTwoFactorSecret ? `otpauth://totp/${encodeURIComponent("FallingWatersHOA")}:${encodeURIComponent(twoFactorAdminName || "admin")}?secret=${normalizedTwoFactorSecret}&issuer=${encodeURIComponent("FallingWatersHOA")}&digits=${TWO_FACTOR_CODE_DIGITS}&period=${TWO_FACTOR_STEP_SECONDS}` : "";
     (0, import_react.useEffect)(() => {
       setLotCountInput(String(totalLots));
     }, [totalLots]);
@@ -23238,6 +23425,24 @@ var FallingWatersPortal = (() => {
         setTransferLot(lotLabels[0] || "");
       }
     }, [lotLabels, transferLot]);
+    (0, import_react.useEffect)(() => {
+      if (approvedAdminRows.length === 0) {
+        setTwoFactorAdminName("");
+        return;
+      }
+      const currentName = String(currentUserName || "").trim();
+      const preferred = approvedAdminRows.find((row) => normalizeNameKey(row.name) === normalizeNameKey(currentName));
+      const hasCurrentSelection = approvedAdminRows.some((row) => row.name === twoFactorAdminName);
+      if (!hasCurrentSelection) {
+        setTwoFactorAdminName(preferred?.name || approvedAdminRows[0].name);
+      }
+    }, [approvedAdminRows, currentUserName, twoFactorAdminName]);
+    (0, import_react.useEffect)(() => {
+      const key = normalizeNameKey(twoFactorAdminName);
+      const record = key ? normalizedAdminTwoFactorRegistry[key] : null;
+      setTwoFactorSecret(record?.secret || "");
+      setTwoFactorEnabled(!!(record?.enabled && record?.secret));
+    }, [twoFactorAdminName, normalizedAdminTwoFactorRegistry]);
     const checklistRows = dbChecklist?.rows || [
       { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
       { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
@@ -23534,6 +23739,7 @@ var FallingWatersPortal = (() => {
           fw_user_directory: store.get("fw_user_directory"),
           fw_admin_access_entries: store.get("fw_admin_access_entries"),
           fw_admin_access_grades: store.get("fw_admin_access_grades"),
+          fw_admin_two_factor_registry: store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY),
           fw_total_lots: store.get("fw_total_lots"),
           fw_vote_eligibility: store.get("fw_vote_eligibility")
         };
@@ -23552,6 +23758,7 @@ var FallingWatersPortal = (() => {
           primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
           primary_voter_transfer_audit_records: transferAuditRows.length,
           admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
+          admin_two_factor_enabled: Object.values(normalizedAdminTwoFactorRegistry).filter((entry) => entry?.enabled && entry?.secret).length,
           user_directory_records: Object.keys(userDirectory || {}).length,
           covenant_docs: covenantDocCount,
           raw_storage_keys_exported: storageKeys.length,
@@ -23618,6 +23825,33 @@ var FallingWatersPortal = (() => {
       }
       setGradeMsg(result?.message || `Admin access removed for ${name}.`);
       setTimeout(() => setGradeMsg(""), 3500);
+    };
+    const generateAdminTwoFactorSecret = () => {
+      setTwoFactorErr("");
+      setTwoFactorMsg("");
+      const generated = generateTotpSecret(20);
+      setTwoFactorSecret(generated);
+      setTwoFactorEnabled(true);
+      setTwoFactorMsg("New authenticator secret generated. Save settings to enforce 2FA.");
+      setTimeout(() => setTwoFactorMsg(""), 4500);
+    };
+    const saveAdminTwoFactor = () => {
+      setTwoFactorErr("");
+      setTwoFactorMsg("");
+      if (!twoFactorAdminName) {
+        setTwoFactorErr("Select an approved admin name first.");
+        return;
+      }
+      const result = onSetAdminTwoFactor?.(twoFactorAdminName, {
+        enabled: twoFactorEnabled,
+        secret: twoFactorSecret
+      });
+      if (result?.error) {
+        setTwoFactorErr(result.error);
+        return;
+      }
+      setTwoFactorMsg(result?.message || "2FA settings saved.");
+      setTimeout(() => setTwoFactorMsg(""), 4500);
     };
     const handleImport = async (event) => {
       const file = event.target.files?.[0];
@@ -23927,7 +24161,7 @@ var FallingWatersPortal = (() => {
         onChange: (event) => setNewAdminGrade(event.target.value)
       },
       ADMIN_GRADE_OPTIONS.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option.value, value: option.value }, option.label))
-    )), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px" }, onClick: grantAdminAccess }, "Grant admin rights")), gradeMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, gradeMsg), gradeErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, gradeErr), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Approved admin"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last updated"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Actions"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, approvedAdminRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 4 }, "No admin names configured.")), approvedAdminRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.nameKey }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px" }, onClick: grantAdminAccess }, "Grant admin rights")), gradeMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, gradeMsg), gradeErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, gradeErr), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Approved admin"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "2FA status"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last updated"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Actions"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, approvedAdminRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 5 }, "No admin names configured.")), approvedAdminRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.nameKey }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement(
       "select",
       {
         style: { ...S.select, minWidth: 180, padding: "6px 8px" },
@@ -23935,14 +24169,46 @@ var FallingWatersPortal = (() => {
         onChange: (event) => updateAdminGrade(row.name, event.target.value)
       },
       ADMIN_GRADE_OPTIONS.map((option) => /* @__PURE__ */ import_react.default.createElement("option", { key: option.value, value: option.value }, option.label))
-    )), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.gradeUpdatedAt || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.twoFactorEnabled ? C.success : C.amber, row.twoFactorEnabled ? C.successLight : C.amberLight) }, row.twoFactorEnabled ? "Enabled" : "Not enabled"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, row.twoFactorUpdatedAt ? `Updated ${row.twoFactorUpdatedAt}` : "No authenticator secret saved")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.gradeUpdatedAt || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         style: { ...S.btn("outline"), padding: "5px 8px", fontSize: 11 },
         onClick: () => revokeAdminAccess(row.name)
       },
       "Revoke"
-    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Primary voter transfer (admin only)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Reassign official voting authority for a lot when ownership or household primary contact changes. An audit note is required and stored."), transferErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, transferErr), transferMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, transferMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: transferLot, onChange: (event) => setTransferLot(event.target.value) }, lotLabels.map((lotLabel) => /* @__PURE__ */ import_react.default.createElement("option", { key: lotLabel, value: lotLabel }, lotLabel)))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "New primary voter name"), /* @__PURE__ */ import_react.default.createElement(
+    )))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Admin sign-in 2FA (authenticator app)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Enable two-factor authentication for each approved admin. Once enabled, that admin must provide a valid 6-digit authenticator code at login."), twoFactorErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, twoFactorErr), twoFactorMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, twoFactorMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, alignItems: "end", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Admin account"), /* @__PURE__ */ import_react.default.createElement(
+      "select",
+      {
+        style: S.select,
+        value: twoFactorAdminName,
+        onChange: (event) => setTwoFactorAdminName(event.target.value),
+        disabled: approvedAdminRows.length === 0
+      },
+      approvedAdminRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("option", { value: "" }, "No admins available"),
+      approvedAdminRows.map((row) => /* @__PURE__ */ import_react.default.createElement("option", { key: row.nameKey, value: row.name }, row.name))
+    )), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "2FA status"), /* @__PURE__ */ import_react.default.createElement(
+      "select",
+      {
+        style: S.select,
+        value: twoFactorEnabled ? "enabled" : "disabled",
+        onChange: (event) => setTwoFactorEnabled(event.target.value === "enabled"),
+        disabled: !twoFactorAdminName
+      },
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "enabled" }, "Enabled (require code)"),
+      /* @__PURE__ */ import_react.default.createElement("option", { value: "disabled" }, "Disabled")
+    ))), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Authenticator secret (Base32)"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        value: twoFactorSecret,
+        onChange: (event) => setTwoFactorSecret(sanitizeBase32Secret(event.target.value)),
+        placeholder: "Generate secret or paste existing key",
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        inputMode: "text",
+        disabled: !twoFactorAdminName
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 } }, "Add this key to Google Authenticator, Microsoft Authenticator, or 1Password. Only letters A-Z and numbers 2-7 are valid.")), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("outline"), padding: "7px 12px" }, onClick: generateAdminTwoFactorSecret, disabled: !twoFactorAdminName }, "Generate new secret"), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "7px 12px" }, onClick: saveAdminTwoFactor, disabled: !twoFactorAdminName }, "Save 2FA settings")), selectedTwoFactorRecord?.enrolledAt && /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 8 } }, "Current enrollment for ", twoFactorAdminName, ": enabled on ", selectedTwoFactorRecord.enrolledAt), twoFactorUri && /* @__PURE__ */ import_react.default.createElement("div", { style: { border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", background: C.parchment } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 4 } }, "Manual setup URI (advanced)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.ink, lineHeight: 1.5, wordBreak: "break-all" } }, twoFactorUri))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Primary voter transfer (admin only)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Reassign official voting authority for a lot when ownership or household primary contact changes. An audit note is required and stored."), transferErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, transferErr), transferMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, transferMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: transferLot, onChange: (event) => setTransferLot(event.target.value) }, lotLabels.map((lotLabel) => /* @__PURE__ */ import_react.default.createElement("option", { key: lotLabel, value: lotLabel }, lotLabel)))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "New primary voter name"), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: S.input,
@@ -24290,6 +24556,9 @@ var FallingWatersPortal = (() => {
       const saved = store.get("fw_admin_access_grades");
       return saved && typeof saved === "object" ? saved : {};
     });
+    const [adminTwoFactorRegistry, setAdminTwoFactorRegistry] = (0, import_react.useState)(
+      () => normalizeAdminTwoFactorRegistry(store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY))
+    );
     const [totalLots, setTotalLots] = (0, import_react.useState)(() => {
       const saved = Number(store.get("fw_total_lots"));
       if (Number.isInteger(saved) && saved >= MIN_TOTAL_LOTS && saved <= MAX_TOTAL_LOTS) return saved;
@@ -24369,6 +24638,9 @@ var FallingWatersPortal = (() => {
       store.set("fw_admin_access_grades", adminAccessGrades);
     }, [adminAccessGrades]);
     (0, import_react.useEffect)(() => {
+      store.set(ADMIN_TWO_FACTOR_REGISTRY_KEY, adminTwoFactorRegistry);
+    }, [adminTwoFactorRegistry]);
+    (0, import_react.useEffect)(() => {
       store.set("fw_total_lots", totalLots);
     }, [totalLots]);
     (0, import_react.useEffect)(() => {
@@ -24416,6 +24688,18 @@ var FallingWatersPortal = (() => {
         setPage("home");
       }
     }, [adminAccessEntries, user]);
+    (0, import_react.useEffect)(() => {
+      if (!user?.isAdmin) return;
+      const twoFactor = adminTwoFactorStatus(user.name, adminTwoFactorRegistry);
+      if (!twoFactor.enabled) return;
+      const verifiedAtMs = Number(user.twoFactorVerifiedAtMs) || 0;
+      const maxSessionMs = 8 * 60 * 60 * 1e3;
+      if (!verifiedAtMs || Date.now() - verifiedAtMs > maxSessionMs) {
+        store.set("fw_user", null);
+        setUser(null);
+        setPage("home");
+      }
+    }, [adminTwoFactorRegistry, user]);
     const trackOwner = (lot, patch = {}) => {
       if (!lot) return;
       setOwnerActivity((prev) => ({
@@ -24469,6 +24753,7 @@ var FallingWatersPortal = (() => {
           updatedAt: todayLabel()
         }
       }));
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
       return { message: `${safeName} grade set to ${adminGradeLabel(normalizedGrade)}.` };
     };
     const handleGrantAdminAccess = (name, grade = DEFAULT_ADMIN_GRADE) => {
@@ -24488,7 +24773,47 @@ var FallingWatersPortal = (() => {
           updatedAt: todayLabel()
         }
       }));
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
       return { message: exists ? `${safeName} already had admin rights; grade updated.` : `${safeName} now has admin rights.` };
+    };
+    const handleSetAdminTwoFactor = (name, options = {}) => {
+      const safeName = String(name || "").trim();
+      if (!safeName) return { error: "Admin name is required for 2FA settings." };
+      if (!isAdminUserAllowed(safeName, adminAccessEntries)) {
+        return { error: `${safeName} is not in the approved admin list.` };
+      }
+      const key = normalizeNameKey(safeName);
+      const enable = options?.enabled !== false;
+      const normalizedSecret = sanitizeBase32Secret(options?.secret);
+      if (!enable) {
+        setAdminTwoFactorRegistry((prev) => {
+          const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+          delete next[key];
+          return next;
+        });
+        queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+        return { message: `2FA disabled for ${safeName}.` };
+      }
+      if (normalizedSecret.length < 16) {
+        return { error: "2FA secret is invalid. Generate a new authenticator secret and try again." };
+      }
+      const nowLabel = todayLabel();
+      setAdminTwoFactorRegistry((prev) => {
+        const normalizedPrev = normalizeAdminTwoFactorRegistry(prev);
+        const existing = normalizedPrev[key] || {};
+        return {
+          ...normalizedPrev,
+          [key]: {
+            name: safeName,
+            secret: normalizedSecret,
+            enabled: true,
+            enrolledAt: existing.enrolledAt || nowLabel,
+            updatedAt: nowLabel
+          }
+        };
+      });
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
+      return { message: `2FA enabled for ${safeName}. Use your authenticator app code at admin login.` };
     };
     const handleRevokeAdminAccess = (name) => {
       const safeName = String(name || "").trim();
@@ -24504,6 +24829,12 @@ var FallingWatersPortal = (() => {
         delete next[key];
         return next;
       });
+      setAdminTwoFactorRegistry((prev) => {
+        const next = { ...normalizeAdminTwoFactorRegistry(prev) };
+        delete next[key];
+        return next;
+      });
+      queueSharedChangesSync(["adminAccess"], { mode: "replace" });
       return { message: `${safeName} admin rights revoked.` };
     };
     const handleTransferPrimaryVoter = ({ lot, toName, note }) => {
@@ -24658,7 +24989,7 @@ var FallingWatersPortal = (() => {
       }
       return { registry: nextRegistry };
     };
-    const handleLogin = (u) => {
+    const handleLogin = async (u) => {
       const lots = normalizeUserLots(u);
       const hasAdminApproval = isAdminUserAllowed(u.name, adminAccessEntries);
       const requestedAdmin = lots.length === 1 && lots[0] === "ADMIN";
@@ -24670,6 +25001,26 @@ var FallingWatersPortal = (() => {
       if (!isAdmin && loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
         return `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`;
       }
+      if (isAdmin) {
+        if (loginSecret.length < ADMIN_MIN_LOGIN_SECRET_LENGTH) {
+          return `Admin password must be at least ${ADMIN_MIN_LOGIN_SECRET_LENGTH} characters.`;
+        }
+        if (isNumericOnlySecret(loginSecret)) {
+          return "Admin password cannot be numbers only. Include letters or symbols.";
+        }
+        const twoFactor = adminTwoFactorStatus(u.name, adminTwoFactorRegistry);
+        if (twoFactor.enabled) {
+          const providedCode = normalizeTwoFactorCode(u.twoFactorCode);
+          if (providedCode.length !== TWO_FACTOR_CODE_DIGITS) {
+            return `Enter the ${TWO_FACTOR_CODE_DIGITS}-digit authenticator code for admin sign-in.`;
+          }
+          const verified = await verifyTotpCode(twoFactor.record?.secret, providedCode);
+          if (!verified) {
+            return "Authenticator code is incorrect or expired. Try the current code and check your device clock.";
+          }
+        }
+      }
+      const twoFactorVerifiedAtMs = isAdmin ? Date.now() : null;
       const effectiveLots = isAdmin ? ["ADMIN"] : lots;
       const normalizedUser = {
         ...u,
@@ -24677,7 +25028,8 @@ var FallingWatersPortal = (() => {
         accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(u.accessRole),
         userId: u.userId || generateUserId(u.name),
         lots: effectiveLots,
-        lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", ")
+        lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
+        twoFactorVerifiedAtMs
       };
       if (!isAdmin) {
         const check = reconcilePrimaryVoterRegistry(normalizedUser, null, {
@@ -24688,6 +25040,7 @@ var FallingWatersPortal = (() => {
       }
       const persistedUser = { ...normalizedUser };
       delete persistedUser.loginSecret;
+      delete persistedUser.twoFactorCode;
       store.set("fw_user", persistedUser);
       setUser(persistedUser);
       setPage(isAdmin ? "admin-votes" : "home");
@@ -25018,6 +25371,7 @@ var FallingWatersPortal = (() => {
           fw_user_directory: userDirectory,
           fw_admin_access_entries: adminAccessEntries,
           fw_admin_access_grades: adminAccessGrades,
+          fw_admin_two_factor_registry: adminTwoFactorRegistry,
           fw_total_lots: totalLots,
           fw_vote_eligibility: eligibilityState,
           fw_last_backup_export_at: lastBackupExportAt || null,
@@ -25138,6 +25492,21 @@ var FallingWatersPortal = (() => {
         return nextAdminEntries.length > 0 ? nextAdminEntries : adminAccessEntries;
       })() : adminAccessEntries;
       const nextAdminGrades = scopeFlags.adminAccess ? mergeObjectState(adminAccessGrades, candidate.fw_admin_access_grades) : adminAccessGrades;
+      const importedAdminTwoFactorRegistry = normalizeAdminTwoFactorRegistry(candidate.fw_admin_two_factor_registry);
+      const nextAdminTwoFactorRegistry = scopeFlags.adminAccess ? (() => {
+        const merged = restoreMode === "replace" ? importedAdminTwoFactorRegistry : {
+          ...normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
+          ...importedAdminTwoFactorRegistry
+        };
+        const allowed = new Set(effectiveAdminEntries.map((entry) => normalizeNameKey(entry)));
+        const filtered = {};
+        Object.entries(merged).forEach(([key, value]) => {
+          if (allowed.has(key)) {
+            filtered[key] = value;
+          }
+        });
+        return filtered;
+      })() : adminTwoFactorRegistry;
       const restoredAssets = Array.isArray(candidate.covenant_asset_records) ? candidate.covenant_asset_records : [];
       if (scopeFlags.covenantFiles) {
         if (restoreMode === "merge" || restoreMode === "missing") {
@@ -25177,6 +25546,7 @@ var FallingWatersPortal = (() => {
       if (scopeFlags.adminAccess) {
         setAdminAccessEntries(effectiveAdminEntries);
         setAdminAccessGrades(nextAdminGrades);
+        setAdminTwoFactorRegistry(nextAdminTwoFactorRegistry);
       }
       const restoredUserRaw = candidate.fw_user;
       const restoredUser = scopeFlags.sessionUser && restoredUserRaw && typeof restoredUserRaw === "object" ? (() => {
@@ -25574,7 +25944,16 @@ var FallingWatersPortal = (() => {
       nonEligibleLots: nonEligibleLotsCount,
       nonEligibleVotedLots: nonEligibleVotedLotsCount
     };
-    if (!user) return /* @__PURE__ */ import_react.default.createElement(LoginScreen, { onLogin: handleLogin, adminAccessEntries });
+    if (!user) {
+      return /* @__PURE__ */ import_react.default.createElement(
+        LoginScreen,
+        {
+          onLogin: handleLogin,
+          adminAccessEntries,
+          adminTwoFactorRegistry
+        }
+      );
+    }
     const navItems = [
       { id: "home", label: "Overview", icon: /* @__PURE__ */ import_react.default.createElement(Icon.home, null) },
       { id: "documents", label: "CC&R Documents", icon: /* @__PURE__ */ import_react.default.createElement(Icon.doc, null) },
@@ -25706,6 +26085,7 @@ var FallingWatersPortal = (() => {
     ), page === "admin-votes" && user.isAdmin && /* @__PURE__ */ import_react.default.createElement(
       AdminVotingPage,
       {
+        currentUserName: user?.name || "",
         comments,
         ownerActivity,
         voteLedger,
@@ -25716,6 +26096,7 @@ var FallingWatersPortal = (() => {
         userDirectory,
         adminAccessEntries,
         adminAccessGrades,
+        adminTwoFactorRegistry,
         totalLots,
         votesNeeded,
         isMobile,
@@ -25740,6 +26121,7 @@ var FallingWatersPortal = (() => {
         onSetAdminAccessGrade: handleSetAdminAccessGrade,
         onGrantAdminAccess: handleGrantAdminAccess,
         onRevokeAdminAccess: handleRevokeAdminAccess,
+        onSetAdminTwoFactor: handleSetAdminTwoFactor,
         onTransferPrimaryVoter: handleTransferPrimaryVoter
       }
     ), page === "admin-docs" && user.isAdmin && /* @__PURE__ */ import_react.default.createElement(
