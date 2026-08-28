@@ -1542,8 +1542,10 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         {[
           { num:totalLots, label:"Total lots", accent:C.forest },
           { num:votesNeeded, label:"Votes needed (2/3)", accent:C.stone },
-          { num:communityEngaged, label:"Owners engaged", accent:"#2563EB" },
-          { num:`${yesPct}%`, label:"Supporting Short-Term Rental (STR) elimination", accent:C.danger },
+          { num:stats.registeredUsers, label:"Registered users", accent:"#0F766E" },
+          { num:stats.engagedUsers, label:"Engaged users", accent:"#2563EB" },
+          { num:stats.totalVotesCast, label:"Votes recorded", accent:C.danger },
+          { num:`${yesPct}%`, label:"Supporting Short-Term Rental (STR) elimination", accent:"#7F1D1D" },
         ].map((s,i) => (
           <div key={i} style={S.statCard(s.accent)}>
             <div style={S.statNum}>{s.num}</div>
@@ -1561,6 +1563,9 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {notVotedLots} owners not yet reached</div>
           <div style={{ marginTop:10, fontSize:12, color:C.muted, lineHeight:1.55 }}>
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
+          </div>
+          <div style={{ marginTop:8, fontSize:12, color:C.muted, lineHeight:1.55 }}>
+            Resident accounts: <strong>{stats.registeredUsers}</strong> registered · <strong>{stats.engagedUsers}</strong> engaged (commented or voted) · <strong>{stats.totalVotesCast}</strong> votes recorded.
           </div>
         </div>
         <div style={S.card}>
@@ -4480,10 +4485,29 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
       <div style={S.statGrid}>
         {[
           { num:totalLots, label:"Total lots", accent:C.forest },
-          { num:surveyEngaged, label:"Survey engaged", accent:"#2563EB" },
-          { num:`${Math.round((surveyEngaged/totalLots)*100)}%`, label:"Engagement rate", accent:C.stone },
-          { num:comments.length, label:"Comments posted", accent:"#7C3AED" },
+          { num:stats.registeredUsers, label:"Registered users", accent:"#0F766E" },
+          { num:stats.engagedUsers, label:"Engaged users", accent:"#2563EB" },
+          { num:stats.totalVotesCast, label:"Votes recorded", accent:C.danger },
         ].map((s,i) => <div key={i} style={S.statCard(s.accent)}><div style={S.statNum}>{s.num}</div><div style={S.statLabel}>{s.label}</div></div>)}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Resident registration and engagement (accounts)</div>
+        <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>
+          Registered users are resident accounts on file. Engaged users have commented or cast at least one lot vote.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+          {[
+            { label: "Registered users", value: stats.registeredUsers, color: "#0F766E" },
+            { label: "Engaged users", value: stats.engagedUsers, color: "#2563EB" },
+            { label: "Votes recorded", value: stats.totalVotesCast, color: C.danger },
+          ].map((m, i) => (
+            <div key={i} style={{ border: `1px solid ${C.border}`, borderTop: `3px solid ${m.color}`, borderRadius: 8, padding: "12px 14px", background: C.white }}>
+              <div style={{ fontSize: 24, fontWeight: 700, color: C.forest, fontFamily: "Georgia,serif" }}>{m.value}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{m.label}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div style={S.card}>
@@ -6220,10 +6244,38 @@ export default function App() {
   const nonEligibleVotedLotsCount = allLotLabels.filter(
     (lot) => eligibilityState?.[lot]?.eligible === false && !!(voteLedger[lot] || store.get(`vote_${lot}`))
   ).length;
+  const residentDirectoryMap = new Map();
+  Object.values(userDirectory || {}).forEach((entry) => {
+    if (!entry || typeof entry !== "object" || entry.isAdmin) return;
+    const key = String(entry.userId || normalizeNameKey(entry.name) || "").trim();
+    if (!key || residentDirectoryMap.has(key)) return;
+    residentDirectoryMap.set(key, entry);
+  });
+  if (user && !user.isAdmin) {
+    const currentKey = String(user.userId || normalizeNameKey(user.name) || "").trim();
+    if (currentKey && !residentDirectoryMap.has(currentKey)) {
+      residentDirectoryMap.set(currentKey, user);
+    }
+  }
+  const residentDirectoryRows = Array.from(residentDirectoryMap.values());
+  const hasUserEngagement = (profile) => {
+    const profileLots = normalizeUserLots(profile).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
+    if (profileLots.some((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`) || ownerActivity?.[lot]?.commented))) {
+      return true;
+    }
+    const profileNameKey = normalizeNameKey(profile?.name);
+    if (!profileNameKey) return false;
+    return comments.some((comment) => normalizeNameKey(comment?.name) === profileNameKey);
+  };
+  const registeredUsersCount = residentDirectoryRows.length;
+  const engagedUsersCount = residentDirectoryRows.filter((profile) => hasUserEngagement(profile)).length;
   const stats = {
     loggedInLots: activityRows.length,
     commentedLots: commentedLotsFromActivity,
     votedLots: votedLotsFromLedger,
+    registeredUsers: registeredUsersCount,
+    engagedUsers: engagedUsersCount,
+    totalVotesCast: votedLotsFromLedger,
   };
   const operationalStats = {
     contactedLots: contactedLotsFromOutreach,
