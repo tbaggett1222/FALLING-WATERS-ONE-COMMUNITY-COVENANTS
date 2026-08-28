@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 // ── PALETTE & CONSTANTS ──────────────────────────────────────────────────────
 const C = {
@@ -36,8 +36,7 @@ const DEFAULT_TOTAL_LOTS = 200;
 const MAX_TOTAL_LOTS = 500;
 const MIN_TOTAL_LOTS = 1;
 const MOBILE_BREAKPOINT_PX = 920;
-const MIN_LOGIN_SECRET_LENGTH = 4;
-const ADMIN_MIN_LOGIN_SECRET_LENGTH = 8;
+const MIN_LOGIN_SECRET_LENGTH = 8;
 const TWO_FACTOR_CODE_DIGITS = 6;
 const TWO_FACTOR_STEP_SECONDS = 30;
 const TWO_FACTOR_WINDOW_STEPS = 2;
@@ -1187,11 +1186,10 @@ const S = {
 };
 
 // ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
+function LoginScreen({ onLogin, adminAccessEntries }) {
   const [lot, setLot] = useState("");
   const [name, setName] = useState("");
   const [pw, setPw] = useState("");
-  const [otpCode, setOtpCode] = useState("");
   const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1200,7 +1198,6 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
     if (busy) return;
     const trimmedName = name.trim();
     const hasAdminApproval = isAdminUserAllowed(trimmedName, adminAccessEntries);
-    const twoFactorState = adminTwoFactorStatus(trimmedName, adminTwoFactorRegistry);
     const lots = hasAdminApproval ? ["ADMIN"] : parseLotsInput(lot);
     if ((!hasAdminApproval && lots.length === 0) || !trimmedName || pw.length < MIN_LOGIN_SECRET_LENGTH) {
       setErr(`Please enter your name, lot number(s), and a password (min ${MIN_LOGIN_SECRET_LENGTH} characters).`);
@@ -1218,12 +1215,7 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
       accessRole: isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(accessRole),
       isAdmin,
       loginSecret: pw,
-      twoFactorCode: normalizeTwoFactorCode(otpCode),
     };
-    if (isAdmin && twoFactorState.enabled && normalizeTwoFactorCode(otpCode).length !== TWO_FACTOR_CODE_DIGITS) {
-      setErr(`Enter the ${TWO_FACTOR_CODE_DIGITS}-digit authenticator code for admin sign-in.`);
-      return;
-    }
     setBusy(true);
     let loginError = null;
     try {
@@ -1238,7 +1230,6 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
       return;
     }
     setErr("");
-    setOtpCode("");
   };
   return (
     <div style={{ minHeight:"100vh", background:C.forest, display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
@@ -1290,7 +1281,7 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
             <input
               style={S.input}
               type="password"
-              placeholder={`Residents: min ${MIN_LOGIN_SECRET_LENGTH} | Admins: min ${ADMIN_MIN_LOGIN_SECRET_LENGTH}`}
+              placeholder={`Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`}
               value={pw}
               onChange={e=>setPw(e.target.value)}
               disabled={busy}
@@ -1299,26 +1290,6 @@ function LoginScreen({ onLogin, adminAccessEntries, adminTwoFactorRegistry }) {
               enterKeyHint="go"
             />
           </div>
-          {isAdminUserAllowed(name.trim(), adminAccessEntries) && (
-            <div style={{ marginBottom: 20 }}>
-              <label style={S.label}>Authenticator code (admin 2FA)</label>
-              <input
-                style={S.input}
-                type="text"
-                value={otpCode}
-                onChange={(e) => setOtpCode(normalizeTwoFactorCode(e.target.value))}
-                placeholder={`${TWO_FACTOR_CODE_DIGITS}-digit code (required only if admin 2FA is enabled)`}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                autoCapitalize="none"
-                autoCorrect="off"
-                disabled={busy}
-              />
-              <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-                Codes refresh every {TWO_FACTOR_STEP_SECONDS} seconds. Use the newest code from your authenticator app (do not reuse an older code).
-              </div>
-            </div>
-          )}
           <div style={{ marginBottom:20 }}>
             <label style={S.label}>Access role</label>
             <select style={S.select} value={accessRole} onChange={e=>setAccessRole(e.target.value)} disabled={busy}>
@@ -2759,7 +2730,6 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
 
 // ── ADMIN VOTING PAGE ────────────────────────────────────────────────────────
 function AdminVotingPage({
-  currentUserName,
   comments,
   ownerActivity,
   voteLedger,
@@ -2770,7 +2740,6 @@ function AdminVotingPage({
   userDirectory,
   adminAccessEntries,
   adminAccessGrades,
-  adminTwoFactorRegistry,
   totalLots,
   votesNeeded,
   isMobile,
@@ -2795,7 +2764,6 @@ function AdminVotingPage({
   onSetAdminAccessGrade,
   onGrantAdminAccess,
   onRevokeAdminAccess,
-  onSetAdminTwoFactor,
   onTransferPrimaryVoter,
 }) {
   const [filter, setFilter] = useState("all");
@@ -2830,11 +2798,6 @@ function AdminVotingPage({
   const [transferNote, setTransferNote] = useState("");
   const [transferMsg, setTransferMsg] = useState("");
   const [transferErr, setTransferErr] = useState("");
-  const [twoFactorAdminName, setTwoFactorAdminName] = useState("");
-  const [twoFactorSecret, setTwoFactorSecret] = useState("");
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
-  const [twoFactorMsg, setTwoFactorMsg] = useState("");
-  const [twoFactorErr, setTwoFactorErr] = useState("");
   const effectiveBackupHealthThresholdDays =
     Number.isInteger(Number(backupHealthThresholdDays)) &&
     Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
@@ -2862,31 +2825,17 @@ function AdminVotingPage({
       return String(a.name || "").localeCompare(String(b.name || ""));
     });
   const adminDirectoryRows = directoryRows.filter((row) => row.isAdmin);
-  const normalizedAdminTwoFactorRegistry = useMemo(
-    () => normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry),
-    [adminTwoFactorRegistry]
-  );
   const approvedAdminRows = normalizeAdminAccessEntries(adminAccessEntries).map((entry) => {
     const nameKey = normalizeNameKey(entry);
     const gradeRecord = adminAccessGrades?.[nameKey] || {};
     const grade = normalizeAdminGrade(gradeRecord.grade || DEFAULT_ADMIN_GRADE);
-    const twoFactorRecord = normalizedAdminTwoFactorRegistry[nameKey] || null;
     return {
       name: entry,
       nameKey,
       grade,
       gradeUpdatedAt: gradeRecord.updatedAt || "",
-      twoFactorEnabled: !!(twoFactorRecord?.enabled && twoFactorRecord?.secret),
-      twoFactorUpdatedAt: twoFactorRecord?.updatedAt || "",
-      twoFactorEnrolledAt: twoFactorRecord?.enrolledAt || "",
     };
   });
-  const selectedTwoFactorKey = normalizeNameKey(twoFactorAdminName);
-  const selectedTwoFactorRecord = selectedTwoFactorKey ? normalizedAdminTwoFactorRegistry[selectedTwoFactorKey] : null;
-  const normalizedTwoFactorSecret = sanitizeBase32Secret(twoFactorSecret);
-  const twoFactorUri = normalizedTwoFactorSecret
-    ? `otpauth://totp/${encodeURIComponent("FallingWatersHOA")}:${encodeURIComponent(twoFactorAdminName || "admin")}?secret=${normalizedTwoFactorSecret}&issuer=${encodeURIComponent("FallingWatersHOA")}&digits=${TWO_FACTOR_CODE_DIGITS}&period=${TWO_FACTOR_STEP_SECONDS}`
-    : "";
 
   useEffect(() => {
     setLotCountInput(String(totalLots));
@@ -2902,25 +2851,6 @@ function AdminVotingPage({
       setTransferLot(lotLabels[0] || "");
     }
   }, [lotLabels, transferLot]);
-  useEffect(() => {
-    if (approvedAdminRows.length === 0) {
-      setTwoFactorAdminName("");
-      return;
-    }
-    const currentName = String(currentUserName || "").trim();
-    const preferred = approvedAdminRows.find((row) => normalizeNameKey(row.name) === normalizeNameKey(currentName));
-    const hasCurrentSelection = approvedAdminRows.some((row) => row.name === twoFactorAdminName);
-    if (!hasCurrentSelection) {
-      setTwoFactorAdminName(preferred?.name || approvedAdminRows[0].name);
-    }
-  }, [approvedAdminRows, currentUserName, twoFactorAdminName]);
-  useEffect(() => {
-    const key = normalizeNameKey(twoFactorAdminName);
-    const record = key ? normalizedAdminTwoFactorRegistry[key] : null;
-    setTwoFactorSecret(record?.secret || "");
-    setTwoFactorEnabled(!!(record?.enabled && record?.secret));
-  }, [twoFactorAdminName, normalizedAdminTwoFactorRegistry]);
-
   const checklistRows = dbChecklist?.rows || [
     { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
     { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
@@ -3345,35 +3275,6 @@ function AdminVotingPage({
     setTimeout(() => setGradeMsg(""), 3500);
   };
 
-  const generateAdminTwoFactorSecret = () => {
-    setTwoFactorErr("");
-    setTwoFactorMsg("");
-    const generated = generateTotpSecret(20);
-    setTwoFactorSecret(generated);
-    setTwoFactorEnabled(true);
-    setTwoFactorMsg("New authenticator secret generated. Save settings to enforce 2FA.");
-    setTimeout(() => setTwoFactorMsg(""), 4500);
-  };
-
-  const saveAdminTwoFactor = () => {
-    setTwoFactorErr("");
-    setTwoFactorMsg("");
-    if (!twoFactorAdminName) {
-      setTwoFactorErr("Select an approved admin name first.");
-      return;
-    }
-    const result = onSetAdminTwoFactor?.(twoFactorAdminName, {
-      enabled: twoFactorEnabled,
-      secret: twoFactorSecret,
-    });
-    if (result?.error) {
-      setTwoFactorErr(result.error);
-      return;
-    }
-    setTwoFactorMsg(result?.message || "2FA settings saved.");
-    setTimeout(() => setTwoFactorMsg(""), 4500);
-  };
-
   const handleImport = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -3759,7 +3660,6 @@ function AdminVotingPage({
               <tr>
                 <th style={S.th}>Approved admin</th>
                 <th style={S.th}>Access grade</th>
-                <th style={S.th}>2FA status</th>
                 <th style={S.th}>Last updated</th>
                 <th style={S.th}>Actions</th>
               </tr>
@@ -3767,7 +3667,7 @@ function AdminVotingPage({
             <tbody>
               {approvedAdminRows.length === 0 && (
                 <tr>
-                  <td style={S.td} colSpan={5}>No admin names configured.</td>
+                  <td style={S.td} colSpan={4}>No admin names configured.</td>
                 </tr>
               )}
               {approvedAdminRows.map((row) => (
@@ -3784,14 +3684,6 @@ function AdminVotingPage({
                       ))}
                     </select>
                   </td>
-                  <td style={S.td}>
-                    <span style={S.badge(row.twoFactorEnabled ? C.success : C.amber, row.twoFactorEnabled ? C.successLight : C.amberLight)}>
-                      {row.twoFactorEnabled ? "Enabled" : "Not enabled"}
-                    </span>
-                    <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                      {row.twoFactorUpdatedAt ? `Updated ${row.twoFactorUpdatedAt}` : "No authenticator secret saved"}
-                    </div>
-                  </td>
                   <td style={S.td}>{row.gradeUpdatedAt || "—"}</td>
                   <td style={S.td}>
                     <button
@@ -3806,78 +3698,6 @@ function AdminVotingPage({
             </tbody>
           </table>
         </div>
-      </div>
-
-      <div style={S.card}>
-        <div style={S.cardTitle}>Admin sign-in 2FA (authenticator app)</div>
-        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
-          Enable two-factor authentication for each approved admin. Once enabled, that admin must provide a valid 6-digit authenticator code at login.
-        </div>
-        {twoFactorErr && <div style={S.alert("danger")}>{twoFactorErr}</div>}
-        {twoFactorMsg && <div style={S.alert("success")}>{twoFactorMsg}</div>}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, alignItems: "end", marginBottom: 10 }}>
-          <div>
-            <label style={S.label}>Admin account</label>
-            <select
-              style={S.select}
-              value={twoFactorAdminName}
-              onChange={(event) => setTwoFactorAdminName(event.target.value)}
-              disabled={approvedAdminRows.length === 0}
-            >
-              {approvedAdminRows.length === 0 && <option value="">No admins available</option>}
-              {approvedAdminRows.map((row) => (
-                <option key={row.nameKey} value={row.name}>{row.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={S.label}>2FA status</label>
-            <select
-              style={S.select}
-              value={twoFactorEnabled ? "enabled" : "disabled"}
-              onChange={(event) => setTwoFactorEnabled(event.target.value === "enabled")}
-              disabled={!twoFactorAdminName}
-            >
-              <option value="enabled">Enabled (require code)</option>
-              <option value="disabled">Disabled</option>
-            </select>
-          </div>
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={S.label}>Authenticator secret (Base32)</label>
-          <input
-            style={S.input}
-            value={twoFactorSecret}
-            onChange={(event) => setTwoFactorSecret(sanitizeBase32Secret(event.target.value))}
-            placeholder="Generate secret or paste existing key"
-            autoCapitalize="none"
-            autoCorrect="off"
-            inputMode="text"
-            disabled={!twoFactorAdminName}
-          />
-          <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-            Add this key to Google Authenticator, Microsoft Authenticator, or 1Password. Only letters A-Z and numbers 2-7 are valid.
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-          <button style={{ ...S.btn("outline"), padding: "7px 12px" }} onClick={generateAdminTwoFactorSecret} disabled={!twoFactorAdminName}>
-            Generate new secret
-          </button>
-          <button style={{ ...S.btn("primary"), padding: "7px 12px" }} onClick={saveAdminTwoFactor} disabled={!twoFactorAdminName}>
-            Save 2FA settings
-          </button>
-        </div>
-        {selectedTwoFactorRecord?.enrolledAt && (
-          <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
-            Current enrollment for {twoFactorAdminName}: enabled on {selectedTwoFactorRecord.enrolledAt}
-          </div>
-        )}
-        {twoFactorUri && (
-          <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "8px 10px", background: C.parchment }}>
-            <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Manual setup URI (advanced)</div>
-            <div style={{ fontSize: 11, color: C.ink, lineHeight: 1.5, wordBreak: "break-all" }}>{twoFactorUri}</div>
-          </div>
-        )}
       </div>
 
       <div style={S.card}>
@@ -4799,18 +4619,6 @@ export default function App() {
       setPage("home");
     }
   }, [adminAccessEntries, user]);
-  useEffect(() => {
-    if (!user?.isAdmin) return;
-    const twoFactor = adminTwoFactorStatus(user.name, adminTwoFactorRegistry);
-    if (!twoFactor.enabled) return;
-    const verifiedAtMs = Number(user.twoFactorVerifiedAtMs) || 0;
-    const maxSessionMs = 8 * 60 * 60 * 1000;
-    if (!verifiedAtMs || Date.now() - verifiedAtMs > maxSessionMs) {
-      store.set("fw_user", null);
-      setUser(null);
-      setPage("home");
-    }
-  }, [adminTwoFactorRegistry, user]);
 
   const trackOwner = (lot, patch = {}) => {
     if (!lot) return;
@@ -5143,26 +4951,9 @@ export default function App() {
       return "This account is not authorized for admin access. Contact the HOA administrator.";
     }
     const isAdmin = hasAdminApproval || requestedAdmin;
-    if (!isAdmin && loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+    if (loginSecret.length < MIN_LOGIN_SECRET_LENGTH) {
       return `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`;
     }
-    if (isAdmin) {
-      if (loginSecret.length < ADMIN_MIN_LOGIN_SECRET_LENGTH) {
-        return `Admin password must be at least ${ADMIN_MIN_LOGIN_SECRET_LENGTH} characters.`;
-      }
-      const twoFactor = adminTwoFactorStatus(u.name, adminTwoFactorRegistry);
-      if (twoFactor.enabled) {
-        const providedCode = normalizeTwoFactorCode(u.twoFactorCode);
-        if (providedCode.length !== TWO_FACTOR_CODE_DIGITS) {
-          return `Enter the ${TWO_FACTOR_CODE_DIGITS}-digit authenticator code for admin sign-in.`;
-        }
-        const verified = await verifyTotpCode(twoFactor.record?.secret, providedCode);
-        if (!verified) {
-          return `Authenticator code is incorrect or expired. Codes rotate every ${TWO_FACTOR_STEP_SECONDS} seconds and cannot be reused. Enter the latest code and check your phone clock is set to automatic time.`;
-        }
-      }
-    }
-    const twoFactorVerifiedAtMs = isAdmin ? Date.now() : null;
     const effectiveLots = isAdmin ? ["ADMIN"] : lots;
     const normalizedUser = {
       ...u,
@@ -5171,7 +4962,6 @@ export default function App() {
       userId: u.userId || generateUserId(u.name),
       lots: effectiveLots,
       lot: isAdmin ? "ADMIN" : effectiveLots.length === 1 ? effectiveLots[0] : effectiveLots.join(", "),
-      twoFactorVerifiedAtMs,
     };
     if (!isAdmin) {
       const check = reconcilePrimaryVoterRegistry(normalizedUser, null, {
@@ -5182,7 +4972,6 @@ export default function App() {
     }
     const persistedUser = { ...normalizedUser };
     delete persistedUser.loginSecret;
-    delete persistedUser.twoFactorCode;
     store.set("fw_user", persistedUser);
     setUser(persistedUser);
     setPage(isAdmin ? "admin-votes" : "home");
@@ -6227,7 +6016,6 @@ export default function App() {
       <LoginScreen
         onLogin={handleLogin}
         adminAccessEntries={adminAccessEntries}
-        adminTwoFactorRegistry={adminTwoFactorRegistry}
       />
     );
   }
@@ -6423,7 +6211,6 @@ export default function App() {
           )}
           {page === "admin-votes" && user.isAdmin && (
             <AdminVotingPage
-              currentUserName={user?.name || ""}
               comments={comments}
               ownerActivity={ownerActivity}
               voteLedger={voteLedger}
@@ -6434,7 +6221,6 @@ export default function App() {
               userDirectory={userDirectory}
               adminAccessEntries={adminAccessEntries}
               adminAccessGrades={adminAccessGrades}
-              adminTwoFactorRegistry={adminTwoFactorRegistry}
               totalLots={totalLots}
               votesNeeded={votesNeeded}
               isMobile={isMobile}
@@ -6459,7 +6245,6 @@ export default function App() {
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
               onGrantAdminAccess={handleGrantAdminAccess}
               onRevokeAdminAccess={handleRevokeAdminAccess}
-              onSetAdminTwoFactor={handleSetAdminTwoFactor}
               onTransferPrimaryVoter={handleTransferPrimaryVoter}
             />
           )}
