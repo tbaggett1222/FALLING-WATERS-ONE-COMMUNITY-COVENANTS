@@ -23477,7 +23477,8 @@ var FallingWatersPortal = (() => {
         lastActive: activity?.lastActive || "",
         contacted: !!outreach?.contacted,
         outreachNotes: outreach?.notes || "",
-        lastContact: outreach?.lastContact || ""
+        lastContact: outreach?.lastContact || "",
+        outreachUpdatedAt: outreach?.updatedAt || ""
       };
     });
     const votedRows = lotRows.filter((row) => row.hasVoted);
@@ -23513,7 +23514,8 @@ var FallingWatersPortal = (() => {
         "Last Active",
         "Contacted",
         "Outreach Notes",
-        "Last Contact Date"
+        "Last Contact Date",
+        "Outreach Last Saved"
       ];
       const lines = [
         headers.join(","),
@@ -23533,7 +23535,8 @@ var FallingWatersPortal = (() => {
             row.lastActive || "",
             row.contacted ? "Yes" : "No",
             row.outreachNotes || "",
-            row.lastContact || ""
+            row.lastContact || "",
+            row.outreachUpdatedAt || ""
           ].map((val) => `"${String(val).replaceAll('"', '""')}"`).join(",")
         )
       ];
@@ -23649,6 +23652,7 @@ var FallingWatersPortal = (() => {
             contacted: row.contacted,
             outreach_notes: row.outreachNotes || "",
             last_contact: row.lastContact || "",
+            outreach_updated_at: row.outreachUpdatedAt || "",
             owner_name: row.ownerName || "",
             primary_voter: row.primaryVoter || "",
             associated_names: associatedNames,
@@ -23797,6 +23801,7 @@ var FallingWatersPortal = (() => {
         lastContact: checked ? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : ""
       });
     };
+    const outreachSavedLabel = (row) => row.outreachUpdatedAt ? `Saved ${row.outreachUpdatedAt}` : "No outreach update saved yet";
     const saveLotCount = () => {
       const parsed = Number.parseInt(String(lotCountInput || "").trim(), 10);
       if (Number.isNaN(parsed) || parsed < MIN_TOTAL_LOTS || parsed > MAX_TOTAL_LOTS) {
@@ -24339,7 +24344,7 @@ var FallingWatersPortal = (() => {
           placeholder: "Outreach notes",
           onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
         }
-      ))),
+      ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, outreachSavedLabel(row)))),
       /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
@@ -24395,7 +24400,7 @@ var FallingWatersPortal = (() => {
         placeholder: "Outreach notes",
         onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
       }
-    )), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 170 } }, /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 4 } }, outreachSavedLabel(row))), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 170 } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, padding: "6px 8px", fontSize: 11 },
@@ -24708,10 +24713,10 @@ var FallingWatersPortal = (() => {
       setOwnerActivity((prev) => ({
         ...prev,
         [lot]: {
+          ...prev[lot],
           hasLoggedIn: markLogin ? true : !!prev?.[lot]?.hasLoggedIn,
           lastLoginAt: markLogin ? formatIsoDateTime(nowIso) : prev?.[lot]?.lastLoginAt || "",
           lastActive: todayLabel(),
-          ...prev[lot],
           ...patch
         }
       }));
@@ -24738,6 +24743,7 @@ var FallingWatersPortal = (() => {
     };
     const handleUpdateOutreach = (lot, patch = {}) => {
       if (!lot || !allLotLabels.includes(lot)) return;
+      const updatedAt = formatIsoDateTime((/* @__PURE__ */ new Date()).toISOString());
       setOutreachState((prev) => {
         const next = { ...prev };
         const existing = { ...next[lot] || {} };
@@ -24752,7 +24758,8 @@ var FallingWatersPortal = (() => {
         next[lot] = {
           contacted,
           notes,
-          lastContact
+          lastContact,
+          updatedAt
         };
         return next;
       });
@@ -25325,8 +25332,10 @@ var FallingWatersPortal = (() => {
             existingOutreach.lastContact = String(pick(lastContactAliases) || "").trim();
           }
           const shouldKeep = existingOutreach.contacted || String(existingOutreach.notes || "").trim().length > 0 || String(existingOutreach.lastContact || "").trim().length > 0;
-          if (shouldKeep) nextOutreach[lot] = existingOutreach;
-          else delete nextOutreach[lot];
+          if (shouldKeep) {
+            existingOutreach.updatedAt = formatIsoDateTime((/* @__PURE__ */ new Date()).toISOString());
+            nextOutreach[lot] = existingOutreach;
+          } else delete nextOutreach[lot];
         }
         const eligibleAliases = ["vote eligible", "eligible", "eligibility", "eligibility status", "eligible to vote", "dues paid", "dues current"];
         const ineligibleReasonAliases = ["ineligible reason", "reason ineligible", "disqualification reason", "eligibility notes", "eligibility reason"];
