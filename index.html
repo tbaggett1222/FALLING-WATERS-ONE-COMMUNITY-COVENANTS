@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1C3A2E" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Falling Waters HOA" />
+    <title>Falling Waters Community Covenant Portal</title>
+    <meta
+      name="description"
+      content="Interactive portal for Falling Waters CC&R comparison, owner engagement, short-term rental voting, and one-community covenant strategy."
+    />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="pwa-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="pwa-icon.svg" />
+    <style>
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        min-height: 100%;
+      }
+      body {
+        background: #f7f4ef;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function () {
+        var path = window.location.pathname || "/";
+        var base = path.endsWith("/") ? path : path.replace(/[^/]*$/, "/");
+        var script = document.createElement("script");
+        script.src = base + "app.js";
+        script.onerror = function () {
+          var root = document.getElementById("root");
+          if (root) {
+            root.innerHTML =
+              '<div style="max-width:760px;margin:48px auto;padding:18px 20px;border:1px solid #ef4444;border-radius:8px;background:#fef2f2;color:#7f1d1d;font-family:system-ui,sans-serif;line-height:1.5;"><strong>Site loading error:</strong> could not load app.js. Try refreshing, opening the URL with a trailing slash, or clearing cache.</div>';
+          }
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
+  </body>
+</html>
