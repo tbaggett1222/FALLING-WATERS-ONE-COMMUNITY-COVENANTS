@@ -2948,6 +2948,7 @@ function AdminVotingPage({
   onFetchDbRecords,
   onRunDbChecklist,
   onUpdateEligibility,
+  onUpdateOutreach,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
   onGrantAdminAccess,
@@ -3061,6 +3062,7 @@ function AdminVotingPage({
     const choice = voteLedger[lotLabel] || store.get(`vote_${lotLabel}`) || null;
     const hasVoted = !!choice;
     const voteEligible = eligibility?.eligible === false ? false : true;
+    const loginRecorded = !!activity?.hasLoggedIn;
     return {
       lot: lotLabel,
       lotNum: lotNumberFromLabel(lotLabel),
@@ -3070,6 +3072,8 @@ function AdminVotingPage({
       choice,
       status: hasVoted ? (voteEligible ? "Voted" : "Voted - non-eligible") : activity ? "Registered - not voted" : "Not engaged",
       voteEligible,
+      loginRecorded,
+      lastLoginAt: activity?.lastLoginAt || "",
       ineligibleReason: voteEligible ? "" : String(eligibility?.reason || "").trim(),
       eligibilityUpdatedAt: eligibility?.updatedAt || "",
       commented: !!activity?.commented,
@@ -3117,6 +3121,8 @@ function AdminVotingPage({
       "Eligibility Last Updated",
       "Primary Voter",
       "Owner Name (if known)",
+      "Login Recorded",
+      "Last Login",
       "Commented",
       "Last Active",
       "Contacted",
@@ -3135,6 +3141,8 @@ function AdminVotingPage({
           row.eligibilityUpdatedAt || "",
           row.primaryVoter || "",
           row.ownerName || "",
+          row.loginRecorded ? "Yes" : "No",
+          row.lastLoginAt || "",
           row.commented ? "Yes" : "No",
           row.lastActive || "",
           row.contacted ? "Yes" : "No",
@@ -3415,6 +3423,17 @@ function AdminVotingPage({
     } else {
       onUpdateEligibility(row.lot, { eligible: true, reason: "" });
     }
+  };
+
+  const updateOutreachRecord = (lot, patch = {}) => {
+    onUpdateOutreach?.(lot, patch);
+  };
+
+  const markContactedToday = (lot, checked) => {
+    updateOutreachRecord(lot, {
+      contacted: !!checked,
+      lastContact: checked ? (new Date().toISOString().slice(0, 10)) : "",
+    });
   };
 
   const saveLotCount = () => {
@@ -3745,7 +3764,7 @@ function AdminVotingPage({
   return (
     <div>
       <div style={S.alert("info")}>
-        Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals.
+        Admin visibility: this roster tracks lot-level participation, login activity, voting, outreach, and vote eligibility. Outreach fields (contacted, notes, last contact) can be entered directly in each lot row or loaded from CSV import.
       </div>
       <div style={S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger")}>
         <strong>Backup health:</strong> {backupHealthText} {backupHealthGuidance}
@@ -4316,9 +4335,33 @@ function AdminVotingPage({
                   <div><strong>Vote:</strong> {choiceLabel(row.choice)}</div>
                   <div><strong>Primary voter:</strong> {row.primaryVoter || "—"}</div>
                   <div><strong>Owner:</strong> {row.ownerName || "—"}</div>
-                  <div><strong>Commented:</strong> {row.commented ? "Yes" : "No"} · <strong>Contacted:</strong> {row.contacted ? "Yes" : "No"}</div>
-                  <div><strong>Last contact:</strong> {row.lastContact || "—"} · <strong>Last active:</strong> {row.lastActive || "—"}</div>
-                  <div style={{ marginTop: 4, color: C.muted }}><strong>Outreach notes:</strong> {row.outreachNotes || "—"}</div>
+                  <div>
+                    <strong>Login:</strong> {row.loginRecorded ? "Recorded" : "Not recorded"}
+                    {row.lastLoginAt ? ` · ${row.lastLoginAt}` : ""}
+                  </div>
+                  <div><strong>Commented:</strong> {row.commented ? "Yes" : "No"} · <strong>Last active:</strong> {row.lastActive || "—"}</div>
+                  <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={row.contacted}
+                        onChange={(event) => markContactedToday(row.lot, event.target.checked)}
+                      />
+                      <span><strong>Contacted</strong></span>
+                    </label>
+                    <input
+                      style={{ ...S.input, padding: "8px 10px", fontSize: 12 }}
+                      value={row.lastContact || ""}
+                      placeholder="Last contact date (YYYY-MM-DD)"
+                      onChange={(event) => updateOutreachRecord(row.lot, { lastContact: event.target.value })}
+                    />
+                    <textarea
+                      style={{ ...S.textarea, minHeight: 74, fontSize: 12 }}
+                      value={row.outreachNotes || ""}
+                      placeholder="Outreach notes"
+                      onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
+                    />
+                  </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
                   <span style={S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight)}>
@@ -4358,6 +4401,7 @@ function AdminVotingPage({
                   <th style={S.th}>Vote eligibility</th>
                   <th style={S.th}>Primary voter</th>
                   <th style={S.th}>Owner name (if known)</th>
+                  <th style={S.th}>Login action</th>
                   <th style={S.th}>Commented</th>
                   <th style={S.th}>Contacted</th>
                   <th style={S.th}>Outreach notes</th>
@@ -4403,10 +4447,48 @@ function AdminVotingPage({
                     </td>
                     <td style={S.td}>{row.primaryVoter || "—"}</td>
                     <td style={S.td}>{row.ownerName || "—"}</td>
+                    <td style={S.td}>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <span
+                          style={S.badge(
+                            row.loginRecorded ? C.success : C.muted,
+                            row.loginRecorded ? C.successLight : C.parchmentDark
+                          )}
+                        >
+                          {row.loginRecorded ? "Login recorded" : "No login yet"}
+                        </span>
+                        <span style={{ fontSize: 10, color: C.muted }}>
+                          {row.lastLoginAt || "—"}
+                        </span>
+                      </div>
+                    </td>
                     <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
-                    <td style={S.td}>{row.contacted ? "Yes" : "No"}</td>
-                    <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{row.outreachNotes || "—"}</td>
-                    <td style={S.td}>{row.lastContact || "—"}</td>
+                    <td style={S.td}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={row.contacted}
+                          onChange={(event) => markContactedToday(row.lot, event.target.checked)}
+                        />
+                        <span>{row.contacted ? "Yes" : "No"}</span>
+                      </label>
+                    </td>
+                    <td style={{ ...S.td, minWidth: 220 }}>
+                      <textarea
+                        style={{ ...S.textarea, minHeight: 58, fontSize: 11 }}
+                        value={row.outreachNotes || ""}
+                        placeholder="Outreach notes"
+                        onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
+                      />
+                    </td>
+                    <td style={{ ...S.td, minWidth: 170 }}>
+                      <input
+                        style={{ ...S.input, padding: "6px 8px", fontSize: 11 }}
+                        value={row.lastContact || ""}
+                        placeholder="YYYY-MM-DD"
+                        onChange={(event) => updateOutreachRecord(row.lot, { lastContact: event.target.value })}
+                      />
+                    </td>
                     <td style={S.td}>{row.lastActive || "—"}</td>
                   </tr>
                 ))}
@@ -4813,12 +4895,15 @@ export default function App() {
     }
   }, [adminAccessEntries, user]);
 
-  const trackOwner = (lot, patch = {}) => {
+  const trackOwner = (lot, patch = {}, options = {}) => {
     if (!lot) return;
+    const markLogin = options?.markLogin === true;
+    const nowIso = new Date().toISOString();
     setOwnerActivity((prev) => ({
       ...prev,
       [lot]: {
-        hasLoggedIn: true,
+        hasLoggedIn: markLogin ? true : !!prev?.[lot]?.hasLoggedIn,
+        lastLoginAt: markLogin ? formatIsoDateTime(nowIso) : (prev?.[lot]?.lastLoginAt || ""),
         lastActive: todayLabel(),
         ...prev[lot],
         ...patch,
@@ -4851,6 +4936,38 @@ export default function App() {
       };
       return next;
     });
+  };
+
+  const handleUpdateOutreach = (lot, patch = {}) => {
+    if (!lot || !allLotLabels.includes(lot)) return;
+    setOutreachState((prev) => {
+      const next = { ...prev };
+      const existing = { ...(next[lot] || {}) };
+      const contacted =
+        patch.contacted === undefined
+          ? !!existing.contacted
+          : patch.contacted === true;
+      const notes =
+        patch.notes === undefined
+          ? String(existing.notes || "")
+          : String(patch.notes || "");
+      const lastContact =
+        patch.lastContact === undefined
+          ? String(existing.lastContact || "")
+          : String(patch.lastContact || "").trim();
+      const cleanedNotes = notes.trim();
+      if (!contacted && !cleanedNotes && !lastContact) {
+        delete next[lot];
+        return next;
+      }
+      next[lot] = {
+        contacted,
+        notes,
+        lastContact,
+      };
+      return next;
+    });
+    queueSharedChangesSync(["outreach"], { mode: "merge" });
   };
 
   const handleUpdateTotalLots = (nextTotalLots) => {
@@ -5170,7 +5287,7 @@ export default function App() {
     setPage(isAdmin ? "admin-votes" : "home");
     trackUserAccess(persistedUser);
     if (!isAdmin) {
-      lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
+      lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }, { markLogin: true }));
     }
     queueSharedChangesSync(
       isAdmin
@@ -6092,7 +6209,7 @@ export default function App() {
     sharedSyncScopeQueueRef.current.clear();
     sharedSyncModeRef.current = "merge";
     void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
-  }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
+  }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory, outreachState, primaryVoterRegistry]);
 
   useEffect(() => {
     if (!user || !dbApiBaseUrl) return;
@@ -6450,6 +6567,7 @@ export default function App() {
               onFetchDbRecords={handleFetchDbRecords}
               onRunDbChecklist={handleRunDbChecklist}
               onUpdateEligibility={handleUpdateEligibility}
+              onUpdateOutreach={handleUpdateOutreach}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
               onGrantAdminAccess={handleGrantAdminAccess}

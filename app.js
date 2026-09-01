@@ -23363,6 +23363,7 @@ var FallingWatersPortal = (() => {
     onFetchDbRecords,
     onRunDbChecklist,
     onUpdateEligibility,
+    onUpdateOutreach,
     onUpdateTotalLots,
     onSetAdminAccessGrade,
     onGrantAdminAccess,
@@ -23458,6 +23459,7 @@ var FallingWatersPortal = (() => {
       const choice = voteLedger[lotLabel] || store.get(`vote_${lotLabel}`) || null;
       const hasVoted = !!choice;
       const voteEligible = eligibility?.eligible === false ? false : true;
+      const loginRecorded = !!activity?.hasLoggedIn;
       return {
         lot: lotLabel,
         lotNum: lotNumberFromLabel(lotLabel),
@@ -23467,6 +23469,8 @@ var FallingWatersPortal = (() => {
         choice,
         status: hasVoted ? voteEligible ? "Voted" : "Voted - non-eligible" : activity ? "Registered - not voted" : "Not engaged",
         voteEligible,
+        loginRecorded,
+        lastLoginAt: activity?.lastLoginAt || "",
         ineligibleReason: voteEligible ? "" : String(eligibility?.reason || "").trim(),
         eligibilityUpdatedAt: eligibility?.updatedAt || "",
         commented: !!activity?.commented,
@@ -23503,6 +23507,8 @@ var FallingWatersPortal = (() => {
         "Eligibility Last Updated",
         "Primary Voter",
         "Owner Name (if known)",
+        "Login Recorded",
+        "Last Login",
         "Commented",
         "Last Active",
         "Contacted",
@@ -23521,6 +23527,8 @@ var FallingWatersPortal = (() => {
             row.eligibilityUpdatedAt || "",
             row.primaryVoter || "",
             row.ownerName || "",
+            row.loginRecorded ? "Yes" : "No",
+            row.lastLoginAt || "",
             row.commented ? "Yes" : "No",
             row.lastActive || "",
             row.contacted ? "Yes" : "No",
@@ -23779,6 +23787,15 @@ var FallingWatersPortal = (() => {
       } else {
         onUpdateEligibility(row.lot, { eligible: true, reason: "" });
       }
+    };
+    const updateOutreachRecord = (lot, patch = {}) => {
+      onUpdateOutreach?.(lot, patch);
+    };
+    const markContactedToday = (lot, checked) => {
+      updateOutreachRecord(lot, {
+        contacted: !!checked,
+        lastContact: checked ? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : ""
+      });
     };
     const saveLotCount = () => {
       const parsed = Number.parseInt(String(lotCountInput || "").trim(), 10);
@@ -24081,7 +24098,7 @@ var FallingWatersPortal = (() => {
       setTransferMsg(result?.message || "Primary voter transfer recorded.");
       setTimeout(() => setTransferMsg(""), 4500);
     };
-    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Backup health:"), " ", backupHealthText, " ", backupHealthGuidance), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup health policy"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many days can pass before backup health is marked stale."), backupThresholdErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupThresholdErr), backupThresholdMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupThresholdMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(
+    return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, login activity, voting, outreach, and vote eligibility. Outreach fields (contacted, notes, last contact) can be entered directly in each lot row or loaded from CSV import."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Backup health:"), " ", backupHealthText, " ", backupHealthGuidance), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup health policy"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many days can pass before backup health is marked stale."), backupThresholdErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupThresholdErr), backupThresholdMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupThresholdMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, maxWidth: 180 },
@@ -24299,7 +24316,30 @@ var FallingWatersPortal = (() => {
         }
       },
       /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 16, fontWeight: 700, color: C.forest } }, row.lot), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight) }, row.status)),
-      /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 8, fontSize: 13, color: C.ink } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Vote:"), " ", choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Primary voter:"), " ", row.primaryVoter || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Owner:"), " ", row.ownerName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Commented:"), " ", row.commented ? "Yes" : "No", " \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Contacted:"), " ", row.contacted ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Last contact:"), " ", row.lastContact || "\u2014", " \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Last active:"), " ", row.lastActive || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 4, color: C.muted } }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Outreach notes:"), " ", row.outreachNotes || "\u2014")),
+      /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 8, fontSize: 13, color: C.ink } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Vote:"), " ", choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Primary voter:"), " ", row.primaryVoter || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Owner:"), " ", row.ownerName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Login:"), " ", row.loginRecorded ? "Recorded" : "Not recorded", row.lastLoginAt ? ` \xB7 ${row.lastLoginAt}` : ""), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Commented:"), " ", row.commented ? "Yes" : "No", " \xB7 ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Last active:"), " ", row.lastActive || "\u2014"), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 8, display: "grid", gap: 6 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12 } }, /* @__PURE__ */ import_react.default.createElement(
+        "input",
+        {
+          type: "checkbox",
+          checked: row.contacted,
+          onChange: (event) => markContactedToday(row.lot, event.target.checked)
+        }
+      ), /* @__PURE__ */ import_react.default.createElement("span", null, /* @__PURE__ */ import_react.default.createElement("strong", null, "Contacted"))), /* @__PURE__ */ import_react.default.createElement(
+        "input",
+        {
+          style: { ...S.input, padding: "8px 10px", fontSize: 12 },
+          value: row.lastContact || "",
+          placeholder: "Last contact date (YYYY-MM-DD)",
+          onChange: (event) => updateOutreachRecord(row.lot, { lastContact: event.target.value })
+        }
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "textarea",
+        {
+          style: { ...S.textarea, minHeight: 74, fontSize: 12 },
+          value: row.outreachNotes || "",
+          placeholder: "Outreach notes",
+          onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
+        }
+      ))),
       /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
@@ -24316,7 +24356,7 @@ var FallingWatersPortal = (() => {
           onChange: (event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })
         }
       ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, "Updated ", row.eligibilityUpdatedAt || "today")))
-    ))) : /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Status"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote choice"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote eligibility"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Primary voter"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Owner name (if known)"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Commented"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Contacted"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Outreach notes"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last contact"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last active"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, sortedFilteredRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.lot, style: { background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight) }, row.status)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 220 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
+    ))) : /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Status"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote choice"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Vote eligibility"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Primary voter"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Owner name (if known)"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Login action"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Commented"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Contacted"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Outreach notes"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last contact"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last active"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, sortedFilteredRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.lot, style: { background: !row.voteEligible ? "#FEF2F2" : row.hasVoted ? C.white : "#FFF7ED" } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(!row.voteEligible ? C.amber : row.hasVoted ? C.success : C.danger, !row.voteEligible ? C.amberLight : row.hasVoted ? C.successLight : C.dangerLight) }, row.status)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, choiceLabel(row.choice)), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 220 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         style: { ...S.btn(row.voteEligible ? "outline" : "stone"), padding: "5px 8px", fontSize: 11 },
@@ -24331,7 +24371,39 @@ var FallingWatersPortal = (() => {
         placeholder: "Reason (e.g. HOA dues unpaid)",
         onChange: (event) => onUpdateEligibility(row.lot, { eligible: false, reason: event.target.value })
       }
-    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 10, color: C.muted } }, "Updated ", row.eligibilityUpdatedAt || "today")))), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.primaryVoter || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.ownerName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.commented ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.contacted ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontSize: 12, color: C.muted } }, row.outreachNotes || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastContact || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastActive || "\u2014"))))))));
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 10, color: C.muted } }, "Updated ", row.eligibilityUpdatedAt || "today")))), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.primaryVoter || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.ownerName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gap: 4 } }, /* @__PURE__ */ import_react.default.createElement(
+      "span",
+      {
+        style: S.badge(
+          row.loginRecorded ? C.success : C.muted,
+          row.loginRecorded ? C.successLight : C.parchmentDark
+        )
+      },
+      row.loginRecorded ? "Login recorded" : "No login yet"
+    ), /* @__PURE__ */ import_react.default.createElement("span", { style: { fontSize: 10, color: C.muted } }, row.lastLoginAt || "\u2014"))), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.commented ? "Yes" : "No"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("label", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12 } }, /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        type: "checkbox",
+        checked: row.contacted,
+        onChange: (event) => markContactedToday(row.lot, event.target.checked)
+      }
+    ), /* @__PURE__ */ import_react.default.createElement("span", null, row.contacted ? "Yes" : "No"))), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 220 } }, /* @__PURE__ */ import_react.default.createElement(
+      "textarea",
+      {
+        style: { ...S.textarea, minHeight: 58, fontSize: 11 },
+        value: row.outreachNotes || "",
+        placeholder: "Outreach notes",
+        onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 170 } }, /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: { ...S.input, padding: "6px 8px", fontSize: 11 },
+        value: row.lastContact || "",
+        placeholder: "YYYY-MM-DD",
+        onChange: (event) => updateOutreachRecord(row.lot, { lastContact: event.target.value })
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastActive || "\u2014"))))))));
   }
   function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operationalStats }) {
     const surveyEngaged = operationalStats.votedLots;
@@ -24629,12 +24701,15 @@ var FallingWatersPortal = (() => {
         setPage("home");
       }
     }, [adminAccessEntries, user]);
-    const trackOwner = (lot, patch = {}) => {
+    const trackOwner = (lot, patch = {}, options = {}) => {
       if (!lot) return;
+      const markLogin = options?.markLogin === true;
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
       setOwnerActivity((prev) => ({
         ...prev,
         [lot]: {
-          hasLoggedIn: true,
+          hasLoggedIn: markLogin ? true : !!prev?.[lot]?.hasLoggedIn,
+          lastLoginAt: markLogin ? formatIsoDateTime(nowIso) : prev?.[lot]?.lastLoginAt || "",
           lastActive: todayLabel(),
           ...prev[lot],
           ...patch
@@ -24660,6 +24735,28 @@ var FallingWatersPortal = (() => {
         };
         return next;
       });
+    };
+    const handleUpdateOutreach = (lot, patch = {}) => {
+      if (!lot || !allLotLabels.includes(lot)) return;
+      setOutreachState((prev) => {
+        const next = { ...prev };
+        const existing = { ...next[lot] || {} };
+        const contacted = patch.contacted === void 0 ? !!existing.contacted : patch.contacted === true;
+        const notes = patch.notes === void 0 ? String(existing.notes || "") : String(patch.notes || "");
+        const lastContact = patch.lastContact === void 0 ? String(existing.lastContact || "") : String(patch.lastContact || "").trim();
+        const cleanedNotes = notes.trim();
+        if (!contacted && !cleanedNotes && !lastContact) {
+          delete next[lot];
+          return next;
+        }
+        next[lot] = {
+          contacted,
+          notes,
+          lastContact
+        };
+        return next;
+      });
+      queueSharedChangesSync(["outreach"], { mode: "merge" });
     };
     const handleUpdateTotalLots = (nextTotalLots) => {
       const parsed = Number(nextTotalLots);
@@ -24953,7 +25050,7 @@ var FallingWatersPortal = (() => {
       setPage(isAdmin ? "admin-votes" : "home");
       trackUserAccess(persistedUser);
       if (!isAdmin) {
-        lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
+        lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }, { markLogin: true }));
       }
       queueSharedChangesSync(
         isAdmin ? ["userDirectory"] : ["ownerActivity", "userDirectory", "primaryVoters"],
@@ -25745,7 +25842,7 @@ var FallingWatersPortal = (() => {
       sharedSyncScopeQueueRef.current.clear();
       sharedSyncModeRef.current = "merge";
       void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
-    }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
+    }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory, outreachState, primaryVoterRegistry]);
     (0, import_react.useEffect)(() => {
       if (!user || !dbApiBaseUrl) return;
       let cancelled = false;
@@ -26033,6 +26130,7 @@ var FallingWatersPortal = (() => {
         onFetchDbRecords: handleFetchDbRecords,
         onRunDbChecklist: handleRunDbChecklist,
         onUpdateEligibility: handleUpdateEligibility,
+        onUpdateOutreach: handleUpdateOutreach,
         onUpdateTotalLots: handleUpdateTotalLots,
         onSetAdminAccessGrade: handleSetAdminAccessGrade,
         onGrantAdminAccess: handleGrantAdminAccess,
