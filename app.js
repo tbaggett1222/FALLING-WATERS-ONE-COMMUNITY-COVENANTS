@@ -25427,7 +25427,19 @@ var FallingWatersPortal = (() => {
       const sanitizeObj = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
       const mergeObjectState = (currentState, incomingState) => {
         if (restoreMode === "replace") return sanitizeObj(incomingState);
-        if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+        if (restoreMode === "merge") {
+          const current2 = { ...sanitizeObj(currentState) };
+          const incoming2 = sanitizeObj(incomingState);
+          Object.entries(incoming2).forEach(([key, value]) => {
+            const existing = current2[key];
+            if (existing && typeof existing === "object" && !Array.isArray(existing) && value && typeof value === "object" && !Array.isArray(value)) {
+              current2[key] = { ...existing, ...value };
+              return;
+            }
+            current2[key] = value;
+          });
+          return current2;
+        }
         const current = { ...sanitizeObj(currentState) };
         const incoming = sanitizeObj(incomingState);
         Object.entries(incoming).forEach(([key, value]) => {

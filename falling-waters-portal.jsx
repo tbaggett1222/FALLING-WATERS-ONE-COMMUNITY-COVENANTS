@@ -5710,7 +5710,26 @@ export default function App() {
     const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
     const mergeObjectState = (currentState, incomingState) => {
       if (restoreMode === "replace") return sanitizeObj(incomingState);
-      if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+      if (restoreMode === "merge") {
+        const current = { ...sanitizeObj(currentState) };
+        const incoming = sanitizeObj(incomingState);
+        Object.entries(incoming).forEach(([key, value]) => {
+          const existing = current[key];
+          if (
+            existing
+            && typeof existing === "object"
+            && !Array.isArray(existing)
+            && value
+            && typeof value === "object"
+            && !Array.isArray(value)
+          ) {
+            current[key] = { ...existing, ...value };
+            return;
+          }
+          current[key] = value;
+        });
+        return current;
+      }
       const current = { ...sanitizeObj(currentState) };
       const incoming = sanitizeObj(incomingState);
       Object.entries(incoming).forEach(([key, value]) => {
