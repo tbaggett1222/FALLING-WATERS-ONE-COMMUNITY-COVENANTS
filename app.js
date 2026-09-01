@@ -23801,7 +23801,14 @@ var FallingWatersPortal = (() => {
         lastContact: checked ? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : ""
       });
     };
-    const outreachSavedLabel = (row) => row.outreachUpdatedAt ? `Saved ${row.outreachUpdatedAt}` : "No outreach update saved yet";
+    const outreachSavedLabel = (row) => row.outreachUpdatedAt ? `Saved locally ${row.outreachUpdatedAt}` : "No outreach update saved yet";
+    const saveOutreachNow = (row) => {
+      updateOutreachRecord(row.lot, {
+        contacted: row.contacted,
+        notes: row.outreachNotes || "",
+        lastContact: row.lastContact || ""
+      });
+    };
     const saveLotCount = () => {
       const parsed = Number.parseInt(String(lotCountInput || "").trim(), 10);
       if (Number.isNaN(parsed) || parsed < MIN_TOTAL_LOTS || parsed > MAX_TOTAL_LOTS) {
@@ -24298,7 +24305,7 @@ var FallingWatersPortal = (() => {
       { num: eligibleVotedRows.length, label: "Eligible votes counted", accent: C.success },
       { num: ineligibleVotedRows.length, label: "Non-eligible votes flagged", accent: C.danger },
       { num: ineligibleRows.length, label: "Lots marked non-eligible", accent: C.amber }
-    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, "Official tally (eligible lots only): ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleEliminateVotes), " eliminate, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligiblePermitVotes), " permit, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleUndecidedVotes), " not voted."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-level voting roster"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, filteredRows.length, " lot records shown")), /* @__PURE__ */ import_react.default.createElement(
+    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, "Official tally (eligible lots only): ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleEliminateVotes), " eliminate, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligiblePermitVotes), " permit, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleUndecidedVotes), " not voted."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-level voting roster"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, filteredRows.length, " lot records shown"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Outreach fields auto-save as you type. Use ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Save outreach"), " for a manual save confirmation.")), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 },
@@ -24344,6 +24351,13 @@ var FallingWatersPortal = (() => {
           placeholder: "Outreach notes",
           onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
         }
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          style: { ...S.btn("outline"), padding: "7px 10px", fontSize: 11, justifyContent: "center" },
+          onClick: () => saveOutreachNow(row)
+        },
+        "Save outreach"
       ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, outreachSavedLabel(row)))),
       /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
         "button",
@@ -24400,6 +24414,13 @@ var FallingWatersPortal = (() => {
         placeholder: "Outreach notes",
         onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
       }
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("outline"), padding: "6px 8px", fontSize: 10, marginTop: 4 },
+        onClick: () => saveOutreachNow(row)
+      },
+      "Save outreach"
     ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 4 } }, outreachSavedLabel(row))), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 170 } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {

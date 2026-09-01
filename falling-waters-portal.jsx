@@ -3442,8 +3442,16 @@ function AdminVotingPage({
 
   const outreachSavedLabel = (row) =>
     row.outreachUpdatedAt
-      ? `Saved ${row.outreachUpdatedAt}`
+      ? `Saved locally ${row.outreachUpdatedAt}`
       : "No outreach update saved yet";
+
+  const saveOutreachNow = (row) => {
+    updateOutreachRecord(row.lot, {
+      contacted: row.contacted,
+      notes: row.outreachNotes || "",
+      lastContact: row.lastContact || "",
+    });
+  };
 
   const saveLotCount = () => {
     const parsed = Number.parseInt(String(lotCountInput || "").trim(), 10);
@@ -4303,6 +4311,9 @@ function AdminVotingPage({
           <div>
             <div style={S.cardTitle}>Lot-level voting roster</div>
             <div style={{ fontSize: 12, color: C.muted }}>{filteredRows.length} lot records shown</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+              Outreach fields auto-save as you type. Use <strong>Save outreach</strong> for a manual save confirmation.
+            </div>
           </div>
           <input
             style={{ ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 }}
@@ -4370,6 +4381,12 @@ function AdminVotingPage({
                       placeholder="Outreach notes"
                       onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
                     />
+                    <button
+                      style={{ ...S.btn("outline"), padding: "7px 10px", fontSize: 11, justifyContent: "center" }}
+                      onClick={() => saveOutreachNow(row)}
+                    >
+                      Save outreach
+                    </button>
                     <div style={{ fontSize: 11, color: C.muted }}>
                       {outreachSavedLabel(row)}
                     </div>
@@ -4492,6 +4509,12 @@ function AdminVotingPage({
                         placeholder="Outreach notes"
                         onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
                       />
+                      <button
+                        style={{ ...S.btn("outline"), padding: "6px 8px", fontSize: 10, marginTop: 4 }}
+                        onClick={() => saveOutreachNow(row)}
+                      >
+                        Save outreach
+                      </button>
                       <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
                         {outreachSavedLabel(row)}
                       </div>
