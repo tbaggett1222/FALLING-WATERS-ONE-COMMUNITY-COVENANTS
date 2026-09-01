@@ -3081,6 +3081,7 @@ function AdminVotingPage({
       contacted: !!outreach?.contacted,
       outreachNotes: outreach?.notes || "",
       lastContact: outreach?.lastContact || "",
+      outreachUpdatedAt: outreach?.updatedAt || "",
     };
   });
 
@@ -3128,6 +3129,7 @@ function AdminVotingPage({
       "Contacted",
       "Outreach Notes",
       "Last Contact Date",
+      "Outreach Last Saved",
     ];
     const lines = [
       headers.join(","),
@@ -3148,6 +3150,7 @@ function AdminVotingPage({
           row.contacted ? "Yes" : "No",
           row.outreachNotes || "",
           row.lastContact || "",
+          row.outreachUpdatedAt || "",
         ]
           .map((val) => `"${String(val).replaceAll('"', '""')}"`)
           .join(",")
@@ -3273,6 +3276,7 @@ function AdminVotingPage({
           contacted: row.contacted,
           outreach_notes: row.outreachNotes || "",
           last_contact: row.lastContact || "",
+          outreach_updated_at: row.outreachUpdatedAt || "",
           owner_name: row.ownerName || "",
           primary_voter: row.primaryVoter || "",
           associated_names: associatedNames,
@@ -3433,6 +3437,19 @@ function AdminVotingPage({
     updateOutreachRecord(lot, {
       contacted: !!checked,
       lastContact: checked ? (new Date().toISOString().slice(0, 10)) : "",
+    });
+  };
+
+  const outreachSavedLabel = (row) =>
+    row.outreachUpdatedAt
+      ? `Saved locally ${row.outreachUpdatedAt}`
+      : "No outreach update saved yet";
+
+  const saveOutreachNow = (row) => {
+    updateOutreachRecord(row.lot, {
+      contacted: row.contacted,
+      notes: row.outreachNotes || "",
+      lastContact: row.lastContact || "",
     });
   };
 
@@ -4294,6 +4311,9 @@ function AdminVotingPage({
           <div>
             <div style={S.cardTitle}>Lot-level voting roster</div>
             <div style={{ fontSize: 12, color: C.muted }}>{filteredRows.length} lot records shown</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+              Outreach fields auto-save as you type. Use <strong>Save outreach</strong> for a manual save confirmation.
+            </div>
           </div>
           <input
             style={{ ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 }}
@@ -4361,6 +4381,15 @@ function AdminVotingPage({
                       placeholder="Outreach notes"
                       onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
                     />
+                    <button
+                      style={{ ...S.btn("outline"), padding: "7px 10px", fontSize: 11, justifyContent: "center" }}
+                      onClick={() => saveOutreachNow(row)}
+                    >
+                      Save outreach
+                    </button>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      {outreachSavedLabel(row)}
+                    </div>
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
@@ -4480,6 +4509,15 @@ function AdminVotingPage({
                         placeholder="Outreach notes"
                         onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
                       />
+                      <button
+                        style={{ ...S.btn("outline"), padding: "6px 8px", fontSize: 10, marginTop: 4 }}
+                        onClick={() => saveOutreachNow(row)}
+                      >
+                        Save outreach
+                      </button>
+                      <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
+                        {outreachSavedLabel(row)}
+                      </div>
                     </td>
                     <td style={{ ...S.td, minWidth: 170 }}>
                       <input
@@ -4902,10 +4940,10 @@ export default function App() {
     setOwnerActivity((prev) => ({
       ...prev,
       [lot]: {
+        ...prev[lot],
         hasLoggedIn: markLogin ? true : !!prev?.[lot]?.hasLoggedIn,
         lastLoginAt: markLogin ? formatIsoDateTime(nowIso) : (prev?.[lot]?.lastLoginAt || ""),
         lastActive: todayLabel(),
-        ...prev[lot],
         ...patch,
       },
     }));
@@ -4940,6 +4978,7 @@ export default function App() {
 
   const handleUpdateOutreach = (lot, patch = {}) => {
     if (!lot || !allLotLabels.includes(lot)) return;
+    const updatedAt = formatIsoDateTime(new Date().toISOString());
     setOutreachState((prev) => {
       const next = { ...prev };
       const existing = { ...(next[lot] || {}) };
@@ -4964,6 +5003,7 @@ export default function App() {
         contacted,
         notes,
         lastContact,
+        updatedAt,
       };
       return next;
     });
@@ -5595,7 +5635,10 @@ export default function App() {
           existingOutreach.contacted ||
           String(existingOutreach.notes || "").trim().length > 0 ||
           String(existingOutreach.lastContact || "").trim().length > 0;
-        if (shouldKeep) nextOutreach[lot] = existingOutreach;
+        if (shouldKeep) {
+          existingOutreach.updatedAt = formatIsoDateTime(new Date().toISOString());
+          nextOutreach[lot] = existingOutreach;
+        }
         else delete nextOutreach[lot];
       }
 
@@ -5710,7 +5753,26 @@ export default function App() {
     const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
     const mergeObjectState = (currentState, incomingState) => {
       if (restoreMode === "replace") return sanitizeObj(incomingState);
-      if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+      if (restoreMode === "merge") {
+        const current = { ...sanitizeObj(currentState) };
+        const incoming = sanitizeObj(incomingState);
+        Object.entries(incoming).forEach(([key, value]) => {
+          const existing = current[key];
+          if (
+            existing
+            && typeof existing === "object"
+            && !Array.isArray(existing)
+            && value
+            && typeof value === "object"
+            && !Array.isArray(value)
+          ) {
+            current[key] = { ...existing, ...value };
+            return;
+          }
+          current[key] = value;
+        });
+        return current;
+      }
       const current = { ...sanitizeObj(currentState) };
       const incoming = sanitizeObj(incomingState);
       Object.entries(incoming).forEach(([key, value]) => {

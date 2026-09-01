@@ -23477,7 +23477,8 @@ var FallingWatersPortal = (() => {
         lastActive: activity?.lastActive || "",
         contacted: !!outreach?.contacted,
         outreachNotes: outreach?.notes || "",
-        lastContact: outreach?.lastContact || ""
+        lastContact: outreach?.lastContact || "",
+        outreachUpdatedAt: outreach?.updatedAt || ""
       };
     });
     const votedRows = lotRows.filter((row) => row.hasVoted);
@@ -23513,7 +23514,8 @@ var FallingWatersPortal = (() => {
         "Last Active",
         "Contacted",
         "Outreach Notes",
-        "Last Contact Date"
+        "Last Contact Date",
+        "Outreach Last Saved"
       ];
       const lines = [
         headers.join(","),
@@ -23533,7 +23535,8 @@ var FallingWatersPortal = (() => {
             row.lastActive || "",
             row.contacted ? "Yes" : "No",
             row.outreachNotes || "",
-            row.lastContact || ""
+            row.lastContact || "",
+            row.outreachUpdatedAt || ""
           ].map((val) => `"${String(val).replaceAll('"', '""')}"`).join(",")
         )
       ];
@@ -23649,6 +23652,7 @@ var FallingWatersPortal = (() => {
             contacted: row.contacted,
             outreach_notes: row.outreachNotes || "",
             last_contact: row.lastContact || "",
+            outreach_updated_at: row.outreachUpdatedAt || "",
             owner_name: row.ownerName || "",
             primary_voter: row.primaryVoter || "",
             associated_names: associatedNames,
@@ -23795,6 +23799,14 @@ var FallingWatersPortal = (() => {
       updateOutreachRecord(lot, {
         contacted: !!checked,
         lastContact: checked ? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) : ""
+      });
+    };
+    const outreachSavedLabel = (row) => row.outreachUpdatedAt ? `Saved locally ${row.outreachUpdatedAt}` : "No outreach update saved yet";
+    const saveOutreachNow = (row) => {
+      updateOutreachRecord(row.lot, {
+        contacted: row.contacted,
+        notes: row.outreachNotes || "",
+        lastContact: row.lastContact || ""
       });
     };
     const saveLotCount = () => {
@@ -24293,7 +24305,7 @@ var FallingWatersPortal = (() => {
       { num: eligibleVotedRows.length, label: "Eligible votes counted", accent: C.success },
       { num: ineligibleVotedRows.length, label: "Non-eligible votes flagged", accent: C.danger },
       { num: ineligibleRows.length, label: "Lots marked non-eligible", accent: C.amber }
-    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, "Official tally (eligible lots only): ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleEliminateVotes), " eliminate, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligiblePermitVotes), " permit, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleUndecidedVotes), " not voted."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-level voting roster"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, filteredRows.length, " lot records shown")), /* @__PURE__ */ import_react.default.createElement(
+    ].map((s, i) => /* @__PURE__ */ import_react.default.createElement("div", { key: i, style: S.statCard(s.accent) }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.statNum }, s.num), /* @__PURE__ */ import_react.default.createElement("div", { style: S.statLabel }, s.label)))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, "Official tally (eligible lots only): ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleEliminateVotes), " eliminate, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligiblePermitVotes), " permit, ", /* @__PURE__ */ import_react.default.createElement("strong", null, eligibleUndecidedVotes), " not voted."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Lot-level voting roster"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted } }, filteredRows.length, " lot records shown"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 4 } }, "Outreach fields auto-save as you type. Use ", /* @__PURE__ */ import_react.default.createElement("strong", null, "Save outreach"), " for a manual save confirmation.")), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 },
@@ -24339,7 +24351,14 @@ var FallingWatersPortal = (() => {
           placeholder: "Outreach notes",
           onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
         }
-      ))),
+      ), /* @__PURE__ */ import_react.default.createElement(
+        "button",
+        {
+          style: { ...S.btn("outline"), padding: "7px 10px", fontSize: 11, justifyContent: "center" },
+          onClick: () => saveOutreachNow(row)
+        },
+        "Save outreach"
+      ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted } }, outreachSavedLabel(row)))),
       /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight) }, row.voteEligible ? "Eligible" : "Non-eligible"), /* @__PURE__ */ import_react.default.createElement(
         "button",
         {
@@ -24395,7 +24414,14 @@ var FallingWatersPortal = (() => {
         placeholder: "Outreach notes",
         onChange: (event) => updateOutreachRecord(row.lot, { notes: event.target.value })
       }
-    )), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 170 } }, /* @__PURE__ */ import_react.default.createElement(
+    ), /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        style: { ...S.btn("outline"), padding: "6px 8px", fontSize: 10, marginTop: 4 },
+        onClick: () => saveOutreachNow(row)
+      },
+      "Save outreach"
+    ), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 10, color: C.muted, marginTop: 4 } }, outreachSavedLabel(row))), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, minWidth: 170 } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: { ...S.input, padding: "6px 8px", fontSize: 11 },
@@ -24708,10 +24734,10 @@ var FallingWatersPortal = (() => {
       setOwnerActivity((prev) => ({
         ...prev,
         [lot]: {
+          ...prev[lot],
           hasLoggedIn: markLogin ? true : !!prev?.[lot]?.hasLoggedIn,
           lastLoginAt: markLogin ? formatIsoDateTime(nowIso) : prev?.[lot]?.lastLoginAt || "",
           lastActive: todayLabel(),
-          ...prev[lot],
           ...patch
         }
       }));
@@ -24738,6 +24764,7 @@ var FallingWatersPortal = (() => {
     };
     const handleUpdateOutreach = (lot, patch = {}) => {
       if (!lot || !allLotLabels.includes(lot)) return;
+      const updatedAt = formatIsoDateTime((/* @__PURE__ */ new Date()).toISOString());
       setOutreachState((prev) => {
         const next = { ...prev };
         const existing = { ...next[lot] || {} };
@@ -24752,7 +24779,8 @@ var FallingWatersPortal = (() => {
         next[lot] = {
           contacted,
           notes,
-          lastContact
+          lastContact,
+          updatedAt
         };
         return next;
       });
@@ -25325,8 +25353,10 @@ var FallingWatersPortal = (() => {
             existingOutreach.lastContact = String(pick(lastContactAliases) || "").trim();
           }
           const shouldKeep = existingOutreach.contacted || String(existingOutreach.notes || "").trim().length > 0 || String(existingOutreach.lastContact || "").trim().length > 0;
-          if (shouldKeep) nextOutreach[lot] = existingOutreach;
-          else delete nextOutreach[lot];
+          if (shouldKeep) {
+            existingOutreach.updatedAt = formatIsoDateTime((/* @__PURE__ */ new Date()).toISOString());
+            nextOutreach[lot] = existingOutreach;
+          } else delete nextOutreach[lot];
         }
         const eligibleAliases = ["vote eligible", "eligible", "eligibility", "eligibility status", "eligible to vote", "dues paid", "dues current"];
         const ineligibleReasonAliases = ["ineligible reason", "reason ineligible", "disqualification reason", "eligibility notes", "eligibility reason"];
@@ -25427,7 +25457,19 @@ var FallingWatersPortal = (() => {
       const sanitizeObj = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
       const mergeObjectState = (currentState, incomingState) => {
         if (restoreMode === "replace") return sanitizeObj(incomingState);
-        if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+        if (restoreMode === "merge") {
+          const current2 = { ...sanitizeObj(currentState) };
+          const incoming2 = sanitizeObj(incomingState);
+          Object.entries(incoming2).forEach(([key, value]) => {
+            const existing = current2[key];
+            if (existing && typeof existing === "object" && !Array.isArray(existing) && value && typeof value === "object" && !Array.isArray(value)) {
+              current2[key] = { ...existing, ...value };
+              return;
+            }
+            current2[key] = value;
+          });
+          return current2;
+        }
         const current = { ...sanitizeObj(currentState) };
         const incoming = sanitizeObj(incomingState);
         Object.entries(incoming).forEach(([key, value]) => {
