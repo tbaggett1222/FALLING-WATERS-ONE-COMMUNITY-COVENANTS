@@ -4582,6 +4582,65 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
     { num:3, label:"Draft & deliberate", status:"pending", detail:"Working group drafts unified CC&R · Two 30-day comment periods · Community meetings" },
     { num:4, label:"Formal vote", status:"pending", detail:"Certified mail ballots to all 200 lots · Attorney-supervised count · Record in Gilmer County" },
   ];
+  const voteAndSentimentSection = (
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:16, marginBottom:16 }}>
+      <div style={S.card}>
+        <div style={S.cardTitle}>Vote progress toward {votesNeeded}</div>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {votesNeeded} of {totalLots} lots to vote yes on unified covenant</div>
+        {[
+          { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
+          { label:"Permit with regulation", val:votes.permit, color:C.stone },
+          { label:"Undecided — engaged", val:votes.undecided, color:"#3B82F6" },
+            { label:"Not yet reached", val:notEngaged, color:C.border },
+        ].map((r,i) => (
+          <div key={i} style={{ marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+              <span style={{ color:C.ink }}>{r.label}</span>
+              <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/totalLots)*100)}%)</span>
+            </div>
+            <div style={S.meter}><div style={S.meterFill(Math.round((r.val/totalLots)*100), r.color)}/></div>
+          </div>
+        ))}
+        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
+            <span style={{ fontWeight:600, color:C.forest }}>Votes needed to pass</span>
+            <span style={{ fontWeight:700, color:C.danger }}>{Math.max(votesNeeded - votes.eliminate, 0)} more needed</span>
+          </div>
+          <div style={{ height:8, borderRadius:4, overflow:"hidden", background:C.parchmentDark, marginTop:6, position:"relative" }}>
+            <div style={{ height:"100%", width:`${Math.min((votes.eliminate/Math.max(votesNeeded,1))*100, 100)}%`, background:C.danger, transition:"width 1s" }}/>
+            <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${(Math.max(votesNeeded-votes.eliminate,0)/totalLots)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
+          </div>
+          <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {votesNeeded} votes needed to eliminate STRs</div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Comment sentiment analysis</div>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{comments.length} total comments · {strComments.length} on STR topic</div>
+        {[
+          { label:"Supporting STR restriction", val:restrictCount, color:C.danger, total:comments.length },
+          { label:"Supporting STR permission", val:permitCount, color:C.stone, total:comments.length },
+          { label:"Neutral / questions", val:comments.filter(c=>c.stance==="neutral").length, color:"#3B82F6", total:comments.length },
+        ].map((r,i) => (
+          <div key={i} style={{ marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+              <span style={{ color:C.ink }}>{r.label}</span>
+              <span style={{ color:C.muted }}>{r.val} comments</span>
+            </div>
+            <div style={S.meter}><div style={S.meterFill(Math.round((r.val/Math.max(r.total,1))*100), r.color)}/></div>
+          </div>
+        ))}
+        <div style={{ marginTop:12 }}>
+          <div style={S.cardTitle}>Recent activity</div>
+          {comments.slice(-3).reverse().map((c,i) => (
+            <div key={i} style={{ fontSize:12, color:C.muted, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
+              <span style={{ fontWeight:600, color:C.ink }}>{c.name}</span> ({c.lot}) commented on <span style={{ color:C.forest }}>{c.topic === "str" ? "STRs" : c.topic}</span> · {c.ts}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
   return (
     <div>
       <div style={S.statGrid}>
@@ -4607,64 +4666,6 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
               <div style={{ fontSize: 12, color: C.muted }}>{m.label}</div>
             </div>
           ))}
-        </div>
-      </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:16, marginBottom:16 }}>
-        <div style={S.card}>
-          <div style={S.cardTitle}>Vote progress toward {votesNeeded}</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {votesNeeded} of {totalLots} lots to vote yes on unified covenant</div>
-          {[
-            { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
-            { label:"Permit with regulation", val:votes.permit, color:C.stone },
-            { label:"Undecided — engaged", val:votes.undecided, color:"#3B82F6" },
-              { label:"Not yet reached", val:notEngaged, color:C.border },
-          ].map((r,i) => (
-            <div key={i} style={{ marginBottom:10 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
-                <span style={{ color:C.ink }}>{r.label}</span>
-                <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/totalLots)*100)}%)</span>
-              </div>
-              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/totalLots)*100), r.color)}/></div>
-            </div>
-          ))}
-          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
-              <span style={{ fontWeight:600, color:C.forest }}>Votes needed to pass</span>
-              <span style={{ fontWeight:700, color:C.danger }}>{Math.max(votesNeeded - votes.eliminate, 0)} more needed</span>
-            </div>
-            <div style={{ height:8, borderRadius:4, overflow:"hidden", background:C.parchmentDark, marginTop:6, position:"relative" }}>
-              <div style={{ height:"100%", width:`${Math.min((votes.eliminate/Math.max(votesNeeded,1))*100, 100)}%`, background:C.danger, transition:"width 1s" }}/>
-              <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${(Math.max(votesNeeded-votes.eliminate,0)/totalLots)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
-            </div>
-            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {votesNeeded} votes needed to eliminate STRs</div>
-          </div>
-        </div>
-
-        <div style={S.card}>
-          <div style={S.cardTitle}>Comment sentiment analysis</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{comments.length} total comments · {strComments.length} on STR topic</div>
-          {[
-            { label:"Supporting STR restriction", val:restrictCount, color:C.danger, total:comments.length },
-            { label:"Supporting STR permission", val:permitCount, color:C.stone, total:comments.length },
-            { label:"Neutral / questions", val:comments.filter(c=>c.stance==="neutral").length, color:"#3B82F6", total:comments.length },
-          ].map((r,i) => (
-            <div key={i} style={{ marginBottom:10 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
-                <span style={{ color:C.ink }}>{r.label}</span>
-                <span style={{ color:C.muted }}>{r.val} comments</span>
-              </div>
-              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/Math.max(r.total,1))*100), r.color)}/></div>
-            </div>
-          ))}
-          <div style={{ marginTop:12 }}>
-            <div style={S.cardTitle}>Recent activity</div>
-            {comments.slice(-3).reverse().map((c,i) => (
-              <div key={i} style={{ fontSize:12, color:C.muted, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
-                <span style={{ fontWeight:600, color:C.ink }}>{c.name}</span> ({c.lot}) commented on <span style={{ color:C.forest }}>{c.topic === "str" ? "STRs" : c.topic}</span> · {c.ts}
-              </div>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -4731,6 +4732,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
           </table>
         </div>
       </div>
+      {voteAndSentimentSection}
     </div>
   );
 }
