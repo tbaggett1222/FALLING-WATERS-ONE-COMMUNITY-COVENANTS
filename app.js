@@ -22539,13 +22539,20 @@ var FallingWatersPortal = (() => {
     statNum: { fontSize: 28, fontWeight: 700, color: C.forest, fontFamily: "Georgia,serif" },
     statLabel: { fontSize: 12, color: C.muted, marginTop: 2 }
   };
-  function LoginScreen({ onLogin, adminAccessEntries }) {
+  function LoginScreen({ onLogin, onResetForgotPassword, adminAccessEntries }) {
     const [lot, setLot] = (0, import_react.useState)("");
     const [name, setName] = (0, import_react.useState)("");
     const [pw, setPw] = (0, import_react.useState)("");
     const [accessRole, setAccessRole] = (0, import_react.useState)(ACCESS_ROLES.primary);
     const [err, setErr] = (0, import_react.useState)("");
+    const [msg, setMsg] = (0, import_react.useState)("");
     const [busy, setBusy] = (0, import_react.useState)(false);
+    const [forgotOpen, setForgotOpen] = (0, import_react.useState)(false);
+    const [forgotLot, setForgotLot] = (0, import_react.useState)("");
+    const [forgotName, setForgotName] = (0, import_react.useState)("");
+    const [forgotPassword, setForgotPassword] = (0, import_react.useState)("");
+    const [forgotConfirm, setForgotConfirm] = (0, import_react.useState)("");
+    const [forgotBusy, setForgotBusy] = (0, import_react.useState)(false);
     const handle = async (e) => {
       e.preventDefault();
       if (busy) return;
@@ -22580,11 +22587,62 @@ var FallingWatersPortal = (() => {
       }
       if (loginError) {
         setErr(loginError);
+        setMsg("");
         return;
       }
       setErr("");
+      setMsg("");
     };
-    return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s), name, and password to access the portal. Primary voter logins lock voting rights by lot to the registered primary voter identity, preventing duplicate voting from alternate IDs. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement(
+    const handleForgotPassword = async (e) => {
+      e.preventDefault();
+      if (forgotBusy) return;
+      const trimmedName = forgotName.trim();
+      const lots = parseLotsInput(forgotLot);
+      const normalizedSecret = normalizeLoginSecret(forgotPassword);
+      if (!trimmedName || lots.length === 0) {
+        setErr("Enter the same name and lot number(s) used for your primary voter account.");
+        setMsg("");
+        return;
+      }
+      if (normalizedSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+        setErr(`New password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`);
+        setMsg("");
+        return;
+      }
+      if (forgotPassword !== forgotConfirm) {
+        setErr("Password confirmation does not match.");
+        setMsg("");
+        return;
+      }
+      setErr("");
+      setMsg("");
+      setForgotBusy(true);
+      let result = null;
+      try {
+        result = await onResetForgotPassword({
+          name: trimmedName,
+          lots,
+          loginSecret: normalizedSecret
+        });
+      } catch (error) {
+        result = { error: error?.message || "Password reset failed." };
+      } finally {
+        setForgotBusy(false);
+      }
+      if (result?.error) {
+        setErr(result.error);
+        setMsg("");
+        return;
+      }
+      setForgotPassword("");
+      setForgotConfirm("");
+      setPw("");
+      setName(trimmedName);
+      setLot(lots.join(", "));
+      setForgotOpen(false);
+      setMsg(result?.message || "Password reset complete. Sign in with your new password.");
+    };
+    return /* @__PURE__ */ import_react.default.createElement("div", { style: { minHeight: "100vh", background: C.forest, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { background: C.white, borderRadius: 12, padding: 40, width: "100%", maxWidth: 420, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { textAlign: "center", marginBottom: 28 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(Icon.mountain, null)), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontFamily: "Georgia,serif", fontSize: 22, fontWeight: "bold", color: C.forest, lineHeight: 1.2 } }, "Falling Waters"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 13, color: C.muted, marginTop: 4 } }, "Community Covenant Portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Enter your lot number(s), name, and password to access the portal. Primary voter logins lock voting rights by lot to the registered primary voter identity, preventing duplicate voting from alternate IDs. Approved admin names receive admin access automatically."), err && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, err), msg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, msg), /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handle }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot number(s)"), /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
         style: S.input,
@@ -22621,7 +22679,66 @@ var FallingWatersPortal = (() => {
         autoCorrect: "off",
         enterKeyHint: "go"
       }
-    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value), disabled: busy }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 }, disabled: busy }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " ", busy ? "Signing in..." : "Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 20 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Access role"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: accessRole, onChange: (e) => setAccessRole(e.target.value), disabled: busy }, /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.primary }, "Primary voter (can vote + comment)"), /* @__PURE__ */ import_react.default.createElement("option", { value: ACCESS_ROLES.commentOnly }, "Comment-only household member"))), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "11px 20px", fontSize: 14 }, disabled: busy }, /* @__PURE__ */ import_react.default.createElement(Icon.lock, null), " ", busy ? "Signing in..." : "Enter the portal")), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement(
+      "button",
+      {
+        type: "button",
+        style: { ...S.btn("outline"), width: "100%", justifyContent: "center", padding: "9px 16px" },
+        onClick: () => {
+          setErr("");
+          setMsg("");
+          setForgotOpen((prev) => !prev);
+        },
+        disabled: busy || forgotBusy
+      },
+      forgotOpen ? "Cancel password reset" : "Forgot password?"
+    )), forgotOpen && /* @__PURE__ */ import_react.default.createElement("form", { onSubmit: handleForgotPassword, style: { marginTop: 12, borderTop: `1px solid ${C.border}`, paddingTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10, fontSize: 12, color: C.muted, lineHeight: 1.5 } }, "Reset is available for primary voter accounts. Enter your primary voter name and lot number(s), then set a new password."), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Primary voter lot number(s)"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        placeholder: "e.g. Lot 36, Lot 37",
+        value: forgotLot,
+        onChange: (event) => setForgotLot(event.target.value),
+        disabled: forgotBusy || busy,
+        autoCapitalize: "none",
+        autoCorrect: "off"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Primary voter name"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        placeholder: "Name on the primary voter account",
+        value: forgotName,
+        onChange: (event) => setForgotName(event.target.value),
+        disabled: forgotBusy || busy,
+        autoCapitalize: "words",
+        autoCorrect: "on"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "New password"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        type: "password",
+        placeholder: `Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`,
+        value: forgotPassword,
+        onChange: (event) => setForgotPassword(event.target.value),
+        disabled: forgotBusy || busy,
+        autoCapitalize: "none",
+        autoCorrect: "off"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", { style: { marginBottom: 12 } }, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Confirm new password"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        type: "password",
+        placeholder: "Re-enter new password",
+        value: forgotConfirm,
+        onChange: (event) => setForgotConfirm(event.target.value),
+        disabled: forgotBusy || busy,
+        autoCapitalize: "none",
+        autoCorrect: "off"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("button", { type: "submit", style: { ...S.btn("primary"), width: "100%", justifyContent: "center", padding: "10px 16px" }, disabled: forgotBusy || busy }, forgotBusy ? "Resetting..." : "Reset password")), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 16, textAlign: "center", lineHeight: 1.6 } }, "This portal is for Falling Waters lot owners only.", /* @__PURE__ */ import_react.default.createElement("br", null), "Your participation is voluntary and your vote is confidential.")));
   }
   function HomePage({ votes, stats, totalLots, votesNeeded }) {
     const communityEngaged = Math.min(totalLots, stats.votedLots);
@@ -25103,6 +25220,65 @@ var FallingWatersPortal = (() => {
       );
       return null;
     };
+    const handleResetForgotPassword = async ({ name, lots, loginSecret }) => {
+      const safeName = String(name || "").trim();
+      const safeNameKey = normalizeNameKey(safeName);
+      const selectedLots = (Array.isArray(lots) ? lots : []).map((lot) => normalizeLotLabel(lot)).filter((lot) => lot && lot !== "ADMIN");
+      const uniqueLots = Array.from(new Set(selectedLots));
+      const normalizedSecret = normalizeLoginSecret(loginSecret);
+      if (!safeName || uniqueLots.length === 0) {
+        return { error: "Enter your primary voter name and at least one lot number." };
+      }
+      if (normalizedSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+        return { error: `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.` };
+      }
+      for (const lot of uniqueLots) {
+        const record = primaryVoterRegistry?.[lot];
+        if (!record) {
+          return { error: `${lot} does not have a registered primary voter yet.` };
+        }
+        const recordNameKey = normalizeNameKey(record.nameKey || record.name);
+        const sameName = recordNameKey && recordNameKey === safeNameKey;
+        if (!sameName) {
+          return { error: `${lot} is registered to "${record.name}". Use that primary voter name to reset this password.` };
+        }
+      }
+      setPrimaryVoterRegistry((prev) => {
+        const next = { ...prev || {} };
+        uniqueLots.forEach((lot) => {
+          const existing = next[lot] || {};
+          next[lot] = {
+            ...existing,
+            credentialHash: buildPrimaryCredentialHash(lot, normalizedSecret)
+          };
+        });
+        return next;
+      });
+      setUserDirectory((prev) => {
+        const next = { ...prev || {} };
+        let profileUserId = "";
+        Object.entries(next).forEach(([userId, entry]) => {
+          if (!entry || typeof entry !== "object") return;
+          if (normalizeNameKey(entry.nameKey || entry.name) !== safeNameKey) return;
+          const entryLots = normalizeUserLots(entry).filter((lot) => lot !== "ADMIN");
+          const overlap = uniqueLots.some((lot) => entryLots.includes(lot));
+          if (!overlap) return;
+          profileUserId = userId;
+        });
+        if (profileUserId) {
+          const existing = next[profileUserId] || {};
+          next[profileUserId] = {
+            ...existing,
+            lastSeen: todayLabel()
+          };
+        }
+        return next;
+      });
+      queueSharedChangesSync(["primaryVoters", "userDirectory"], { mode: "merge" });
+      return {
+        message: `Password reset complete for ${safeName} (${uniqueLots.join(", ")}). Sign in with your new password.`
+      };
+    };
     const handleLogout = () => {
       store.set("fw_user", null);
       setUser(null);
@@ -26052,6 +26228,7 @@ var FallingWatersPortal = (() => {
         LoginScreen,
         {
           onLogin: handleLogin,
+          onResetForgotPassword: handleResetForgotPassword,
           adminAccessEntries
         }
       );
