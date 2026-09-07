@@ -23498,7 +23498,8 @@ var FallingWatersPortal = (() => {
     onSetAdminAccessGrade,
     onGrantAdminAccess,
     onRevokeAdminAccess,
-    onTransferPrimaryVoter
+    onTransferPrimaryVoter,
+    onAdminResetPrimaryPassword
   }) {
     const [filter, setFilter] = (0, import_react.useState)("all");
     const [lotQuery, setLotQuery] = (0, import_react.useState)("");
@@ -23532,6 +23533,12 @@ var FallingWatersPortal = (() => {
     const [transferNote, setTransferNote] = (0, import_react.useState)("");
     const [transferMsg, setTransferMsg] = (0, import_react.useState)("");
     const [transferErr, setTransferErr] = (0, import_react.useState)("");
+    const [resetLot, setResetLot] = (0, import_react.useState)("");
+    const [resetPrimaryName, setResetPrimaryName] = (0, import_react.useState)("");
+    const [resetPassword, setResetPassword] = (0, import_react.useState)("");
+    const [resetConfirm, setResetConfirm] = (0, import_react.useState)("");
+    const [resetMsg, setResetMsg] = (0, import_react.useState)("");
+    const [resetErr, setResetErr] = (0, import_react.useState)("");
     const effectiveBackupHealthThresholdDays = Number.isInteger(Number(backupHealthThresholdDays)) && Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS && Number(backupHealthThresholdDays) <= MAX_BACKUP_HEALTH_MAX_AGE_DAYS ? Number(backupHealthThresholdDays) : DEFAULT_BACKUP_HEALTH_MAX_AGE_DAYS;
     const parsedLastBackupAt = lastBackupExportAt ? new Date(lastBackupExportAt) : null;
     const backupTimestampMs = parsedLastBackupAt && !Number.isNaN(parsedLastBackupAt.getTime()) ? parsedLastBackupAt.getTime() : null;
@@ -23570,6 +23577,11 @@ var FallingWatersPortal = (() => {
         setTransferLot(lotLabels[0] || "");
       }
     }, [lotLabels, transferLot]);
+    (0, import_react.useEffect)(() => {
+      if (!lotLabels.includes(resetLot)) {
+        setResetLot(lotLabels[0] || "");
+      }
+    }, [lotLabels, resetLot]);
     const checklistRows = dbChecklist?.rows || [
       { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
       { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
@@ -24240,6 +24252,42 @@ var FallingWatersPortal = (() => {
       setTransferMsg(result?.message || "Primary voter transfer recorded.");
       setTimeout(() => setTransferMsg(""), 4500);
     };
+    const submitPrimaryVoterPasswordReset = () => {
+      setResetErr("");
+      setResetMsg("");
+      const safeLot = normalizeLotLabel(resetLot);
+      const safeName = String(resetPrimaryName || "").trim();
+      const safePassword = normalizeLoginSecret(resetPassword);
+      if (!safeLot || !lotLabels.includes(safeLot)) {
+        setResetErr("Select a valid lot.");
+        return;
+      }
+      if (!safeName) {
+        setResetErr("Enter the current primary voter name for this lot.");
+        return;
+      }
+      if (safePassword.length < MIN_LOGIN_SECRET_LENGTH) {
+        setResetErr(`New password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`);
+        return;
+      }
+      if (resetPassword !== resetConfirm) {
+        setResetErr("Password confirmation does not match.");
+        return;
+      }
+      const result = onAdminResetPrimaryPassword?.({
+        lot: safeLot,
+        expectedName: safeName,
+        newPassword: safePassword
+      });
+      if (result?.error) {
+        setResetErr(result.error);
+        return;
+      }
+      setResetPassword("");
+      setResetConfirm("");
+      setResetMsg(result?.message || "Primary voter password reset complete.");
+      setTimeout(() => setResetMsg(""), 4500);
+    };
     return /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("info") }, "Admin visibility: this roster tracks lot-level participation, login activity, voting, outreach, and vote eligibility. Outreach fields (contacted, notes, last contact) can be entered directly in each lot row or loaded from CSV import."), /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Backup health:"), " ", backupHealthText, " ", backupHealthGuidance), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup health policy"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Set how many days can pass before backup health is marked stale."), backupThresholdErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupThresholdErr), backupThresholdMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupThresholdMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ import_react.default.createElement(
       "input",
       {
@@ -24322,7 +24370,39 @@ var FallingWatersPortal = (() => {
         onChange: (event) => setTransferNote(event.target.value),
         placeholder: "Explain why this transfer is needed (ownership change, household update, etc.)"
       }
-    )), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px" }, onClick: submitPrimaryVoterTransfer }, "Record transfer"), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "When"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "From"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "To"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "By"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Audit note"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, transferAuditRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No primary voter transfers recorded yet.")), transferAuditRows.map((entry) => /* @__PURE__ */ import_react.default.createElement("tr", { key: entry.id }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.tsLabel || formatIsoDateTime(entry.tsIso) || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, entry.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.fromName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.toName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.byName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontSize: 12, color: C.muted } }, entry.note || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Export options: JSON for full-fidelity restore, plus a single-file full CSV export that includes reporting tables and raw stored portal records."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
+    )), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px" }, onClick: submitPrimaryVoterTransfer }, "Record transfer"), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto", marginTop: 12 } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "When"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lot"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "From"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "To"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "By"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Audit note"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, transferAuditRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No primary voter transfers recorded yet.")), transferAuditRows.map((entry) => /* @__PURE__ */ import_react.default.createElement("tr", { key: entry.id }, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.tsLabel || formatIsoDateTime(entry.tsIso) || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, entry.lot), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.fromName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.toName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, entry.byName || "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontSize: 12, color: C.muted } }, entry.note || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Primary voter password reset (admin only)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Use this when a primary voter forgot their password. Confirm the current primary voter name, then set a new password for that lot."), resetErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, resetErr), resetMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, resetMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Lot"), /* @__PURE__ */ import_react.default.createElement("select", { style: S.select, value: resetLot, onChange: (event) => setResetLot(event.target.value) }, lotLabels.map((lotLabel) => /* @__PURE__ */ import_react.default.createElement("option", { key: lotLabel, value: lotLabel }, lotLabel)))), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Current primary voter name"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        value: resetPrimaryName,
+        onChange: (event) => setResetPrimaryName(event.target.value),
+        placeholder: "Exact primary voter name",
+        autoCapitalize: "words",
+        autoCorrect: "on"
+      }
+    ))), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "New password"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        type: "password",
+        value: resetPassword,
+        onChange: (event) => setResetPassword(event.target.value),
+        placeholder: `Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`,
+        autoCapitalize: "none",
+        autoCorrect: "off"
+      }
+    )), /* @__PURE__ */ import_react.default.createElement("div", null, /* @__PURE__ */ import_react.default.createElement("label", { style: S.label }, "Confirm new password"), /* @__PURE__ */ import_react.default.createElement(
+      "input",
+      {
+        style: S.input,
+        type: "password",
+        value: resetConfirm,
+        onChange: (event) => setResetConfirm(event.target.value),
+        placeholder: "Re-enter new password",
+        autoCapitalize: "none",
+        autoCorrect: "off"
+      }
+    ))), /* @__PURE__ */ import_react.default.createElement("button", { style: { ...S.btn("primary"), padding: "8px 12px" }, onClick: submitPrimaryVoterPasswordReset }, "Reset primary voter password")), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "User access directory (from login/profile activity)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Each person appears here after sign-in or profile save. Use this list to identify which users currently have admin rights."), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 } }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.amber, C.amberLight) }, "Admin users: ", adminDirectoryRows.length), /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(C.forest, C.parchmentDark) }, "All known users: ", directoryRows.length)), /* @__PURE__ */ import_react.default.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ import_react.default.createElement("table", { style: S.table }, /* @__PURE__ */ import_react.default.createElement("thead", null, /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Name"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin rights"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Admin grade"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Access role"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Lots"), /* @__PURE__ */ import_react.default.createElement("th", { style: S.th }, "Last seen"))), /* @__PURE__ */ import_react.default.createElement("tbody", null, directoryRows.length === 0 && /* @__PURE__ */ import_react.default.createElement("tr", null, /* @__PURE__ */ import_react.default.createElement("td", { style: S.td, colSpan: 6 }, "No users recorded yet. Users appear after they log in or save profile changes.")), directoryRows.map((row) => /* @__PURE__ */ import_react.default.createElement("tr", { key: row.userId || row.name, style: { background: row.isAdmin ? "#FFFBF5" : C.white } }, /* @__PURE__ */ import_react.default.createElement("td", { style: { ...S.td, fontWeight: 700, color: C.forest } }, row.name || "Unknown"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, /* @__PURE__ */ import_react.default.createElement("span", { style: S.badge(row.isAdmin ? C.amber : C.muted, row.isAdmin ? C.amberLight : C.parchmentDark) }, row.isAdmin ? "Admin" : "Resident")), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? adminGradeLabel(adminAccessGrades?.[normalizeNameKey(row.name)]?.grade || DEFAULT_ADMIN_GRADE) : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.isAdmin ? "Admin control" : accessRoleLabel(row.accessRole)), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, Array.isArray(row.lots) && row.lots.length ? row.lots.join(", ") : "\u2014"), /* @__PURE__ */ import_react.default.createElement("td", { style: S.td }, row.lastSeen || "\u2014"))))))), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Import master spreadsheet (CSV)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Accepted columns (case-insensitive): Lot, Vote Choice, Vote Eligible, Ineligible Reason, Primary Voter, Owner Name (if known), Commented, Last Active, Contacted, Outreach Notes, Last Contact Date."), importErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, importErr), importMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, importMsg), /* @__PURE__ */ import_react.default.createElement("input", { style: { ...S.input, padding: "7px 10px" }, type: "file", accept: ".csv,text/csv", onChange: handleImport, disabled: importing })), /* @__PURE__ */ import_react.default.createElement("div", { style: S.card }, /* @__PURE__ */ import_react.default.createElement("div", { style: S.cardTitle }, "Backup / Restore full portal data (JSON)"), /* @__PURE__ */ import_react.default.createElement("div", { style: { fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 } }, "Export options: JSON for full-fidelity restore, plus a single-file full CSV export that includes reporting tables and raw stored portal records."), backupErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, backupErr), backupMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, backupMsg), /* @__PURE__ */ import_react.default.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" } }, /* @__PURE__ */ import_react.default.createElement(
       "button",
       {
         style: { ...S.btn("primary"), padding: "7px 12px" },
@@ -25277,6 +25357,43 @@ var FallingWatersPortal = (() => {
       queueSharedChangesSync(["primaryVoters", "userDirectory"], { mode: "merge" });
       return {
         message: `Password reset complete for ${safeName} (${uniqueLots.join(", ")}). Sign in with your new password.`
+      };
+    };
+    const handleAdminResetPrimaryPassword = ({ lot, expectedName, newPassword }) => {
+      if (!user?.isAdmin) {
+        return { error: "Only admins can reset primary voter passwords." };
+      }
+      const normalizedLot = normalizeLotLabel(lot);
+      const safeName = String(expectedName || "").trim();
+      const safePassword = normalizeLoginSecret(newPassword);
+      if (!normalizedLot || !allLotLabels.includes(normalizedLot)) {
+        return { error: "Select a valid lot." };
+      }
+      if (!safeName) {
+        return { error: "Primary voter name is required." };
+      }
+      if (safePassword.length < MIN_LOGIN_SECRET_LENGTH) {
+        return { error: `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.` };
+      }
+      const existing = primaryVoterRegistry?.[normalizedLot];
+      if (!existing) {
+        return { error: `${normalizedLot} does not have a primary voter record yet.` };
+      }
+      const existingNameKey = normalizeNameKey(existing.nameKey || existing.name);
+      const safeNameKey = normalizeNameKey(safeName);
+      if (!existingNameKey || existingNameKey !== safeNameKey) {
+        return { error: `${normalizedLot} is currently assigned to "${existing.name}".` };
+      }
+      setPrimaryVoterRegistry((prev) => ({
+        ...prev || {},
+        [normalizedLot]: {
+          ...prev?.[normalizedLot] || {},
+          credentialHash: buildPrimaryCredentialHash(normalizedLot, safePassword)
+        }
+      }));
+      queueSharedChangesSync(["primaryVoters"], { mode: "merge" });
+      return {
+        message: `Password reset for ${safeName} on ${normalizedLot}.`
       };
     };
     const handleLogout = () => {
@@ -26399,7 +26516,8 @@ var FallingWatersPortal = (() => {
         onSetAdminAccessGrade: handleSetAdminAccessGrade,
         onGrantAdminAccess: handleGrantAdminAccess,
         onRevokeAdminAccess: handleRevokeAdminAccess,
-        onTransferPrimaryVoter: handleTransferPrimaryVoter
+        onTransferPrimaryVoter: handleTransferPrimaryVoter,
+        onAdminResetPrimaryPassword: handleAdminResetPrimaryPassword
       }
     ), page === "admin-docs" && user.isAdmin && /* @__PURE__ */ import_react.default.createElement(
       AdminDocumentsPage,

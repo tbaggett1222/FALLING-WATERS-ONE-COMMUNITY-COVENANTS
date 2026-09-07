@@ -3103,6 +3103,7 @@ function AdminVotingPage({
   onGrantAdminAccess,
   onRevokeAdminAccess,
   onTransferPrimaryVoter,
+  onAdminResetPrimaryPassword,
 }) {
   const [filter, setFilter] = useState("all");
   const [lotQuery, setLotQuery] = useState("");
@@ -3136,6 +3137,12 @@ function AdminVotingPage({
   const [transferNote, setTransferNote] = useState("");
   const [transferMsg, setTransferMsg] = useState("");
   const [transferErr, setTransferErr] = useState("");
+  const [resetLot, setResetLot] = useState("");
+  const [resetPrimaryName, setResetPrimaryName] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetConfirm, setResetConfirm] = useState("");
+  const [resetMsg, setResetMsg] = useState("");
+  const [resetErr, setResetErr] = useState("");
   const effectiveBackupHealthThresholdDays =
     Number.isInteger(Number(backupHealthThresholdDays)) &&
     Number(backupHealthThresholdDays) >= MIN_BACKUP_HEALTH_MAX_AGE_DAYS &&
@@ -3189,6 +3196,11 @@ function AdminVotingPage({
       setTransferLot(lotLabels[0] || "");
     }
   }, [lotLabels, transferLot]);
+  useEffect(() => {
+    if (!lotLabels.includes(resetLot)) {
+      setResetLot(lotLabels[0] || "");
+    }
+  }, [lotLabels, resetLot]);
   const checklistRows = dbChecklist?.rows || [
     { key: "api", label: "API reachable", status: "unknown", detail: "Run checklist to verify API endpoint response." },
     { key: "browser", label: "Browser/CORS access", status: "unknown", detail: "Run checklist from this browser session." },
@@ -3927,6 +3939,43 @@ function AdminVotingPage({
     setTimeout(() => setTransferMsg(""), 4500);
   };
 
+  const submitPrimaryVoterPasswordReset = () => {
+    setResetErr("");
+    setResetMsg("");
+    const safeLot = normalizeLotLabel(resetLot);
+    const safeName = String(resetPrimaryName || "").trim();
+    const safePassword = normalizeLoginSecret(resetPassword);
+    if (!safeLot || !lotLabels.includes(safeLot)) {
+      setResetErr("Select a valid lot.");
+      return;
+    }
+    if (!safeName) {
+      setResetErr("Enter the current primary voter name for this lot.");
+      return;
+    }
+    if (safePassword.length < MIN_LOGIN_SECRET_LENGTH) {
+      setResetErr(`New password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`);
+      return;
+    }
+    if (resetPassword !== resetConfirm) {
+      setResetErr("Password confirmation does not match.");
+      return;
+    }
+    const result = onAdminResetPrimaryPassword?.({
+      lot: safeLot,
+      expectedName: safeName,
+      newPassword: safePassword,
+    });
+    if (result?.error) {
+      setResetErr(result.error);
+      return;
+    }
+    setResetPassword("");
+    setResetConfirm("");
+    setResetMsg(result?.message || "Primary voter password reset complete.");
+    setTimeout(() => setResetMsg(""), 4500);
+  };
+
   return (
     <div>
       <div style={S.alert("info")}>
@@ -4144,6 +4193,65 @@ function AdminVotingPage({
             </tbody>
           </table>
         </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Primary voter password reset (admin only)</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+          Use this when a primary voter forgot their password. Confirm the current primary voter name, then set a new password for that lot.
+        </div>
+        {resetErr && <div style={S.alert("danger")}>{resetErr}</div>}
+        {resetMsg && <div style={S.alert("success")}>{resetMsg}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>Lot</label>
+            <select style={S.select} value={resetLot} onChange={(event) => setResetLot(event.target.value)}>
+              {lotLabels.map((lotLabel) => (
+                <option key={lotLabel} value={lotLabel}>{lotLabel}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Current primary voter name</label>
+            <input
+              style={S.input}
+              value={resetPrimaryName}
+              onChange={(event) => setResetPrimaryName(event.target.value)}
+              placeholder="Exact primary voter name"
+              autoCapitalize="words"
+              autoCorrect="on"
+            />
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 8, marginBottom: 10 }}>
+          <div>
+            <label style={S.label}>New password</label>
+            <input
+              style={S.input}
+              type="password"
+              value={resetPassword}
+              onChange={(event) => setResetPassword(event.target.value)}
+              placeholder={`Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`}
+              autoCapitalize="none"
+              autoCorrect="off"
+            />
+          </div>
+          <div>
+            <label style={S.label}>Confirm new password</label>
+            <input
+              style={S.input}
+              type="password"
+              value={resetConfirm}
+              onChange={(event) => setResetConfirm(event.target.value)}
+              placeholder="Re-enter new password"
+              autoCapitalize="none"
+              autoCorrect="off"
+            />
+          </div>
+        </div>
+        <button style={{ ...S.btn("primary"), padding: "8px 12px" }} onClick={submitPrimaryVoterPasswordReset}>
+          Reset primary voter password
+        </button>
       </div>
 
       <div style={S.card}>
@@ -5558,6 +5666,46 @@ export default function App() {
       message: `Password reset complete for ${safeName} (${uniqueLots.join(", ")}). Sign in with your new password.`,
     };
   };
+
+  const handleAdminResetPrimaryPassword = ({ lot, expectedName, newPassword }) => {
+    if (!user?.isAdmin) {
+      return { error: "Only admins can reset primary voter passwords." };
+    }
+    const normalizedLot = normalizeLotLabel(lot);
+    const safeName = String(expectedName || "").trim();
+    const safePassword = normalizeLoginSecret(newPassword);
+    if (!normalizedLot || !allLotLabels.includes(normalizedLot)) {
+      return { error: "Select a valid lot." };
+    }
+    if (!safeName) {
+      return { error: "Primary voter name is required." };
+    }
+    if (safePassword.length < MIN_LOGIN_SECRET_LENGTH) {
+      return { error: `Password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.` };
+    }
+
+    const existing = primaryVoterRegistry?.[normalizedLot];
+    if (!existing) {
+      return { error: `${normalizedLot} does not have a primary voter record yet.` };
+    }
+    const existingNameKey = normalizeNameKey(existing.nameKey || existing.name);
+    const safeNameKey = normalizeNameKey(safeName);
+    if (!existingNameKey || existingNameKey !== safeNameKey) {
+      return { error: `${normalizedLot} is currently assigned to "${existing.name}".` };
+    }
+
+    setPrimaryVoterRegistry((prev) => ({
+      ...(prev || {}),
+      [normalizedLot]: {
+        ...(prev?.[normalizedLot] || {}),
+        credentialHash: buildPrimaryCredentialHash(normalizedLot, safePassword),
+      },
+    }));
+    queueSharedChangesSync(["primaryVoters"], { mode: "merge" });
+    return {
+      message: `Password reset for ${safeName} on ${normalizedLot}.`,
+    };
+  };
   const handleLogout = () => { store.set("fw_user", null); setUser(null); setPage("home"); };
 
   const handleVote = (choice, lotOverride = null) => {
@@ -6896,6 +7044,7 @@ export default function App() {
               onGrantAdminAccess={handleGrantAdminAccess}
               onRevokeAdminAccess={handleRevokeAdminAccess}
               onTransferPrimaryVoter={handleTransferPrimaryVoter}
+              onAdminResetPrimaryPassword={handleAdminResetPrimaryPassword}
             />
           )}
           {page === "admin-docs" && user.isAdmin && (
