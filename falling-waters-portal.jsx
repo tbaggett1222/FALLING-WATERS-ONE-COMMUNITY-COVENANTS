@@ -149,6 +149,19 @@ const BACKUP_RESTORE_SCOPE_OPTIONS = [
   { key: "covenantFiles", label: "Stored covenant file blobs" },
   { key: "sessionUser", label: "Current signed-in session" },
 ];
+const SHARED_REFRESH_SCOPE_KEYS = [
+  "lotSettings",
+  "votes",
+  "comments",
+  "ownerActivity",
+  "outreach",
+  "eligibility",
+  "primaryVoters",
+  "adminAccess",
+  "userDirectory",
+  "covenantDocs",
+];
+const SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1000;
 
 const defaultBackupRestoreScopes = () =>
   BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
@@ -4868,8 +4881,11 @@ export default function App() {
   const [sharedDataBusy, setSharedDataBusy] = useState(false);
   const [sharedDataMsg, setSharedDataMsg] = useState("");
   const [sharedDataErr, setSharedDataErr] = useState("");
+  const [lastSharedRefreshAt, setLastSharedRefreshAt] = useState("");
   const sharedSyncScopeQueueRef = useRef(new Set());
   const sharedSyncModeRef = useRef("merge");
+  const sharedRefreshSinceRef = useRef("");
+  const sharedRefreshInFlightRef = useRef(null);
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
@@ -6178,6 +6194,9 @@ export default function App() {
   const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
     const result = await callDbApi("/api/db/export", {
       method: "POST",
+      headers: {
+        "x-portal-admin-action": "restore",
+      },
       body: JSON.stringify({}),
     });
     return handleRestoreBackup(result?.backup || {}, { mode, scopes });
@@ -6196,38 +6215,61 @@ export default function App() {
     return { records: Array.isArray(result?.records) ? result.records : [] };
   };
 
-  const handleRefreshSharedData = async ({ silent = false, mode = "merge" } = {}) => {
+  const handleRefreshSharedData = async ({ silent = false, forceFull = false } = {}) => {
     if (!dbApiBaseUrl) {
       return { error: "Database API URL is not configured for this device." };
     }
-    const scopes = {
-      ...defaultBackupRestoreScopes(),
-      sessionUser: false,
-    };
-    if (!silent) {
-      setSharedDataErr("");
-      setSharedDataMsg("");
-      setSharedDataBusy(true);
+    if (sharedRefreshInFlightRef.current) {
+      return sharedRefreshInFlightRef.current;
     }
-    try {
-      const result = await handleRestoreFromDb({ mode, scopes });
-      if (result?.error) {
-        if (!silent) setSharedDataErr(result.error);
-        return result;
-      }
+
+    const refreshPromise = (async () => {
+      const since = forceFull ? "" : String(sharedRefreshSinceRef.current || "").trim();
+      const refreshPath = since ? `/api/db/shared/changes?since=${encodeURIComponent(since)}` : "/api/db/shared/changes";
+      const scopes = buildScopedRestoreSelection(SHARED_REFRESH_SCOPE_KEYS, false);
+
       if (!silent) {
-        setSharedDataMsg(result?.message || "Shared portal data refreshed from PostgreSQL.");
-        setTimeout(() => setSharedDataMsg(""), 5000);
+        setSharedDataErr("");
+        setSharedDataMsg("");
+        setSharedDataBusy(true);
       }
-      return {
-        message: result?.message || "Shared portal data refreshed from PostgreSQL.",
-      };
-    } catch (error) {
-      if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
-      return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
-    } finally {
-      if (!silent) setSharedDataBusy(false);
-    }
+
+      try {
+        const apiResult = await callDbApi(refreshPath, { method: "GET" });
+        const sharedRefresh = apiResult?.result || {};
+        const restoreMode = sharedRefresh.incremental ? "merge" : "replace";
+        const restoreResult = await handleRestoreBackup(sharedRefresh.backup || {}, { mode: restoreMode, scopes });
+        if (restoreResult?.error) {
+          if (!silent) setSharedDataErr(restoreResult.error);
+          return restoreResult;
+        }
+
+        const nextSince = String(sharedRefresh.nextSince || sharedRefresh.refreshedAt || "").trim();
+        if (nextSince) {
+          sharedRefreshSinceRef.current = nextSince;
+          setLastSharedRefreshAt(nextSince);
+        }
+        if (!silent) {
+          const modeLabel = sharedRefresh.incremental ? "incremental" : "full";
+          setSharedDataMsg(`Shared portal data refreshed (${modeLabel}).`);
+          setTimeout(() => setSharedDataMsg(""), 5000);
+        }
+        return {
+          message: "Shared portal data refreshed from PostgreSQL.",
+          refreshedAt: nextSince || null,
+          incremental: !!sharedRefresh.incremental,
+        };
+      } catch (error) {
+        if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
+        return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
+      } finally {
+        if (!silent) setSharedDataBusy(false);
+        sharedRefreshInFlightRef.current = null;
+      }
+    })();
+
+    sharedRefreshInFlightRef.current = refreshPromise;
+    return refreshPromise;
   };
 
   const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError = false } = {}) => {
@@ -6278,23 +6320,28 @@ export default function App() {
   useEffect(() => {
     if (!user || !dbApiBaseUrl) return;
     let cancelled = false;
-    const refreshShared = async () => {
-      const result = await handleRefreshSharedData({ silent: true, mode: "merge" });
+    const runRefresh = async (forceFull = false) => {
+      const result = await handleRefreshSharedData({ silent: true, forceFull });
       if (cancelled) return;
       if (result?.error) {
         setSharedDataErr(result.error);
       }
     };
-    void refreshShared();
+
+    // First refresh after login/session restore is a full baseline.
+    void runRefresh(true);
+
     const intervalId = window.setInterval(() => {
-      void refreshShared();
-    }, 45000);
+      if (document.visibilityState !== "visible") return;
+      void runRefresh(false);
+    }, SHARED_REFRESH_INTERVAL_MS);
+
     const onFocus = () => {
-      void refreshShared();
+      void runRefresh(false);
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void refreshShared();
+        void runRefresh(false);
       }
     };
     window.addEventListener("focus", onFocus);
@@ -6306,6 +6353,13 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [dbApiBaseUrl, user?.userId]);
+
+  useEffect(() => {
+    if (user) return;
+    sharedRefreshSinceRef.current = "";
+    sharedRefreshInFlightRef.current = null;
+    setLastSharedRefreshAt("");
+  }, [user]);
 
   const handleRunDbChecklist = async () => {
     const checkedAt = new Date().toISOString();
@@ -6557,7 +6611,7 @@ export default function App() {
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
             <button
               style={{ ...S.btn("outline"), padding: "7px 10px" }}
-              onClick={() => handleRefreshSharedData({ silent: false, mode: "merge" })}
+              onClick={() => handleRefreshSharedData({ silent: false, forceFull: true })}
               disabled={sharedDataBusy}
             >
               {sharedDataBusy ? "Refreshing…" : "Refresh shared data"}
@@ -6574,6 +6628,7 @@ export default function App() {
           {sharedDataMsg && (
             <div style={S.alert("success")}>
               {sharedDataMsg}
+              {lastSharedRefreshAt ? ` Last refresh: ${formatIsoDateTime(lastSharedRefreshAt)}.` : ""}
             </div>
           )}
           {user.isAdmin && (

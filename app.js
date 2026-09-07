@@ -21595,6 +21595,19 @@ var FallingWatersPortal = (() => {
     { key: "covenantFiles", label: "Stored covenant file blobs" },
     { key: "sessionUser", label: "Current signed-in session" }
   ];
+  var SHARED_REFRESH_SCOPE_KEYS = [
+    "lotSettings",
+    "votes",
+    "comments",
+    "ownerActivity",
+    "outreach",
+    "eligibility",
+    "primaryVoters",
+    "adminAccess",
+    "userDirectory",
+    "covenantDocs"
+  ];
+  var SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1e3;
   var defaultBackupRestoreScopes = () => BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
     acc[scope.key] = true;
     return acc;
@@ -24627,8 +24640,11 @@ var FallingWatersPortal = (() => {
     const [sharedDataBusy, setSharedDataBusy] = (0, import_react.useState)(false);
     const [sharedDataMsg, setSharedDataMsg] = (0, import_react.useState)("");
     const [sharedDataErr, setSharedDataErr] = (0, import_react.useState)("");
+    const [lastSharedRefreshAt, setLastSharedRefreshAt] = (0, import_react.useState)("");
     const sharedSyncScopeQueueRef = (0, import_react.useRef)(/* @__PURE__ */ new Set());
     const sharedSyncModeRef = (0, import_react.useRef)("merge");
+    const sharedRefreshSinceRef = (0, import_react.useRef)("");
+    const sharedRefreshInFlightRef = (0, import_react.useRef)(null);
     const [sharedSyncNonce, setSharedSyncNonce] = (0, import_react.useState)(0);
     const allLotLabels = buildLotLabels(totalLots);
     const votesNeeded = votesNeededForLots(totalLots);
@@ -25796,6 +25812,9 @@ var FallingWatersPortal = (() => {
     const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
       const result = await callDbApi("/api/db/export", {
         method: "POST",
+        headers: {
+          "x-portal-admin-action": "restore"
+        },
         body: JSON.stringify({})
       });
       return handleRestoreBackup(result?.backup || {}, { mode, scopes });
@@ -25811,38 +25830,56 @@ var FallingWatersPortal = (() => {
       });
       return { records: Array.isArray(result?.records) ? result.records : [] };
     };
-    const handleRefreshSharedData = async ({ silent = false, mode = "merge" } = {}) => {
+    const handleRefreshSharedData = async ({ silent = false, forceFull = false } = {}) => {
       if (!dbApiBaseUrl) {
         return { error: "Database API URL is not configured for this device." };
       }
-      const scopes = {
-        ...defaultBackupRestoreScopes(),
-        sessionUser: false
-      };
-      if (!silent) {
-        setSharedDataErr("");
-        setSharedDataMsg("");
-        setSharedDataBusy(true);
+      if (sharedRefreshInFlightRef.current) {
+        return sharedRefreshInFlightRef.current;
       }
-      try {
-        const result = await handleRestoreFromDb({ mode, scopes });
-        if (result?.error) {
-          if (!silent) setSharedDataErr(result.error);
-          return result;
-        }
+      const refreshPromise = (async () => {
+        const since = forceFull ? "" : String(sharedRefreshSinceRef.current || "").trim();
+        const refreshPath = since ? `/api/db/shared/changes?since=${encodeURIComponent(since)}` : "/api/db/shared/changes";
+        const scopes = buildScopedRestoreSelection(SHARED_REFRESH_SCOPE_KEYS, false);
         if (!silent) {
-          setSharedDataMsg(result?.message || "Shared portal data refreshed from PostgreSQL.");
-          setTimeout(() => setSharedDataMsg(""), 5e3);
+          setSharedDataErr("");
+          setSharedDataMsg("");
+          setSharedDataBusy(true);
         }
-        return {
-          message: result?.message || "Shared portal data refreshed from PostgreSQL."
-        };
-      } catch (error) {
-        if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
-        return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
-      } finally {
-        if (!silent) setSharedDataBusy(false);
-      }
+        try {
+          const apiResult = await callDbApi(refreshPath, { method: "GET" });
+          const sharedRefresh = apiResult?.result || {};
+          const restoreMode = sharedRefresh.incremental ? "merge" : "replace";
+          const restoreResult = await handleRestoreBackup(sharedRefresh.backup || {}, { mode: restoreMode, scopes });
+          if (restoreResult?.error) {
+            if (!silent) setSharedDataErr(restoreResult.error);
+            return restoreResult;
+          }
+          const nextSince = String(sharedRefresh.nextSince || sharedRefresh.refreshedAt || "").trim();
+          if (nextSince) {
+            sharedRefreshSinceRef.current = nextSince;
+            setLastSharedRefreshAt(nextSince);
+          }
+          if (!silent) {
+            const modeLabel = sharedRefresh.incremental ? "incremental" : "full";
+            setSharedDataMsg(`Shared portal data refreshed (${modeLabel}).`);
+            setTimeout(() => setSharedDataMsg(""), 5e3);
+          }
+          return {
+            message: "Shared portal data refreshed from PostgreSQL.",
+            refreshedAt: nextSince || null,
+            incremental: !!sharedRefresh.incremental
+          };
+        } catch (error) {
+          if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
+          return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
+        } finally {
+          if (!silent) setSharedDataBusy(false);
+          sharedRefreshInFlightRef.current = null;
+        }
+      })();
+      sharedRefreshInFlightRef.current = refreshPromise;
+      return refreshPromise;
     };
     const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError: reportError2 = false } = {}) => {
       const explicitBase = String(dbApiBaseUrl || "").trim();
@@ -25889,23 +25926,24 @@ var FallingWatersPortal = (() => {
     (0, import_react.useEffect)(() => {
       if (!user || !dbApiBaseUrl) return;
       let cancelled = false;
-      const refreshShared = async () => {
-        const result = await handleRefreshSharedData({ silent: true, mode: "merge" });
+      const runRefresh = async (forceFull = false) => {
+        const result = await handleRefreshSharedData({ silent: true, forceFull });
         if (cancelled) return;
         if (result?.error) {
           setSharedDataErr(result.error);
         }
       };
-      void refreshShared();
+      void runRefresh(true);
       const intervalId = window.setInterval(() => {
-        void refreshShared();
-      }, 45e3);
+        if (document.visibilityState !== "visible") return;
+        void runRefresh(false);
+      }, SHARED_REFRESH_INTERVAL_MS);
       const onFocus = () => {
-        void refreshShared();
+        void runRefresh(false);
       };
       const onVisibilityChange = () => {
         if (document.visibilityState === "visible") {
-          void refreshShared();
+          void runRefresh(false);
         }
       };
       window.addEventListener("focus", onFocus);
@@ -25917,6 +25955,12 @@ var FallingWatersPortal = (() => {
         document.removeEventListener("visibilitychange", onVisibilityChange);
       };
     }, [dbApiBaseUrl, user?.userId]);
+    (0, import_react.useEffect)(() => {
+      if (user) return;
+      sharedRefreshSinceRef.current = "";
+      sharedRefreshInFlightRef.current = null;
+      setLastSharedRefreshAt("");
+    }, [user]);
     const handleRunDbChecklist = async () => {
       const checkedAt = (/* @__PURE__ */ new Date()).toISOString();
       const buildLastSyncRow = () => ({
@@ -26126,11 +26170,11 @@ var FallingWatersPortal = (() => {
       "button",
       {
         style: { ...S.btn("outline"), padding: "7px 10px" },
-        onClick: () => handleRefreshSharedData({ silent: false, mode: "merge" }),
+        onClick: () => handleRefreshSharedData({ silent: false, forceFull: true }),
         disabled: sharedDataBusy
       },
       sharedDataBusy ? "Refreshing\u2026" : "Refresh shared data"
-    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "Short-Term Rental (STR) & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment, onDelete: handleDeleteComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
+    ), page !== "str" && /* @__PURE__ */ import_react.default.createElement("button", { style: S.btn("stone"), onClick: () => setPage("str") }, "Short-Term Rental (STR) & Unified CC&R vote \u2192"))), /* @__PURE__ */ import_react.default.createElement("div", { style: contentStyle }, sharedDataErr && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("danger") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Shared data sync issue:"), " ", sharedDataErr), sharedDataMsg && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("success") }, sharedDataMsg, lastSharedRefreshAt ? ` Last refresh: ${formatIsoDateTime(lastSharedRefreshAt)}.` : ""), user.isAdmin && /* @__PURE__ */ import_react.default.createElement("div", { style: S.alert("warn") }, /* @__PURE__ */ import_react.default.createElement("strong", null, "Admin Control Mode active:"), " You have access to admin roster tools, lot-count settings, eligibility controls, CSV import/export, and full JSON backup/restore."), page === "home" && /* @__PURE__ */ import_react.default.createElement(HomePage, { votes, stats, totalLots, votesNeeded }), page === "documents" && /* @__PURE__ */ import_react.default.createElement(DocumentsPage, { docs: covenantDocs }), page === "comparison" && /* @__PURE__ */ import_react.default.createElement(ComparisonPage, null), page === "proposed" && /* @__PURE__ */ import_react.default.createElement(ProposedCovenantPage, null), page === "risks" && /* @__PURE__ */ import_react.default.createElement(RisksPage, null), page === "str" && /* @__PURE__ */ import_react.default.createElement(STRPage, { user, votes, voteLedger, onVote: handleVote, totalLots, votesNeeded }), page === "profile" && !user.isAdmin && /* @__PURE__ */ import_react.default.createElement(ProfilePage, { user, voteLedger, onUpdateProfile: handleUpdateProfile }), page === "comments" && /* @__PURE__ */ import_react.default.createElement(CommentsPage, { user, comments, onAdd: handleAddComment, onUpdate: handleUpdateComment, onDelete: handleDeleteComment }), page === "dashboard" && /* @__PURE__ */ import_react.default.createElement(
       DashboardPage,
       {
         votes,
