@@ -20,6 +20,8 @@ services:
         value: "1"
       - key: ALERT_MIN_SCOPE_RECORDS
         value: "1"
+      - key: BACKUP_SNAPSHOT_KEEP_COUNT
+        value: "60"
       - key: DATABASE_URL
         fromDatabase:
           name: falling-waters-postgres

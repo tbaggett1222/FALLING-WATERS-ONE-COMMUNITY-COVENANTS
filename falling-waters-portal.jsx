@@ -53,6 +53,8 @@ const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
+const LAST_SHARED_REFRESH_CURSOR_KEY = "fw_last_shared_refresh_cursor";
+const SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1000;
 const PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
 const ADMIN_TWO_FACTOR_REGISTRY_KEY = "fw_admin_two_factor_registry";
 const DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
@@ -1555,8 +1557,10 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
         {[
           { num:totalLots, label:"Total lots", accent:C.forest },
           { num:votesNeeded, label:"Votes needed (2/3)", accent:C.stone },
-          { num:communityEngaged, label:"Owners engaged", accent:"#2563EB" },
-          { num:`${yesPct}%`, label:"Supporting Short-Term Rental (STR) elimination", accent:C.danger },
+          { num:stats.registeredUsers, label:"Registered users", accent:"#0F766E" },
+          { num:stats.engagedUsers, label:"Engaged users", accent:"#2563EB" },
+          { num:stats.totalVotesCast, label:"Votes recorded", accent:C.danger },
+          { num:`${yesPct}%`, label:"Supporting Short-Term Rental (STR) elimination", accent:"#7F1D1D" },
         ].map((s,i) => (
           <div key={i} style={S.statCard(s.accent)}>
             <div style={S.statNum}>{s.num}</div>
@@ -1574,6 +1578,9 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
           <div style={{ fontSize:12, color:C.muted, marginTop:6 }}>Goal: 100% engagement before vote · {notVotedLots} owners not yet reached</div>
           <div style={{ marginTop:10, fontSize:12, color:C.muted, lineHeight:1.55 }}>
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
+          </div>
+          <div style={{ marginTop:8, fontSize:12, color:C.muted, lineHeight:1.55 }}>
+            Resident accounts: <strong>{stats.registeredUsers}</strong> registered · <strong>{stats.engagedUsers}</strong> engaged (commented or voted) · <strong>{stats.totalVotesCast}</strong> votes recorded.
           </div>
         </div>
         <div style={S.card}>
@@ -2835,6 +2842,11 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const lots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+  const normalizeLotInputDisplay = (value) => {
+    const parsedLots = parseLotsInput(value).filter((lot) => lot !== "ADMIN");
+    if (parsedLots.length === 0) return String(value || "");
+    return parsedLots.join(", ");
+  };
 
   const save = (e) => {
     e.preventDefault();
@@ -2854,6 +2866,10 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
       setErr(updateError);
       setMsg("");
       return;
+    }
+    const canonicalLotsInput = parsedLots.join(", ");
+    if (canonicalLotsInput && canonicalLotsInput !== lotsInput) {
+      setLotsInput(canonicalLotsInput);
     }
     setErr("");
     setMsg(
@@ -2891,6 +2907,7 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
                 style={S.input}
                 value={lotsInput}
                 onChange={(e) => setLotsInput(e.target.value)}
+                onBlur={() => setLotsInput(normalizeLotInputDisplay(lotsInput))}
                 placeholder="e.g. Lot 36, Lot 37"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -2898,6 +2915,9 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
               />
               <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
                 Separate multiple lots with commas. Example: Lot 36, Lot 37.
+              </div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                Combined-lot support: entering Lot 26 or Lot 27 will save as Lot 27R, and Lot 28 or Lot 29 will save as Lot 29R.
               </div>
             </div>
             <div style={{ marginBottom: 12 }}>
@@ -4659,10 +4679,29 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
       <div style={S.statGrid}>
         {[
           { num:totalLots, label:"Total lots", accent:C.forest },
-          { num:surveyEngaged, label:"Survey engaged", accent:"#2563EB" },
-          { num:`${Math.round((surveyEngaged/totalLots)*100)}%`, label:"Engagement rate", accent:C.stone },
-          { num:comments.length, label:"Comments posted", accent:"#7C3AED" },
+          { num:stats.registeredUsers, label:"Registered users", accent:"#0F766E" },
+          { num:stats.engagedUsers, label:"Engaged users", accent:"#2563EB" },
+          { num:stats.totalVotesCast, label:"Votes recorded", accent:C.danger },
         ].map((s,i) => <div key={i} style={S.statCard(s.accent)}><div style={S.statNum}>{s.num}</div><div style={S.statLabel}>{s.label}</div></div>)}
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Resident registration and engagement (accounts)</div>
+        <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>
+          Registered users are resident accounts on file. Engaged users have commented or cast at least one lot vote.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+          {[
+            { label: "Registered users", value: stats.registeredUsers, color: "#0F766E" },
+            { label: "Engaged users", value: stats.engagedUsers, color: "#2563EB" },
+            { label: "Votes recorded", value: stats.totalVotesCast, color: C.danger },
+          ].map((m, i) => (
+            <div key={i} style={{ border: `1px solid ${C.border}`, borderTop: `3px solid ${m.color}`, borderRadius: 8, padding: "12px 14px", background: C.white }}>
+              <div style={{ fontSize: 24, fontWeight: 700, color: C.forest, fontFamily: "Georgia,serif" }}>{m.value}</div>
+              <div style={{ fontSize: 12, color: C.muted }}>{m.label}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div style={S.card}>
@@ -4860,6 +4899,13 @@ export default function App() {
     const saved = store.get(LAST_DB_SYNC_AT_KEY);
     return typeof saved === "string" && saved.trim() ? saved : "";
   });
+  const [lastSharedRefreshCursor, setLastSharedRefreshCursor] = useState(() => {
+    const saved = store.get(LAST_SHARED_REFRESH_CURSOR_KEY);
+    if (typeof saved !== "string") return "";
+    const trimmed = saved.trim();
+    if (!trimmed) return "";
+    return Number.isNaN(Date.parse(trimmed)) ? "" : new Date(trimmed).toISOString();
+  });
   const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
     const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
     if (
@@ -4919,6 +4965,10 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
   useEffect(() => { store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || ""); }, [lastDbSyncAt]);
+  useEffect(() => { store.set(LAST_SHARED_REFRESH_CURSOR_KEY, lastSharedRefreshCursor || ""); }, [lastSharedRefreshCursor]);
+  useEffect(() => {
+    sharedRefreshCursorRef.current = lastSharedRefreshCursor || "";
+  }, [lastSharedRefreshCursor]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
@@ -5700,39 +5750,56 @@ export default function App() {
     };
   };
 
-  const buildPortalBackupPayload = async () => {
-    const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+  const buildPortalBackupPayload = async ({ scopes = defaultBackupRestoreScopes(), includeAssets = true } = {}) => {
+    const scopeFlags = normalizeRestoreScopes(scopes);
+    const covenantAssetRecords =
+      includeAssets && scopeFlags.covenantFiles
+        ? await listCovenantAssetRecords().catch(() => [])
+        : [];
     return {
       backupType: PORTAL_BACKUP_TYPE,
       version: PORTAL_BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
       payload: {
-        fw_user: user,
-        fw_votes: votes,
-        fw_comments: comments,
-        fw_comments_data_version: COMMENTS_DATA_VERSION,
-        fw_covenant_docs: covenantDocs,
-        fw_owner_activity: ownerActivity,
-        fw_vote_ledger: voteLedger,
-        fw_primary_voter_registry: primaryVoterRegistry,
-        fw_primary_voter_transfer_audit: primaryVoterTransferAudit,
-        fw_outreach_state: outreachState,
-        fw_user_directory: userDirectory,
-        fw_admin_access_entries: adminAccessEntries,
-        fw_admin_access_grades: adminAccessGrades,
-        fw_admin_two_factor_registry: adminTwoFactorRegistry,
-        fw_total_lots: totalLots,
-        fw_vote_eligibility: eligibilityState,
-        fw_last_backup_export_at: lastBackupExportAt || null,
-        fw_backup_health_threshold_days: backupHealthThresholdDays,
-        legacy_vote_entries: collectLegacyVoteEntries(),
-        covenant_asset_records: covenantAssetRecords,
+        ...(scopeFlags.sessionUser ? { fw_user: user } : {}),
+        ...(scopeFlags.votes ? { fw_votes: votes } : {}),
+        ...(scopeFlags.comments ? { fw_comments: comments, fw_comments_data_version: COMMENTS_DATA_VERSION } : {}),
+        ...(scopeFlags.covenantDocs ? { fw_covenant_docs: covenantDocs } : {}),
+        ...(scopeFlags.ownerActivity ? { fw_owner_activity: ownerActivity } : {}),
+        ...(scopeFlags.votes ? { fw_vote_ledger: voteLedger, legacy_vote_entries: collectLegacyVoteEntries() } : {}),
+        ...(scopeFlags.primaryVoters
+          ? {
+              fw_primary_voter_registry: primaryVoterRegistry,
+              fw_primary_voter_transfer_audit: primaryVoterTransferAudit,
+            }
+          : {}),
+        ...(scopeFlags.outreach ? { fw_outreach_state: outreachState } : {}),
+        ...(scopeFlags.userDirectory ? { fw_user_directory: userDirectory } : {}),
+        ...(scopeFlags.adminAccess
+          ? {
+              fw_admin_access_entries: adminAccessEntries,
+              fw_admin_access_grades: adminAccessGrades,
+              fw_admin_two_factor_registry: adminTwoFactorRegistry,
+            }
+          : {}),
+        ...(scopeFlags.lotSettings
+          ? {
+              fw_total_lots: totalLots,
+              fw_backup_health_threshold_days: backupHealthThresholdDays,
+            }
+          : {}),
+        ...(scopeFlags.eligibility ? { fw_vote_eligibility: eligibilityState } : {}),
+        ...(scopeFlags.sessionUser ? { fw_last_backup_export_at: lastBackupExportAt || null } : {}),
+        ...(scopeFlags.covenantFiles ? { covenant_asset_records: covenantAssetRecords } : {}),
       },
     };
   };
 
   const handleExportBackup = async () => {
-    const backup = await buildPortalBackupPayload();
+    const backup = await buildPortalBackupPayload({ scopes: defaultBackupRestoreScopes(), includeAssets: true });
+    const exportedAssets = Array.isArray(backup?.payload?.covenant_asset_records)
+      ? backup.payload.covenant_asset_records
+      : [];
 
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -5744,7 +5811,7 @@ export default function App() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
     return {
-      message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${covenantAssetRecords.length} stored covenant attachments).`,
+      message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${exportedAssets.length} stored covenant attachments).`,
     };
   };
 
@@ -6173,14 +6240,20 @@ export default function App() {
     };
   };
 
-  const handleSyncToDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
-    const backup = await buildPortalBackupPayload();
+  const handleSyncToDb = async ({
+    mode = "replace",
+    scopes = defaultBackupRestoreScopes(),
+    trackSnapshot = true,
+    includeAssets = true,
+  } = {}) => {
+    const backup = await buildPortalBackupPayload({ scopes, includeAssets });
     const result = await callDbApi("/api/db/sync", {
       method: "POST",
       body: JSON.stringify({
         backup,
         mode,
         scopes,
+        trackSnapshot,
       }),
     });
     const syncedAt = new Date().toISOString();
@@ -6287,7 +6360,12 @@ export default function App() {
       return { skipped: true };
     }
     try {
-      return await handleSyncToDb({ mode, scopes });
+      return await handleSyncToDb({
+        mode,
+        scopes,
+        trackSnapshot: false,
+        includeAssets: false,
+      });
     } catch (error) {
       const message = error?.message || "Could not sync shared data to PostgreSQL.";
       if (reportError) {
@@ -6318,7 +6396,7 @@ export default function App() {
   }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory, outreachState, primaryVoterRegistry]);
 
   useEffect(() => {
-    if (!user || !dbApiBaseUrl) return;
+    if (!user) return;
     let cancelled = false;
     const runRefresh = async (forceFull = false) => {
       const result = await handleRefreshSharedData({ silent: true, forceFull });
@@ -6349,10 +6427,8 @@ export default function App() {
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [dbApiBaseUrl, user?.userId]);
+  }, [user?.userId, dbApiBaseUrl]);
 
   useEffect(() => {
     if (user) return;
@@ -6442,10 +6518,38 @@ export default function App() {
   const nonEligibleVotedLotsCount = allLotLabels.filter(
     (lot) => eligibilityState?.[lot]?.eligible === false && !!(voteLedger[lot] || store.get(`vote_${lot}`))
   ).length;
+  const residentDirectoryMap = new Map();
+  Object.values(userDirectory || {}).forEach((entry) => {
+    if (!entry || typeof entry !== "object" || entry.isAdmin) return;
+    const key = String(entry.userId || normalizeNameKey(entry.name) || "").trim();
+    if (!key || residentDirectoryMap.has(key)) return;
+    residentDirectoryMap.set(key, entry);
+  });
+  if (user && !user.isAdmin) {
+    const currentKey = String(user.userId || normalizeNameKey(user.name) || "").trim();
+    if (currentKey && !residentDirectoryMap.has(currentKey)) {
+      residentDirectoryMap.set(currentKey, user);
+    }
+  }
+  const residentDirectoryRows = Array.from(residentDirectoryMap.values());
+  const hasUserEngagement = (profile) => {
+    const profileLots = normalizeUserLots(profile).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
+    if (profileLots.some((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`) || ownerActivity?.[lot]?.commented))) {
+      return true;
+    }
+    const profileNameKey = normalizeNameKey(profile?.name);
+    if (!profileNameKey) return false;
+    return comments.some((comment) => normalizeNameKey(comment?.name) === profileNameKey);
+  };
+  const registeredUsersCount = residentDirectoryRows.length;
+  const engagedUsersCount = residentDirectoryRows.filter((profile) => hasUserEngagement(profile)).length;
   const stats = {
     loggedInLots: activityRows.length,
     commentedLots: commentedLotsFromActivity,
     votedLots: votedLotsFromLedger,
+    registeredUsers: registeredUsersCount,
+    engagedUsers: engagedUsersCount,
+    totalVotesCast: votedLotsFromLedger,
   };
   const operationalStats = {
     contactedLots: contactedLotsFromOutreach,
