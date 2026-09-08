@@ -81,6 +81,18 @@ const SCOPE_CONFIG = {
   },
 };
 
+const SHARED_REFRESH_SCOPES = [
+  "lotSettings",
+  "votes",
+  "comments",
+  "ownerActivity",
+  "outreach",
+  "eligibility",
+  "primaryVoters",
+  "adminAccess",
+  "userDirectory",
+];
+
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 
@@ -147,6 +159,13 @@ const ensureSchema = async () => {
       mode TEXT NOT NULL,
       scopes_json JSONB NOT NULL,
       backup_json JSONB NOT NULL
+    );
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS scope_sync_state (
+      scope TEXT PRIMARY KEY,
+      last_mode TEXT NOT NULL,
+      last_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 };
@@ -358,7 +377,25 @@ const applyAssets = async (client, assets, mode) => {
   }
 };
 
-const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {} }) => {
+const markScopeSynced = async (client, scope, mode) => {
+  await client.query(
+    `
+      INSERT INTO scope_sync_state(scope, last_mode, last_synced_at)
+      VALUES($1, $2, NOW())
+      ON CONFLICT (scope)
+      DO UPDATE SET last_mode = EXCLUDED.last_mode, last_synced_at = NOW()
+    `,
+    [scope, mode]
+  );
+};
+
+const syncBackupToDatabase = async ({
+  backup,
+  mode = "replace",
+  scopes = {},
+  trackSnapshot = true,
+  snapshotKeepCount = 60,
+} = {}) => {
   const normalizedMode = mode === "merge" || mode === "missing" ? mode : "replace";
   const normalizedScopes = normalizeScopes(scopes);
   if (!hasSelectedScope(normalizedScopes)) {
@@ -366,6 +403,9 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {} }) =
   }
 
   const serialized = serializeBackup(backup || {});
+  const shouldTrackSnapshot = trackSnapshot !== false;
+  const safeSnapshotKeepCount = Math.max(0, Number(snapshotKeepCount) || 0);
+  let prunedSnapshots = 0;
 
   await withClient(async (client) => {
     await client.query("BEGIN");
@@ -381,21 +421,39 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {} }) =
         if (config.includesAssets) {
           await applyAssets(client, serialized.assets, normalizedMode);
         }
+        await markScopeSynced(client, scope, normalizedMode);
       }
 
-      await client.query(
-        `
-          INSERT INTO backup_snapshots(backup_type, version, mode, scopes_json, backup_json)
-          VALUES($1, $2, $3, $4::jsonb, $5::jsonb)
-        `,
-        [
-          backup?.backupType || BACKUP_TYPE,
-          Number(backup?.version) || BACKUP_VERSION,
-          normalizedMode,
-          JSON.stringify(normalizedScopes),
-          JSON.stringify(backup || {}),
-        ]
-      );
+      if (shouldTrackSnapshot) {
+        await client.query(
+          `
+            INSERT INTO backup_snapshots(backup_type, version, mode, scopes_json, backup_json)
+            VALUES($1, $2, $3, $4::jsonb, $5::jsonb)
+          `,
+          [
+            backup?.backupType || BACKUP_TYPE,
+            Number(backup?.version) || BACKUP_VERSION,
+            normalizedMode,
+            JSON.stringify(normalizedScopes),
+            JSON.stringify(backup || {}),
+          ]
+        );
+        if (safeSnapshotKeepCount > 0) {
+          const deleteResult = await client.query(
+            `
+              DELETE FROM backup_snapshots
+              WHERE id IN (
+                SELECT id
+                FROM backup_snapshots
+                ORDER BY id DESC
+                OFFSET $1
+              )
+            `,
+            [safeSnapshotKeepCount]
+          );
+          prunedSnapshots = deleteResult.rowCount || 0;
+        }
+      }
 
       await client.query("COMMIT");
     } catch (error) {
@@ -407,6 +465,8 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {} }) =
   return {
     mode: normalizedMode,
     scopes: normalizedScopes,
+    snapshotRecorded: shouldTrackSnapshot,
+    snapshotsPruned: prunedSnapshots,
   };
 };
 
@@ -509,6 +569,203 @@ const buildBackupFromDatabase = async () => {
   };
 };
 
+const toIsoIfValid = (value) => {
+  if (!value) return null;
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const getSharedRefreshBundle = async ({ since } = {}) => {
+  const sinceIso = toIsoIfValid(since);
+  const sinceDate = sinceIso ? new Date(sinceIso) : null;
+  const serverNowResult = await query("SELECT NOW() AS now");
+  const serverNowIso = toIsoIfValid(serverNowResult.rows[0]?.now) || new Date().toISOString();
+
+  const scopeStatesResult = await query(
+    `
+      SELECT scope, last_mode, last_synced_at
+      FROM scope_sync_state
+      WHERE scope = ANY($1::text[])
+    `,
+    [SHARED_REFRESH_SCOPES]
+  );
+  const scopeStates = {};
+  scopeStatesResult.rows.forEach((row) => {
+    scopeStates[row.scope] = {
+      lastMode: String(row.last_mode || "merge"),
+      lastSyncedAt: toIsoIfValid(row.last_synced_at),
+    };
+  });
+
+  const includeAllScopes = !sinceDate || Object.keys(scopeStates).length === 0;
+  const changedScopes = includeAllScopes
+    ? [...SHARED_REFRESH_SCOPES]
+    : SHARED_REFRESH_SCOPES.filter((scope) => {
+      const lastSyncedAt = scopeStates[scope]?.lastSyncedAt;
+      if (!lastSyncedAt) return false;
+      return Date.parse(lastSyncedAt) > sinceDate.getTime();
+    });
+
+  const payloadByScope = {};
+  for (const scope of changedScopes) {
+    const config = SCOPE_CONFIG[scope];
+    if (!config) continue;
+    const mode = includeAllScopes
+      ? "replace"
+      : (scopeStates[scope]?.lastMode === "replace" ? "replace" : "merge");
+
+    const stateValues = {};
+    if (Array.isArray(config.stateKeys) && config.stateKeys.length > 0) {
+      const useUpdatedFilter = !includeAllScopes && mode !== "replace";
+      const stateQuery = useUpdatedFilter
+        ? `
+            SELECT key, value_json
+            FROM state_values
+            WHERE key = ANY($1::text[]) AND updated_at > $2::timestamptz
+          `
+        : `
+            SELECT key, value_json
+            FROM state_values
+            WHERE key = ANY($1::text[])
+          `;
+      const params = useUpdatedFilter ? [config.stateKeys, sinceIso] : [config.stateKeys];
+      const stateResult = await query(stateQuery, params);
+      stateResult.rows.forEach((row) => {
+        stateValues[row.key] = row.value_json;
+      });
+    }
+
+    const groupedRows = {};
+    for (const recordScope of config.recordScopes || []) {
+      const useUpdatedFilter = !includeAllScopes && mode !== "replace";
+      const recordsQuery = useUpdatedFilter
+        ? `
+            SELECT scope, row_id, position, data_json
+            FROM scope_records
+            WHERE scope = $1 AND updated_at > $2::timestamptz
+            ORDER BY position NULLS LAST, row_id
+          `
+        : `
+            SELECT scope, row_id, position, data_json
+            FROM scope_records
+            WHERE scope = $1
+            ORDER BY position NULLS LAST, row_id
+          `;
+      const params = useUpdatedFilter ? [recordScope, sinceIso] : [recordScope];
+      const result = await query(recordsQuery, params);
+      groupedRows[recordScope] = result.rows;
+    }
+
+    const scopePayload = {};
+    if (scope === "lotSettings") {
+      if (Object.prototype.hasOwnProperty.call(stateValues, "fw_total_lots")) {
+        scopePayload.fw_total_lots = stateValues.fw_total_lots;
+      }
+      if (Object.prototype.hasOwnProperty.call(stateValues, "fw_backup_health_threshold_days")) {
+        scopePayload.fw_backup_health_threshold_days = stateValues.fw_backup_health_threshold_days;
+      }
+    }
+
+    if (scope === "votes") {
+      if (Object.prototype.hasOwnProperty.call(stateValues, "fw_votes")) {
+        scopePayload.fw_votes = stateValues.fw_votes;
+      }
+      const voteLedger = {};
+      (groupedRows.voteLedger || []).forEach((row) => {
+        const choice = row.data_json?.choice || row.data_json;
+        if (VALID_VOTE_CHOICES.has(choice)) voteLedger[row.row_id] = choice;
+      });
+      const legacyVoteEntries = {};
+      (groupedRows.legacyVoteEntries || []).forEach((row) => {
+        const choice = row.data_json?.choice || row.data_json;
+        if (VALID_VOTE_CHOICES.has(choice)) legacyVoteEntries[row.row_id] = choice;
+      });
+      scopePayload.fw_vote_ledger = voteLedger;
+      scopePayload.legacy_vote_entries = legacyVoteEntries;
+    }
+
+    if (scope === "comments") {
+      scopePayload.fw_comments = (groupedRows.comments || []).map((row) => row.data_json);
+      if (Object.prototype.hasOwnProperty.call(stateValues, "fw_comments_data_version")) {
+        scopePayload.fw_comments_data_version = stateValues.fw_comments_data_version;
+      }
+    }
+
+    if (scope === "ownerActivity") {
+      scopePayload.fw_owner_activity = {};
+      (groupedRows.ownerActivity || []).forEach((row) => {
+        scopePayload.fw_owner_activity[row.row_id] = row.data_json;
+      });
+    }
+
+    if (scope === "outreach") {
+      scopePayload.fw_outreach_state = {};
+      (groupedRows.outreach || []).forEach((row) => {
+        scopePayload.fw_outreach_state[row.row_id] = row.data_json;
+      });
+    }
+
+    if (scope === "eligibility") {
+      scopePayload.fw_vote_eligibility = {};
+      (groupedRows.voteEligibility || []).forEach((row) => {
+        scopePayload.fw_vote_eligibility[row.row_id] = row.data_json;
+      });
+    }
+
+    if (scope === "primaryVoters") {
+      scopePayload.fw_primary_voter_registry = {};
+      (groupedRows.primaryVoters || []).forEach((row) => {
+        scopePayload.fw_primary_voter_registry[row.row_id] = row.data_json;
+      });
+      if (Object.prototype.hasOwnProperty.call(stateValues, "fw_primary_voter_transfer_audit")) {
+        scopePayload.fw_primary_voter_transfer_audit = Array.isArray(stateValues.fw_primary_voter_transfer_audit)
+          ? stateValues.fw_primary_voter_transfer_audit
+          : [];
+      }
+    }
+
+    if (scope === "adminAccess") {
+      const adminAccessEntries = (groupedRows.adminAccess || [])
+        .map((row) => String(row.data_json?.name || "").trim())
+        .filter(Boolean);
+      const adminAccessGrades = {};
+      (groupedRows.adminAccessGrades || []).forEach((row) => {
+        adminAccessGrades[row.row_id] = row.data_json;
+      });
+      (groupedRows.adminAccess || []).forEach((row) => {
+        const key = row.row_id;
+        if (!adminAccessGrades[key] && row.data_json?.gradeRecord) {
+          adminAccessGrades[key] = row.data_json.gradeRecord;
+        }
+      });
+      scopePayload.fw_admin_access_entries = adminAccessEntries;
+      scopePayload.fw_admin_access_grades = adminAccessGrades;
+      if (Object.prototype.hasOwnProperty.call(stateValues, "fw_admin_two_factor_registry")) {
+        scopePayload.fw_admin_two_factor_registry = stateValues.fw_admin_two_factor_registry;
+      }
+    }
+
+    if (scope === "userDirectory") {
+      scopePayload.fw_user_directory = {};
+      (groupedRows.userDirectory || []).forEach((row) => {
+        scopePayload.fw_user_directory[row.row_id] = row.data_json;
+      });
+    }
+
+    payloadByScope[scope] = {
+      mode,
+      payload: scopePayload,
+    };
+  }
+
+  return {
+    since: sinceIso,
+    nextCursor: serverNowIso,
+    scopes: payloadByScope,
+  };
+};
+
 const getRecordCounts = async () => {
   const [stateCount, scopeCounts, assetCount, snapshotCount] = await Promise.all([
     query("SELECT COUNT(*)::int AS count FROM state_values"),
@@ -566,11 +823,13 @@ module.exports = {
   BACKUP_TYPE,
   BACKUP_VERSION,
   ALL_SCOPES,
+  SHARED_REFRESH_SCOPES,
   ensureSchema,
   normalizeScopes,
   hasSelectedScope,
   syncBackupToDatabase,
   buildBackupFromDatabase,
+  getSharedRefreshBundle,
   getRecordCounts,
   getRecords,
 };

@@ -7,10 +7,12 @@ const {
   BACKUP_TYPE,
   BACKUP_VERSION,
   ensureSchema,
+  SHARED_REFRESH_SCOPES,
   getRecordCounts,
   getRecords,
   syncBackupToDatabase,
   buildBackupFromDatabase,
+  getSharedRefreshBundle,
   normalizeScopes,
 } = require("./repository");
 
@@ -27,6 +29,14 @@ const parsePositiveInt = (value, fallback) => {
 const ALERT_MAX_SYNC_AGE_MINUTES = parsePositiveInt(process.env.ALERT_MAX_SYNC_AGE_MINUTES, 24 * 60);
 const ALERT_MIN_STATE_KEYS = parsePositiveInt(process.env.ALERT_MIN_STATE_KEYS, 1);
 const ALERT_MIN_SCOPE_RECORDS = parsePositiveInt(process.env.ALERT_MIN_SCOPE_RECORDS, 1);
+const BACKUP_SNAPSHOT_KEEP_COUNT = parsePositiveInt(process.env.BACKUP_SNAPSHOT_KEEP_COUNT, 60);
+const parseBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  const raw = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "y"].includes(raw)) return true;
+  if (["0", "false", "no", "n"].includes(raw)) return false;
+  return fallback;
+};
 
 const app = express();
 app.use(
@@ -65,6 +75,7 @@ app.get("/", (_req, res) => {
     service: "falling-waters-postgres-api",
     health: "/api/db/health",
     alertStatus: "/api/db/alert-status",
+    sharedRefresh: "/api/db/shared-refresh",
   });
 });
 
@@ -103,10 +114,11 @@ app.get("/api/db/alert-status", async (req, res) => {
   };
 
   try {
-    const [pingResult, summary, latestSnapshotResult] = await Promise.all([
+    const [pingResult, summary, latestSnapshotResult, latestScopeSyncResult] = await Promise.all([
       query("SELECT NOW() AS now"),
       getRecordCounts(),
       query("SELECT id, created_at FROM backup_snapshots ORDER BY created_at DESC LIMIT 1"),
+      query("SELECT MAX(last_synced_at) AS last_synced_at FROM scope_sync_state"),
     ]);
 
     checks.push({
@@ -117,27 +129,33 @@ app.get("/api/db/alert-status", async (req, res) => {
 
     const snapshotsCount = Number(summary?.backup_snapshots || 0);
     const latestSnapshot = latestSnapshotResult.rows[0] || null;
-    if (!latestSnapshot) {
+    const latestScopeSyncAt = latestScopeSyncResult.rows[0]?.last_synced_at || null;
+    const latestDataSyncAt = [latestSnapshot?.created_at || null, latestScopeSyncAt]
+      .filter(Boolean)
+      .map((value) => new Date(value))
+      .filter((value) => !Number.isNaN(value.getTime()))
+      .sort((a, b) => b.getTime() - a.getTime())[0] || null;
+    if (!latestDataSyncAt) {
       checks.push({
         check: "sync_freshness",
         status: "warn",
-        detail: "No sync snapshot found yet. Run a portal sync to establish baseline data.",
+        detail: "No sync activity found yet. Run a portal sync to establish baseline data.",
       });
       escalate("warn");
     } else {
-      const ageMinutes = Math.floor((Date.now() - new Date(latestSnapshot.created_at).getTime()) / 60000);
+      const ageMinutes = Math.floor((Date.now() - latestDataSyncAt.getTime()) / 60000);
       if (ageMinutes > ALERT_MAX_SYNC_AGE_MINUTES) {
         checks.push({
           check: "sync_freshness",
           status: "warn",
-          detail: `Latest sync snapshot is stale (${ageMinutes} minutes old, threshold ${ALERT_MAX_SYNC_AGE_MINUTES} minutes).`,
+          detail: `Latest sync activity is stale (${ageMinutes} minutes old, threshold ${ALERT_MAX_SYNC_AGE_MINUTES} minutes).`,
         });
         escalate("warn");
       } else {
         checks.push({
           check: "sync_freshness",
           status: "pass",
-          detail: `Latest sync snapshot is ${ageMinutes} minutes old.`,
+          detail: `Latest sync activity is ${ageMinutes} minutes old.`,
         });
       }
     }
@@ -192,6 +210,8 @@ app.get("/api/db/alert-status", async (req, res) => {
         covenantAssets: Number(summary?.covenant_assets || 0),
         backupSnapshots: snapshotsCount,
         latestSnapshotAt: latestSnapshot?.created_at || null,
+        latestScopeSyncAt,
+        latestDataSyncAt: latestDataSyncAt ? latestDataSyncAt.toISOString() : null,
       },
       checks,
     };
@@ -226,6 +246,25 @@ app.get("/api/db/summary", async (_req, res) => {
   }
 });
 
+app.get("/api/db/shared-refresh", async (req, res) => {
+  try {
+    await ensureSchemaReady();
+    const since = req.query.since ? String(req.query.since) : null;
+    const refresh = await getSharedRefreshBundle({ since });
+    res.json({
+      ok: true,
+      sharedScopes: SHARED_REFRESH_SCOPES,
+      refresh,
+      message:
+        Object.keys(refresh.scopes || {}).length > 0
+          ? `Shared refresh payload ready for ${Object.keys(refresh.scopes || {}).length} scope(s).`
+          : "No shared scope changes since the provided cursor.",
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message || "Could not load shared refresh data." });
+  }
+});
+
 app.get("/api/db/records/:table", async (req, res) => {
   try {
     await ensureSchemaReady();
@@ -247,15 +286,21 @@ app.post("/api/db/sync", async (req, res) => {
     const backup = body.backup || {};
     const mode = body.mode || "replace";
     const scopes = normalizeScopes(body.scopes);
+    const trackSnapshot = parseBoolean(body.trackSnapshot, true);
+    const snapshotKeepCount = parsePositiveInt(body.snapshotKeepCount, BACKUP_SNAPSHOT_KEEP_COUNT);
     const result = await syncBackupToDatabase({
       backup,
       mode,
       scopes,
+      trackSnapshot,
+      snapshotKeepCount: trackSnapshot ? snapshotKeepCount : 0,
     });
     res.json({
       ok: true,
       result,
-      message: "PostgreSQL sync completed.",
+      message: trackSnapshot
+        ? "PostgreSQL sync completed and snapshot recorded."
+        : "PostgreSQL sync completed (snapshot skipped).",
     });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message || "Could not sync data to PostgreSQL." });

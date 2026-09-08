@@ -53,6 +53,8 @@ const LAST_BACKUP_EXPORT_KEY = "fw_last_backup_export_at";
 const BACKUP_HEALTH_THRESHOLD_KEY = "fw_backup_health_threshold_days";
 const DB_API_BASE_URL_KEY = "fw_db_api_base_url";
 const LAST_DB_SYNC_AT_KEY = "fw_last_db_sync_at";
+const LAST_SHARED_REFRESH_CURSOR_KEY = "fw_last_shared_refresh_cursor";
+const SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1000;
 const PRIMARY_VOTER_TRANSFER_AUDIT_KEY = "fw_primary_voter_transfer_audit";
 const ADMIN_TWO_FACTOR_REGISTRY_KEY = "fw_admin_two_factor_registry";
 const DEFAULT_DB_API_BASE_URL = "https://falling-waters-postgres-api.onrender.com";
@@ -149,6 +151,17 @@ const BACKUP_RESTORE_SCOPE_OPTIONS = [
   { key: "covenantFiles", label: "Stored covenant file blobs" },
   { key: "sessionUser", label: "Current signed-in session" },
 ];
+const SHARED_REFRESH_SCOPE_TO_RESTORE_SCOPE = {
+  lotSettings: "lotSettings",
+  votes: "votes",
+  comments: "comments",
+  ownerActivity: "ownerActivity",
+  outreach: "outreach",
+  eligibility: "eligibility",
+  primaryVoters: "primaryVoters",
+  adminAccess: "adminAccess",
+  userDirectory: "userDirectory",
+};
 
 const defaultBackupRestoreScopes = () =>
   BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
@@ -4762,6 +4775,13 @@ export default function App() {
     const saved = store.get(LAST_DB_SYNC_AT_KEY);
     return typeof saved === "string" && saved.trim() ? saved : "";
   });
+  const [lastSharedRefreshCursor, setLastSharedRefreshCursor] = useState(() => {
+    const saved = store.get(LAST_SHARED_REFRESH_CURSOR_KEY);
+    if (typeof saved !== "string") return "";
+    const trimmed = saved.trim();
+    if (!trimmed) return "";
+    return Number.isNaN(Date.parse(trimmed)) ? "" : new Date(trimmed).toISOString();
+  });
   const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
     const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
     if (
@@ -4783,6 +4803,8 @@ export default function App() {
   const [sharedDataBusy, setSharedDataBusy] = useState(false);
   const [sharedDataMsg, setSharedDataMsg] = useState("");
   const [sharedDataErr, setSharedDataErr] = useState("");
+  const sharedRefreshInFlightRef = useRef(false);
+  const sharedRefreshCursorRef = useRef(lastSharedRefreshCursor);
   const sharedSyncScopeQueueRef = useRef(new Set());
   const sharedSyncModeRef = useRef("merge");
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
@@ -4818,6 +4840,10 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
   useEffect(() => { store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || ""); }, [lastDbSyncAt]);
+  useEffect(() => { store.set(LAST_SHARED_REFRESH_CURSOR_KEY, lastSharedRefreshCursor || ""); }, [lastSharedRefreshCursor]);
+  useEffect(() => {
+    sharedRefreshCursorRef.current = lastSharedRefreshCursor || "";
+  }, [lastSharedRefreshCursor]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
@@ -5559,39 +5585,56 @@ export default function App() {
     };
   };
 
-  const buildPortalBackupPayload = async () => {
-    const covenantAssetRecords = await listCovenantAssetRecords().catch(() => []);
+  const buildPortalBackupPayload = async ({ scopes = defaultBackupRestoreScopes(), includeAssets = true } = {}) => {
+    const scopeFlags = normalizeRestoreScopes(scopes);
+    const covenantAssetRecords =
+      includeAssets && scopeFlags.covenantFiles
+        ? await listCovenantAssetRecords().catch(() => [])
+        : [];
     return {
       backupType: PORTAL_BACKUP_TYPE,
       version: PORTAL_BACKUP_VERSION,
       exportedAt: new Date().toISOString(),
       payload: {
-        fw_user: user,
-        fw_votes: votes,
-        fw_comments: comments,
-        fw_comments_data_version: COMMENTS_DATA_VERSION,
-        fw_covenant_docs: covenantDocs,
-        fw_owner_activity: ownerActivity,
-        fw_vote_ledger: voteLedger,
-        fw_primary_voter_registry: primaryVoterRegistry,
-        fw_primary_voter_transfer_audit: primaryVoterTransferAudit,
-        fw_outreach_state: outreachState,
-        fw_user_directory: userDirectory,
-        fw_admin_access_entries: adminAccessEntries,
-        fw_admin_access_grades: adminAccessGrades,
-        fw_admin_two_factor_registry: adminTwoFactorRegistry,
-        fw_total_lots: totalLots,
-        fw_vote_eligibility: eligibilityState,
-        fw_last_backup_export_at: lastBackupExportAt || null,
-        fw_backup_health_threshold_days: backupHealthThresholdDays,
-        legacy_vote_entries: collectLegacyVoteEntries(),
-        covenant_asset_records: covenantAssetRecords,
+        ...(scopeFlags.sessionUser ? { fw_user: user } : {}),
+        ...(scopeFlags.votes ? { fw_votes: votes } : {}),
+        ...(scopeFlags.comments ? { fw_comments: comments, fw_comments_data_version: COMMENTS_DATA_VERSION } : {}),
+        ...(scopeFlags.covenantDocs ? { fw_covenant_docs: covenantDocs } : {}),
+        ...(scopeFlags.ownerActivity ? { fw_owner_activity: ownerActivity } : {}),
+        ...(scopeFlags.votes ? { fw_vote_ledger: voteLedger, legacy_vote_entries: collectLegacyVoteEntries() } : {}),
+        ...(scopeFlags.primaryVoters
+          ? {
+              fw_primary_voter_registry: primaryVoterRegistry,
+              fw_primary_voter_transfer_audit: primaryVoterTransferAudit,
+            }
+          : {}),
+        ...(scopeFlags.outreach ? { fw_outreach_state: outreachState } : {}),
+        ...(scopeFlags.userDirectory ? { fw_user_directory: userDirectory } : {}),
+        ...(scopeFlags.adminAccess
+          ? {
+              fw_admin_access_entries: adminAccessEntries,
+              fw_admin_access_grades: adminAccessGrades,
+              fw_admin_two_factor_registry: adminTwoFactorRegistry,
+            }
+          : {}),
+        ...(scopeFlags.lotSettings
+          ? {
+              fw_total_lots: totalLots,
+              fw_backup_health_threshold_days: backupHealthThresholdDays,
+            }
+          : {}),
+        ...(scopeFlags.eligibility ? { fw_vote_eligibility: eligibilityState } : {}),
+        ...(scopeFlags.sessionUser ? { fw_last_backup_export_at: lastBackupExportAt || null } : {}),
+        ...(scopeFlags.covenantFiles ? { covenant_asset_records: covenantAssetRecords } : {}),
       },
     };
   };
 
   const handleExportBackup = async () => {
-    const backup = await buildPortalBackupPayload();
+    const backup = await buildPortalBackupPayload({ scopes: defaultBackupRestoreScopes(), includeAssets: true });
+    const exportedAssets = Array.isArray(backup?.payload?.covenant_asset_records)
+      ? backup.payload.covenant_asset_records
+      : [];
 
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -5603,7 +5646,7 @@ export default function App() {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
     return {
-      message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${covenantAssetRecords.length} stored covenant attachments).`,
+      message: `Full backup exported (${Object.keys(voteLedger || {}).length} vote records, ${comments.length} comments, ${exportedAssets.length} stored covenant attachments).`,
     };
   };
 
@@ -6013,14 +6056,20 @@ export default function App() {
     };
   };
 
-  const handleSyncToDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
-    const backup = await buildPortalBackupPayload();
+  const handleSyncToDb = async ({
+    mode = "replace",
+    scopes = defaultBackupRestoreScopes(),
+    trackSnapshot = true,
+    includeAssets = true,
+  } = {}) => {
+    const backup = await buildPortalBackupPayload({ scopes, includeAssets });
     const result = await callDbApi("/api/db/sync", {
       method: "POST",
       body: JSON.stringify({
         backup,
         mode,
         scopes,
+        trackSnapshot,
       }),
     });
     const syncedAt = new Date().toISOString();
@@ -6052,37 +6101,100 @@ export default function App() {
     return { records: Array.isArray(result?.records) ? result.records : [] };
   };
 
-  const handleRefreshSharedData = async ({ silent = false, mode = "merge" } = {}) => {
-    if (!dbApiBaseUrl) {
+  const handleRefreshSharedData = async ({ silent = false } = {}) => {
+    const explicitBase = String(dbApiBaseUrl || "").trim();
+    const defaultBase = String(sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true })?.value || "").trim();
+    if (!explicitBase && !defaultBase) {
       return { error: "Database API URL is not configured for this device." };
     }
-    const scopes = {
-      ...defaultBackupRestoreScopes(),
-      sessionUser: false,
-    };
+    if (sharedRefreshInFlightRef.current) {
+      const message = "Shared data refresh is already in progress.";
+      if (!silent) setSharedDataMsg(message);
+      return { skipped: true, message };
+    }
     if (!silent) {
       setSharedDataErr("");
       setSharedDataMsg("");
-      setSharedDataBusy(true);
     }
+    sharedRefreshInFlightRef.current = true;
+    setSharedDataBusy(true);
     try {
-      const result = await handleRestoreFromDb({ mode, scopes });
-      if (result?.error) {
-        if (!silent) setSharedDataErr(result.error);
-        return result;
+      const sinceCursor = sharedRefreshCursorRef.current ? encodeURIComponent(sharedRefreshCursorRef.current) : "";
+      const endpoint = sinceCursor ? `/api/db/shared-refresh?since=${sinceCursor}` : "/api/db/shared-refresh";
+      const result = await callDbApi(endpoint, { method: "GET" });
+      const refresh = result?.refresh || {};
+      const rawScopes = refresh?.scopes && typeof refresh.scopes === "object" ? refresh.scopes : {};
+      const scopeEntries = Object.entries(rawScopes);
+
+      const groupedPayload = {
+        replace: {},
+        merge: {},
+      };
+      const groupedScopeKeys = {
+        replace: new Set(),
+        merge: new Set(),
+      };
+
+      scopeEntries.forEach(([sharedScopeKey, entry]) => {
+        const restoreScopeKey = SHARED_REFRESH_SCOPE_TO_RESTORE_SCOPE[sharedScopeKey];
+        if (!restoreScopeKey) return;
+        const modeKey = entry?.mode === "replace" ? "replace" : "merge";
+        const payload = entry?.payload && typeof entry.payload === "object" ? entry.payload : {};
+        Object.assign(groupedPayload[modeKey], payload);
+        groupedScopeKeys[modeKey].add(restoreScopeKey);
+      });
+
+      if (groupedScopeKeys.replace.size > 0) {
+        const replaceResult = await handleRestoreBackup(
+          { payload: groupedPayload.replace },
+          {
+            mode: "replace",
+            scopes: buildScopedRestoreSelection(Array.from(groupedScopeKeys.replace), false),
+          }
+        );
+        if (replaceResult?.error) {
+          if (!silent) setSharedDataErr(replaceResult.error);
+          return replaceResult;
+        }
       }
+
+      if (groupedScopeKeys.merge.size > 0) {
+        const mergeResult = await handleRestoreBackup(
+          { payload: groupedPayload.merge },
+          {
+            mode: "merge",
+            scopes: buildScopedRestoreSelection(Array.from(groupedScopeKeys.merge), false),
+          }
+        );
+        if (mergeResult?.error) {
+          if (!silent) setSharedDataErr(mergeResult.error);
+          return mergeResult;
+        }
+      }
+
+      const nextCursor = typeof refresh?.nextCursor === "string" && refresh.nextCursor.trim()
+        ? refresh.nextCursor
+        : new Date().toISOString();
+      sharedRefreshCursorRef.current = nextCursor;
+      setLastSharedRefreshCursor(nextCursor);
+
+      const changedScopeCount = scopeEntries.length;
+      const message = changedScopeCount > 0
+        ? `Shared portal data refreshed from PostgreSQL (${changedScopeCount} scope${changedScopeCount === 1 ? "" : "s"} updated).`
+        : "Shared portal data is already current.";
       if (!silent) {
-        setSharedDataMsg(result?.message || "Shared portal data refreshed from PostgreSQL.");
+        setSharedDataMsg(message);
         setTimeout(() => setSharedDataMsg(""), 5000);
       }
       return {
-        message: result?.message || "Shared portal data refreshed from PostgreSQL.",
+        message,
       };
     } catch (error) {
       if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
       return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
     } finally {
-      if (!silent) setSharedDataBusy(false);
+      sharedRefreshInFlightRef.current = false;
+      setSharedDataBusy(false);
     }
   };
 
@@ -6101,7 +6213,12 @@ export default function App() {
       return { skipped: true };
     }
     try {
-      return await handleSyncToDb({ mode, scopes });
+      return await handleSyncToDb({
+        mode,
+        scopes,
+        trackSnapshot: false,
+        includeAssets: false,
+      });
     } catch (error) {
       const message = error?.message || "Could not sync shared data to PostgreSQL.";
       if (reportError) {
@@ -6129,13 +6246,30 @@ export default function App() {
     sharedSyncScopeQueueRef.current.clear();
     sharedSyncModeRef.current = "merge";
     void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
-  }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory]);
+  }, [
+    dbApiBaseUrl,
+    sharedSyncNonce,
+    comments,
+    ownerActivity,
+    voteLedger,
+    primaryVoterRegistry,
+    primaryVoterTransferAudit,
+    outreachState,
+    userDirectory,
+    adminAccessEntries,
+    adminAccessGrades,
+    adminTwoFactorRegistry,
+    eligibilityState,
+    totalLots,
+    backupHealthThresholdDays,
+  ]);
 
   useEffect(() => {
-    if (!user || !dbApiBaseUrl) return;
+    if (!user) return;
     let cancelled = false;
-    const refreshShared = async () => {
-      const result = await handleRefreshSharedData({ silent: true, mode: "merge" });
+    const refreshShared = async ({ respectVisibility = false } = {}) => {
+      if (respectVisibility && document.visibilityState !== "visible") return;
+      const result = await handleRefreshSharedData({ silent: true });
       if (cancelled) return;
       if (result?.error) {
         setSharedDataErr(result.error);
@@ -6143,25 +6277,13 @@ export default function App() {
     };
     void refreshShared();
     const intervalId = window.setInterval(() => {
-      void refreshShared();
-    }, 45000);
-    const onFocus = () => {
-      void refreshShared();
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void refreshShared();
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
+      void refreshShared({ respectVisibility: true });
+    }, SHARED_REFRESH_INTERVAL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [dbApiBaseUrl, user?.userId]);
+  }, [user?.userId, dbApiBaseUrl]);
 
   const handleRunDbChecklist = async () => {
     const checkedAt = new Date().toISOString();
@@ -6441,7 +6563,7 @@ export default function App() {
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
             <button
               style={{ ...S.btn("outline"), padding: "7px 10px" }}
-              onClick={() => handleRefreshSharedData({ silent: false, mode: "merge" })}
+              onClick={() => handleRefreshSharedData({ silent: false })}
               disabled={sharedDataBusy}
             >
               {sharedDataBusy ? "Refreshing…" : "Refresh shared data"}
