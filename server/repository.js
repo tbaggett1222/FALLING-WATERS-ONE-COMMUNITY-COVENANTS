@@ -948,6 +948,114 @@ const getRecords = async ({ table, limit = 200, offset = 0 }) => {
   return result.rows;
 };
 
+// ── PASSWORD RESET REQUESTS ──────────────────────────────────────────────────
+// Residents who forget their per-lot voting password can file a request that an
+// admin reviews and clears. Stored in the generic scope_records table under a
+// dedicated scope, so no schema migration is needed.
+const RESET_REQUEST_SCOPE = "passwordResetRequests";
+const RESET_REQUEST_STATUSES = new Set(["pending", "resolved", "denied"]);
+
+const normalizeResetLots = (lots, lot) => {
+  const list = Array.isArray(lots) ? lots : lot ? [lot] : [];
+  const seen = new Set();
+  const out = [];
+  list
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .forEach((value) => {
+      const key = value.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(value);
+    });
+  return out;
+};
+
+const createPasswordResetRequest = async ({ name, lots, lot, message } = {}) => {
+  const safeName = String(name || "").trim();
+  const normalizedLots = normalizeResetLots(lots, lot);
+  if (!safeName) {
+    throw new Error("Your name is required to request a password reset.");
+  }
+  if (normalizedLots.length === 0) {
+    throw new Error("At least one lot number is required to request a password reset.");
+  }
+  const safeMessage = String(message || "").trim().slice(0, 2000);
+  const nowIso = new Date().toISOString();
+  const slug = normalizeNameKey(safeName).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "resident";
+  const id = `prr_${slug}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const record = {
+    id,
+    name: safeName,
+    nameKey: normalizeNameKey(safeName),
+    lots: normalizedLots,
+    lot: normalizedLots.join(", "),
+    message: safeMessage,
+    status: "pending",
+    createdAt: nowIso,
+  };
+  await query(
+    `
+      INSERT INTO scope_records(scope, row_id, position, data_json, updated_at)
+      VALUES($1, $2, $3, $4::jsonb, NOW())
+      ON CONFLICT (scope, row_id)
+      DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()
+    `,
+    [RESET_REQUEST_SCOPE, id, null, JSON.stringify(record)]
+  );
+  return record;
+};
+
+const listPasswordResetRequests = async ({ status = null, limit = 200 } = {}) => {
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 200));
+  const result = await query(
+    `
+      SELECT row_id, data_json, updated_at
+      FROM scope_records
+      WHERE scope = $1
+      ORDER BY updated_at DESC
+      LIMIT $2
+    `,
+    [RESET_REQUEST_SCOPE, safeLimit]
+  );
+  let rows = result.rows.map((row) => ({
+    ...(row.data_json || {}),
+    id: row.data_json?.id || row.row_id,
+    status: row.data_json?.status || "pending",
+    updatedAt: row.updated_at,
+  }));
+  if (status) {
+    const wanted = String(status).trim().toLowerCase();
+    rows = rows.filter((row) => String(row.status || "pending").toLowerCase() === wanted);
+  }
+  return rows;
+};
+
+const resolvePasswordResetRequest = async ({ id, status = "resolved", resolvedBy = "" } = {}) => {
+  const safeId = String(id || "").trim();
+  if (!safeId) {
+    throw new Error("A password reset request id is required.");
+  }
+  const nextStatus = RESET_REQUEST_STATUSES.has(status) ? status : "resolved";
+  const existing = await query(
+    "SELECT data_json FROM scope_records WHERE scope = $1 AND row_id = $2",
+    [RESET_REQUEST_SCOPE, safeId]
+  );
+  if (existing.rows.length === 0) {
+    throw new Error("Password reset request not found.");
+  }
+  const record = { ...(existing.rows[0].data_json || {}) };
+  record.id = record.id || safeId;
+  record.status = nextStatus;
+  record.resolvedAt = new Date().toISOString();
+  record.resolvedBy = String(resolvedBy || "").trim();
+  await query(
+    "UPDATE scope_records SET data_json = $3::jsonb, updated_at = NOW() WHERE scope = $1 AND row_id = $2",
+    [RESET_REQUEST_SCOPE, safeId, JSON.stringify(record)]
+  );
+  return record;
+};
+
 module.exports = {
   BACKUP_TYPE,
   BACKUP_VERSION,
@@ -959,6 +1067,9 @@ module.exports = {
   syncBackupToDatabase,
   buildBackupFromDatabase,
   buildSharedChangesFromDatabase,
+  createPasswordResetRequest,
+  listPasswordResetRequests,
+  resolvePasswordResetRequest,
   getRecordCounts,
   getRecords,
 };
