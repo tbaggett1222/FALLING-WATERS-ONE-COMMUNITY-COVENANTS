@@ -151,17 +151,19 @@ const BACKUP_RESTORE_SCOPE_OPTIONS = [
   { key: "covenantFiles", label: "Stored covenant file blobs" },
   { key: "sessionUser", label: "Current signed-in session" },
 ];
-const SHARED_REFRESH_SCOPE_TO_RESTORE_SCOPE = {
-  lotSettings: "lotSettings",
-  votes: "votes",
-  comments: "comments",
-  ownerActivity: "ownerActivity",
-  outreach: "outreach",
-  eligibility: "eligibility",
-  primaryVoters: "primaryVoters",
-  adminAccess: "adminAccess",
-  userDirectory: "userDirectory",
-};
+const SHARED_REFRESH_SCOPE_KEYS = [
+  "lotSettings",
+  "votes",
+  "comments",
+  "ownerActivity",
+  "outreach",
+  "eligibility",
+  "primaryVoters",
+  "adminAccess",
+  "userDirectory",
+  "covenantDocs",
+];
+const SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1000;
 
 const defaultBackupRestoreScopes = () =>
   BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
@@ -2979,6 +2981,7 @@ function AdminVotingPage({
   onFetchDbRecords,
   onRunDbChecklist,
   onUpdateEligibility,
+  onUpdateOutreach,
   onUpdateTotalLots,
   onSetAdminAccessGrade,
   onGrantAdminAccess,
@@ -3092,6 +3095,7 @@ function AdminVotingPage({
     const choice = voteLedger[lotLabel] || store.get(`vote_${lotLabel}`) || null;
     const hasVoted = !!choice;
     const voteEligible = eligibility?.eligible === false ? false : true;
+    const loginRecorded = !!activity?.hasLoggedIn;
     return {
       lot: lotLabel,
       lotNum: lotNumberFromLabel(lotLabel),
@@ -3101,6 +3105,8 @@ function AdminVotingPage({
       choice,
       status: hasVoted ? (voteEligible ? "Voted" : "Voted - non-eligible") : activity ? "Registered - not voted" : "Not engaged",
       voteEligible,
+      loginRecorded,
+      lastLoginAt: activity?.lastLoginAt || "",
       ineligibleReason: voteEligible ? "" : String(eligibility?.reason || "").trim(),
       eligibilityUpdatedAt: eligibility?.updatedAt || "",
       commented: !!activity?.commented,
@@ -3108,6 +3114,7 @@ function AdminVotingPage({
       contacted: !!outreach?.contacted,
       outreachNotes: outreach?.notes || "",
       lastContact: outreach?.lastContact || "",
+      outreachUpdatedAt: outreach?.updatedAt || "",
     };
   });
 
@@ -3148,11 +3155,14 @@ function AdminVotingPage({
       "Eligibility Last Updated",
       "Primary Voter",
       "Owner Name (if known)",
+      "Login Recorded",
+      "Last Login",
       "Commented",
       "Last Active",
       "Contacted",
       "Outreach Notes",
       "Last Contact Date",
+      "Outreach Last Saved",
     ];
     const lines = [
       headers.join(","),
@@ -3166,11 +3176,14 @@ function AdminVotingPage({
           row.eligibilityUpdatedAt || "",
           row.primaryVoter || "",
           row.ownerName || "",
+          row.loginRecorded ? "Yes" : "No",
+          row.lastLoginAt || "",
           row.commented ? "Yes" : "No",
           row.lastActive || "",
           row.contacted ? "Yes" : "No",
           row.outreachNotes || "",
           row.lastContact || "",
+          row.outreachUpdatedAt || "",
         ]
           .map((val) => `"${String(val).replaceAll('"', '""')}"`)
           .join(",")
@@ -3296,6 +3309,7 @@ function AdminVotingPage({
           contacted: row.contacted,
           outreach_notes: row.outreachNotes || "",
           last_contact: row.lastContact || "",
+          outreach_updated_at: row.outreachUpdatedAt || "",
           owner_name: row.ownerName || "",
           primary_voter: row.primaryVoter || "",
           associated_names: associatedNames,
@@ -3446,6 +3460,30 @@ function AdminVotingPage({
     } else {
       onUpdateEligibility(row.lot, { eligible: true, reason: "" });
     }
+  };
+
+  const updateOutreachRecord = (lot, patch = {}) => {
+    onUpdateOutreach?.(lot, patch);
+  };
+
+  const markContactedToday = (lot, checked) => {
+    updateOutreachRecord(lot, {
+      contacted: !!checked,
+      lastContact: checked ? (new Date().toISOString().slice(0, 10)) : "",
+    });
+  };
+
+  const outreachSavedLabel = (row) =>
+    row.outreachUpdatedAt
+      ? `Saved locally ${row.outreachUpdatedAt}`
+      : "No outreach update saved yet";
+
+  const saveOutreachNow = (row) => {
+    updateOutreachRecord(row.lot, {
+      contacted: row.contacted,
+      notes: row.outreachNotes || "",
+      lastContact: row.lastContact || "",
+    });
   };
 
   const saveLotCount = () => {
@@ -3776,7 +3814,7 @@ function AdminVotingPage({
   return (
     <div>
       <div style={S.alert("info")}>
-        Admin visibility: this roster tracks lot-level participation, voting, outreach, and vote eligibility. Mark lots as non-eligible (for dues delinquency or other reasons) to flag ballots that should not count toward official totals.
+        Admin visibility: this roster tracks lot-level participation, login activity, voting, outreach, and vote eligibility. Outreach fields (contacted, notes, last contact) can be entered directly in each lot row or loaded from CSV import.
       </div>
       <div style={S.alert(backupHealthLevel === "healthy" ? "success" : backupHealthLevel === "stale" ? "warn" : "danger")}>
         <strong>Backup health:</strong> {backupHealthText} {backupHealthGuidance}
@@ -4306,6 +4344,9 @@ function AdminVotingPage({
           <div>
             <div style={S.cardTitle}>Lot-level voting roster</div>
             <div style={{ fontSize: 12, color: C.muted }}>{filteredRows.length} lot records shown</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+              Outreach fields auto-save as you type. Use <strong>Save outreach</strong> for a manual save confirmation.
+            </div>
           </div>
           <input
             style={{ ...S.input, width: isMobile ? "100%" : 180, padding: "8px 10px", maxWidth: isMobile ? "100%" : 240 }}
@@ -4347,9 +4388,42 @@ function AdminVotingPage({
                   <div><strong>Vote:</strong> {choiceLabel(row.choice)}</div>
                   <div><strong>Primary voter:</strong> {row.primaryVoter || "—"}</div>
                   <div><strong>Owner:</strong> {row.ownerName || "—"}</div>
-                  <div><strong>Commented:</strong> {row.commented ? "Yes" : "No"} · <strong>Contacted:</strong> {row.contacted ? "Yes" : "No"}</div>
-                  <div><strong>Last contact:</strong> {row.lastContact || "—"} · <strong>Last active:</strong> {row.lastActive || "—"}</div>
-                  <div style={{ marginTop: 4, color: C.muted }}><strong>Outreach notes:</strong> {row.outreachNotes || "—"}</div>
+                  <div>
+                    <strong>Login:</strong> {row.loginRecorded ? "Recorded" : "Not recorded"}
+                    {row.lastLoginAt ? ` · ${row.lastLoginAt}` : ""}
+                  </div>
+                  <div><strong>Commented:</strong> {row.commented ? "Yes" : "No"} · <strong>Last active:</strong> {row.lastActive || "—"}</div>
+                  <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                      <input
+                        type="checkbox"
+                        checked={row.contacted}
+                        onChange={(event) => markContactedToday(row.lot, event.target.checked)}
+                      />
+                      <span><strong>Contacted</strong></span>
+                    </label>
+                    <input
+                      style={{ ...S.input, padding: "8px 10px", fontSize: 12 }}
+                      value={row.lastContact || ""}
+                      placeholder="Last contact date (YYYY-MM-DD)"
+                      onChange={(event) => updateOutreachRecord(row.lot, { lastContact: event.target.value })}
+                    />
+                    <textarea
+                      style={{ ...S.textarea, minHeight: 74, fontSize: 12 }}
+                      value={row.outreachNotes || ""}
+                      placeholder="Outreach notes"
+                      onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
+                    />
+                    <button
+                      style={{ ...S.btn("outline"), padding: "7px 10px", fontSize: 11, justifyContent: "center" }}
+                      onClick={() => saveOutreachNow(row)}
+                    >
+                      Save outreach
+                    </button>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      {outreachSavedLabel(row)}
+                    </div>
+                  </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
                   <span style={S.badge(row.voteEligible ? C.success : C.danger, row.voteEligible ? C.successLight : C.dangerLight)}>
@@ -4389,6 +4463,7 @@ function AdminVotingPage({
                   <th style={S.th}>Vote eligibility</th>
                   <th style={S.th}>Primary voter</th>
                   <th style={S.th}>Owner name (if known)</th>
+                  <th style={S.th}>Login action</th>
                   <th style={S.th}>Commented</th>
                   <th style={S.th}>Contacted</th>
                   <th style={S.th}>Outreach notes</th>
@@ -4434,10 +4509,57 @@ function AdminVotingPage({
                     </td>
                     <td style={S.td}>{row.primaryVoter || "—"}</td>
                     <td style={S.td}>{row.ownerName || "—"}</td>
+                    <td style={S.td}>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        <span
+                          style={S.badge(
+                            row.loginRecorded ? C.success : C.muted,
+                            row.loginRecorded ? C.successLight : C.parchmentDark
+                          )}
+                        >
+                          {row.loginRecorded ? "Login recorded" : "No login yet"}
+                        </span>
+                        <span style={{ fontSize: 10, color: C.muted }}>
+                          {row.lastLoginAt || "—"}
+                        </span>
+                      </div>
+                    </td>
                     <td style={S.td}>{row.commented ? "Yes" : "No"}</td>
-                    <td style={S.td}>{row.contacted ? "Yes" : "No"}</td>
-                    <td style={{ ...S.td, fontSize: 12, color: C.muted }}>{row.outreachNotes || "—"}</td>
-                    <td style={S.td}>{row.lastContact || "—"}</td>
+                    <td style={S.td}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={row.contacted}
+                          onChange={(event) => markContactedToday(row.lot, event.target.checked)}
+                        />
+                        <span>{row.contacted ? "Yes" : "No"}</span>
+                      </label>
+                    </td>
+                    <td style={{ ...S.td, minWidth: 220 }}>
+                      <textarea
+                        style={{ ...S.textarea, minHeight: 58, fontSize: 11 }}
+                        value={row.outreachNotes || ""}
+                        placeholder="Outreach notes"
+                        onChange={(event) => updateOutreachRecord(row.lot, { notes: event.target.value })}
+                      />
+                      <button
+                        style={{ ...S.btn("outline"), padding: "6px 8px", fontSize: 10, marginTop: 4 }}
+                        onClick={() => saveOutreachNow(row)}
+                      >
+                        Save outreach
+                      </button>
+                      <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>
+                        {outreachSavedLabel(row)}
+                      </div>
+                    </td>
+                    <td style={{ ...S.td, minWidth: 170 }}>
+                      <input
+                        style={{ ...S.input, padding: "6px 8px", fontSize: 11 }}
+                        value={row.lastContact || ""}
+                        placeholder="YYYY-MM-DD"
+                        onChange={(event) => updateOutreachRecord(row.lot, { lastContact: event.target.value })}
+                      />
+                    </td>
                     <td style={S.td}>{row.lastActive || "—"}</td>
                   </tr>
                 ))}
@@ -4493,6 +4615,65 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
     { num:3, label:"Draft & deliberate", status:"pending", detail:"Working group drafts unified CC&R · Two 30-day comment periods · Community meetings" },
     { num:4, label:"Formal vote", status:"pending", detail:"Certified mail ballots to all 200 lots · Attorney-supervised count · Record in Gilmer County" },
   ];
+  const voteAndSentimentSection = (
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:16, marginBottom:16 }}>
+      <div style={S.card}>
+        <div style={S.cardTitle}>Vote progress toward {votesNeeded}</div>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {votesNeeded} of {totalLots} lots to vote yes on unified covenant</div>
+        {[
+          { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
+          { label:"Permit with regulation", val:votes.permit, color:C.stone },
+          { label:"Undecided — engaged", val:votes.undecided, color:"#3B82F6" },
+            { label:"Not yet reached", val:notEngaged, color:C.border },
+        ].map((r,i) => (
+          <div key={i} style={{ marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+              <span style={{ color:C.ink }}>{r.label}</span>
+              <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/totalLots)*100)}%)</span>
+            </div>
+            <div style={S.meter}><div style={S.meterFill(Math.round((r.val/totalLots)*100), r.color)}/></div>
+          </div>
+        ))}
+        <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
+            <span style={{ fontWeight:600, color:C.forest }}>Votes needed to pass</span>
+            <span style={{ fontWeight:700, color:C.danger }}>{Math.max(votesNeeded - votes.eliminate, 0)} more needed</span>
+          </div>
+          <div style={{ height:8, borderRadius:4, overflow:"hidden", background:C.parchmentDark, marginTop:6, position:"relative" }}>
+            <div style={{ height:"100%", width:`${Math.min((votes.eliminate/Math.max(votesNeeded,1))*100, 100)}%`, background:C.danger, transition:"width 1s" }}/>
+            <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${(Math.max(votesNeeded-votes.eliminate,0)/totalLots)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
+          </div>
+          <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {votesNeeded} votes needed to eliminate STRs</div>
+        </div>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.cardTitle}>Comment sentiment analysis</div>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{comments.length} total comments · {strComments.length} on STR topic</div>
+        {[
+          { label:"Supporting STR restriction", val:restrictCount, color:C.danger, total:comments.length },
+          { label:"Supporting STR permission", val:permitCount, color:C.stone, total:comments.length },
+          { label:"Neutral / questions", val:comments.filter(c=>c.stance==="neutral").length, color:"#3B82F6", total:comments.length },
+        ].map((r,i) => (
+          <div key={i} style={{ marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
+              <span style={{ color:C.ink }}>{r.label}</span>
+              <span style={{ color:C.muted }}>{r.val} comments</span>
+            </div>
+            <div style={S.meter}><div style={S.meterFill(Math.round((r.val/Math.max(r.total,1))*100), r.color)}/></div>
+          </div>
+        ))}
+        <div style={{ marginTop:12 }}>
+          <div style={S.cardTitle}>Recent activity</div>
+          {comments.slice(-3).reverse().map((c,i) => (
+            <div key={i} style={{ fontSize:12, color:C.muted, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
+              <span style={{ fontWeight:600, color:C.ink }}>{c.name}</span> ({c.lot}) commented on <span style={{ color:C.forest }}>{c.topic === "str" ? "STRs" : c.topic}</span> · {c.ts}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
   return (
     <div>
       <div style={S.statGrid}>
@@ -4537,64 +4718,6 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
               <div style={{ fontSize: 12, color: C.muted }}>{m.label}</div>
             </div>
           ))}
-        </div>
-      </div>
-
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))", gap:16, marginBottom:16 }}>
-        <div style={S.card}>
-          <div style={S.cardTitle}>Vote progress toward {votesNeeded}</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>Need {votesNeeded} of {totalLots} lots to vote yes on unified covenant</div>
-          {[
-            { label:"Eliminate STRs", val:votes.eliminate, color:C.danger },
-            { label:"Permit with regulation", val:votes.permit, color:C.stone },
-            { label:"Undecided — engaged", val:votes.undecided, color:"#3B82F6" },
-              { label:"Not yet reached", val:notEngaged, color:C.border },
-          ].map((r,i) => (
-            <div key={i} style={{ marginBottom:10 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
-                <span style={{ color:C.ink }}>{r.label}</span>
-                <span style={{ color:C.muted }}>{r.val} lots ({Math.round((r.val/totalLots)*100)}%)</span>
-              </div>
-              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/totalLots)*100), r.color)}/></div>
-            </div>
-          ))}
-          <div style={{ borderTop:`1px solid ${C.border}`, paddingTop:12, marginTop:4 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:13 }}>
-              <span style={{ fontWeight:600, color:C.forest }}>Votes needed to pass</span>
-              <span style={{ fontWeight:700, color:C.danger }}>{Math.max(votesNeeded - votes.eliminate, 0)} more needed</span>
-            </div>
-            <div style={{ height:8, borderRadius:4, overflow:"hidden", background:C.parchmentDark, marginTop:6, position:"relative" }}>
-              <div style={{ height:"100%", width:`${Math.min((votes.eliminate/Math.max(votesNeeded,1))*100, 100)}%`, background:C.danger, transition:"width 1s" }}/>
-              <div style={{ position:"absolute", right:0, top:0, height:"100%", width:`${(Math.max(votesNeeded-votes.eliminate,0)/totalLots)*100}%`, background:"rgba(139,26,26,0.15)" }}/>
-            </div>
-            <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{votes.eliminate} of {votesNeeded} votes needed to eliminate STRs</div>
-          </div>
-        </div>
-
-        <div style={S.card}>
-          <div style={S.cardTitle}>Comment sentiment analysis</div>
-          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>{comments.length} total comments · {strComments.length} on STR topic</div>
-          {[
-            { label:"Supporting STR restriction", val:restrictCount, color:C.danger, total:comments.length },
-            { label:"Supporting STR permission", val:permitCount, color:C.stone, total:comments.length },
-            { label:"Neutral / questions", val:comments.filter(c=>c.stance==="neutral").length, color:"#3B82F6", total:comments.length },
-          ].map((r,i) => (
-            <div key={i} style={{ marginBottom:10 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, marginBottom:3 }}>
-                <span style={{ color:C.ink }}>{r.label}</span>
-                <span style={{ color:C.muted }}>{r.val} comments</span>
-              </div>
-              <div style={S.meter}><div style={S.meterFill(Math.round((r.val/Math.max(r.total,1))*100), r.color)}/></div>
-            </div>
-          ))}
-          <div style={{ marginTop:12 }}>
-            <div style={S.cardTitle}>Recent activity</div>
-            {comments.slice(-3).reverse().map((c,i) => (
-              <div key={i} style={{ fontSize:12, color:C.muted, padding:"6px 0", borderBottom:`1px solid ${C.border}` }}>
-                <span style={{ fontWeight:600, color:C.ink }}>{c.name}</span> ({c.lot}) commented on <span style={{ color:C.forest }}>{c.topic === "str" ? "STRs" : c.topic}</span> · {c.ts}
-              </div>
-            ))}
-          </div>
         </div>
       </div>
 
@@ -4661,6 +4784,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
           </table>
         </div>
       </div>
+      {voteAndSentimentSection}
     </div>
   );
 }
@@ -4803,10 +4927,11 @@ export default function App() {
   const [sharedDataBusy, setSharedDataBusy] = useState(false);
   const [sharedDataMsg, setSharedDataMsg] = useState("");
   const [sharedDataErr, setSharedDataErr] = useState("");
-  const sharedRefreshInFlightRef = useRef(false);
-  const sharedRefreshCursorRef = useRef(lastSharedRefreshCursor);
+  const [lastSharedRefreshAt, setLastSharedRefreshAt] = useState("");
   const sharedSyncScopeQueueRef = useRef(new Set());
   const sharedSyncModeRef = useRef("merge");
+  const sharedRefreshSinceRef = useRef("");
+  const sharedRefreshInFlightRef = useRef(null);
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
@@ -4876,14 +5001,17 @@ export default function App() {
     }
   }, [adminAccessEntries, user]);
 
-  const trackOwner = (lot, patch = {}) => {
+  const trackOwner = (lot, patch = {}, options = {}) => {
     if (!lot) return;
+    const markLogin = options?.markLogin === true;
+    const nowIso = new Date().toISOString();
     setOwnerActivity((prev) => ({
       ...prev,
       [lot]: {
-        hasLoggedIn: true,
-        lastActive: todayLabel(),
         ...prev[lot],
+        hasLoggedIn: markLogin ? true : !!prev?.[lot]?.hasLoggedIn,
+        lastLoginAt: markLogin ? formatIsoDateTime(nowIso) : (prev?.[lot]?.lastLoginAt || ""),
+        lastActive: todayLabel(),
         ...patch,
       },
     }));
@@ -4914,6 +5042,40 @@ export default function App() {
       };
       return next;
     });
+  };
+
+  const handleUpdateOutreach = (lot, patch = {}) => {
+    if (!lot || !allLotLabels.includes(lot)) return;
+    const updatedAt = formatIsoDateTime(new Date().toISOString());
+    setOutreachState((prev) => {
+      const next = { ...prev };
+      const existing = { ...(next[lot] || {}) };
+      const contacted =
+        patch.contacted === undefined
+          ? !!existing.contacted
+          : patch.contacted === true;
+      const notes =
+        patch.notes === undefined
+          ? String(existing.notes || "")
+          : String(patch.notes || "");
+      const lastContact =
+        patch.lastContact === undefined
+          ? String(existing.lastContact || "")
+          : String(patch.lastContact || "").trim();
+      const cleanedNotes = notes.trim();
+      if (!contacted && !cleanedNotes && !lastContact) {
+        delete next[lot];
+        return next;
+      }
+      next[lot] = {
+        contacted,
+        notes,
+        lastContact,
+        updatedAt,
+      };
+      return next;
+    });
+    queueSharedChangesSync(["outreach"], { mode: "merge" });
   };
 
   const handleUpdateTotalLots = (nextTotalLots) => {
@@ -5233,7 +5395,7 @@ export default function App() {
     setPage(isAdmin ? "admin-votes" : "home");
     trackUserAccess(persistedUser);
     if (!isAdmin) {
-      lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }));
+      lots.forEach((lot) => trackOwner(lot, { name: persistedUser.name }, { markLogin: true }));
     }
     queueSharedChangesSync(
       isAdmin
@@ -5541,7 +5703,10 @@ export default function App() {
           existingOutreach.contacted ||
           String(existingOutreach.notes || "").trim().length > 0 ||
           String(existingOutreach.lastContact || "").trim().length > 0;
-        if (shouldKeep) nextOutreach[lot] = existingOutreach;
+        if (shouldKeep) {
+          existingOutreach.updatedAt = formatIsoDateTime(new Date().toISOString());
+          nextOutreach[lot] = existingOutreach;
+        }
         else delete nextOutreach[lot];
       }
 
@@ -5673,7 +5838,26 @@ export default function App() {
     const sanitizeObj = (value) => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
     const mergeObjectState = (currentState, incomingState) => {
       if (restoreMode === "replace") return sanitizeObj(incomingState);
-      if (restoreMode === "merge") return { ...sanitizeObj(currentState), ...sanitizeObj(incomingState) };
+      if (restoreMode === "merge") {
+        const current = { ...sanitizeObj(currentState) };
+        const incoming = sanitizeObj(incomingState);
+        Object.entries(incoming).forEach(([key, value]) => {
+          const existing = current[key];
+          if (
+            existing
+            && typeof existing === "object"
+            && !Array.isArray(existing)
+            && value
+            && typeof value === "object"
+            && !Array.isArray(value)
+          ) {
+            current[key] = { ...existing, ...value };
+            return;
+          }
+          current[key] = value;
+        });
+        return current;
+      }
       const current = { ...sanitizeObj(currentState) };
       const incoming = sanitizeObj(incomingState);
       Object.entries(incoming).forEach(([key, value]) => {
@@ -6083,6 +6267,9 @@ export default function App() {
   const handleRestoreFromDb = async ({ mode = "replace", scopes = defaultBackupRestoreScopes() } = {}) => {
     const result = await callDbApi("/api/db/export", {
       method: "POST",
+      headers: {
+        "x-portal-admin-action": "restore",
+      },
       body: JSON.stringify({}),
     });
     return handleRestoreBackup(result?.backup || {}, { mode, scopes });
@@ -6101,101 +6288,61 @@ export default function App() {
     return { records: Array.isArray(result?.records) ? result.records : [] };
   };
 
-  const handleRefreshSharedData = async ({ silent = false } = {}) => {
-    const explicitBase = String(dbApiBaseUrl || "").trim();
-    const defaultBase = String(sanitizeDbApiBaseUrl(DEFAULT_DB_API_BASE_URL, { allowEmpty: true })?.value || "").trim();
-    if (!explicitBase && !defaultBase) {
+  const handleRefreshSharedData = async ({ silent = false, forceFull = false } = {}) => {
+    if (!dbApiBaseUrl) {
       return { error: "Database API URL is not configured for this device." };
     }
     if (sharedRefreshInFlightRef.current) {
-      const message = "Shared data refresh is already in progress.";
-      if (!silent) setSharedDataMsg(message);
-      return { skipped: true, message };
+      return sharedRefreshInFlightRef.current;
     }
-    if (!silent) {
-      setSharedDataErr("");
-      setSharedDataMsg("");
-    }
-    sharedRefreshInFlightRef.current = true;
-    setSharedDataBusy(true);
-    try {
-      const sinceCursor = sharedRefreshCursorRef.current ? encodeURIComponent(sharedRefreshCursorRef.current) : "";
-      const endpoint = sinceCursor ? `/api/db/shared-refresh?since=${sinceCursor}` : "/api/db/shared-refresh";
-      const result = await callDbApi(endpoint, { method: "GET" });
-      const refresh = result?.refresh || {};
-      const rawScopes = refresh?.scopes && typeof refresh.scopes === "object" ? refresh.scopes : {};
-      const scopeEntries = Object.entries(rawScopes);
 
-      const groupedPayload = {
-        replace: {},
-        merge: {},
-      };
-      const groupedScopeKeys = {
-        replace: new Set(),
-        merge: new Set(),
-      };
+    const refreshPromise = (async () => {
+      const since = forceFull ? "" : String(sharedRefreshSinceRef.current || "").trim();
+      const refreshPath = since ? `/api/db/shared/changes?since=${encodeURIComponent(since)}` : "/api/db/shared/changes";
+      const scopes = buildScopedRestoreSelection(SHARED_REFRESH_SCOPE_KEYS, false);
 
-      scopeEntries.forEach(([sharedScopeKey, entry]) => {
-        const restoreScopeKey = SHARED_REFRESH_SCOPE_TO_RESTORE_SCOPE[sharedScopeKey];
-        if (!restoreScopeKey) return;
-        const modeKey = entry?.mode === "replace" ? "replace" : "merge";
-        const payload = entry?.payload && typeof entry.payload === "object" ? entry.payload : {};
-        Object.assign(groupedPayload[modeKey], payload);
-        groupedScopeKeys[modeKey].add(restoreScopeKey);
-      });
-
-      if (groupedScopeKeys.replace.size > 0) {
-        const replaceResult = await handleRestoreBackup(
-          { payload: groupedPayload.replace },
-          {
-            mode: "replace",
-            scopes: buildScopedRestoreSelection(Array.from(groupedScopeKeys.replace), false),
-          }
-        );
-        if (replaceResult?.error) {
-          if (!silent) setSharedDataErr(replaceResult.error);
-          return replaceResult;
-        }
-      }
-
-      if (groupedScopeKeys.merge.size > 0) {
-        const mergeResult = await handleRestoreBackup(
-          { payload: groupedPayload.merge },
-          {
-            mode: "merge",
-            scopes: buildScopedRestoreSelection(Array.from(groupedScopeKeys.merge), false),
-          }
-        );
-        if (mergeResult?.error) {
-          if (!silent) setSharedDataErr(mergeResult.error);
-          return mergeResult;
-        }
-      }
-
-      const nextCursor = typeof refresh?.nextCursor === "string" && refresh.nextCursor.trim()
-        ? refresh.nextCursor
-        : new Date().toISOString();
-      sharedRefreshCursorRef.current = nextCursor;
-      setLastSharedRefreshCursor(nextCursor);
-
-      const changedScopeCount = scopeEntries.length;
-      const message = changedScopeCount > 0
-        ? `Shared portal data refreshed from PostgreSQL (${changedScopeCount} scope${changedScopeCount === 1 ? "" : "s"} updated).`
-        : "Shared portal data is already current.";
       if (!silent) {
-        setSharedDataMsg(message);
-        setTimeout(() => setSharedDataMsg(""), 5000);
+        setSharedDataErr("");
+        setSharedDataMsg("");
+        setSharedDataBusy(true);
       }
-      return {
-        message,
-      };
-    } catch (error) {
-      if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
-      return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
-    } finally {
-      sharedRefreshInFlightRef.current = false;
-      setSharedDataBusy(false);
-    }
+
+      try {
+        const apiResult = await callDbApi(refreshPath, { method: "GET" });
+        const sharedRefresh = apiResult?.result || {};
+        const restoreMode = sharedRefresh.incremental ? "merge" : "replace";
+        const restoreResult = await handleRestoreBackup(sharedRefresh.backup || {}, { mode: restoreMode, scopes });
+        if (restoreResult?.error) {
+          if (!silent) setSharedDataErr(restoreResult.error);
+          return restoreResult;
+        }
+
+        const nextSince = String(sharedRefresh.nextSince || sharedRefresh.refreshedAt || "").trim();
+        if (nextSince) {
+          sharedRefreshSinceRef.current = nextSince;
+          setLastSharedRefreshAt(nextSince);
+        }
+        if (!silent) {
+          const modeLabel = sharedRefresh.incremental ? "incremental" : "full";
+          setSharedDataMsg(`Shared portal data refreshed (${modeLabel}).`);
+          setTimeout(() => setSharedDataMsg(""), 5000);
+        }
+        return {
+          message: "Shared portal data refreshed from PostgreSQL.",
+          refreshedAt: nextSince || null,
+          incremental: !!sharedRefresh.incremental,
+        };
+      } catch (error) {
+        if (!silent) setSharedDataErr(error?.message || "Could not refresh shared data from PostgreSQL.");
+        return { error: error?.message || "Could not refresh shared data from PostgreSQL." };
+      } finally {
+        if (!silent) setSharedDataBusy(false);
+        sharedRefreshInFlightRef.current = null;
+      }
+    })();
+
+    sharedRefreshInFlightRef.current = refreshPromise;
+    return refreshPromise;
   };
 
   const pushSharedChangesToDb = async (scopeKeys = [], { mode = "merge", reportError = false } = {}) => {
@@ -6246,44 +6393,49 @@ export default function App() {
     sharedSyncScopeQueueRef.current.clear();
     sharedSyncModeRef.current = "merge";
     void pushSharedChangesToDb(queuedScopes, { mode: queuedMode, reportError: true });
-  }, [
-    dbApiBaseUrl,
-    sharedSyncNonce,
-    comments,
-    ownerActivity,
-    voteLedger,
-    primaryVoterRegistry,
-    primaryVoterTransferAudit,
-    outreachState,
-    userDirectory,
-    adminAccessEntries,
-    adminAccessGrades,
-    adminTwoFactorRegistry,
-    eligibilityState,
-    totalLots,
-    backupHealthThresholdDays,
-  ]);
+  }, [dbApiBaseUrl, sharedSyncNonce, comments, ownerActivity, userDirectory, outreachState, primaryVoterRegistry]);
 
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    const refreshShared = async ({ respectVisibility = false } = {}) => {
-      if (respectVisibility && document.visibilityState !== "visible") return;
-      const result = await handleRefreshSharedData({ silent: true });
+    const runRefresh = async (forceFull = false) => {
+      const result = await handleRefreshSharedData({ silent: true, forceFull });
       if (cancelled) return;
       if (result?.error) {
         setSharedDataErr(result.error);
       }
     };
-    void refreshShared();
+
+    // First refresh after login/session restore is a full baseline.
+    void runRefresh(true);
+
     const intervalId = window.setInterval(() => {
-      void refreshShared({ respectVisibility: true });
+      if (document.visibilityState !== "visible") return;
+      void runRefresh(false);
     }, SHARED_REFRESH_INTERVAL_MS);
+
+    const onFocus = () => {
+      void runRefresh(false);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void runRefresh(false);
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
   }, [user?.userId, dbApiBaseUrl]);
+
+  useEffect(() => {
+    if (user) return;
+    sharedRefreshSinceRef.current = "";
+    sharedRefreshInFlightRef.current = null;
+    setLastSharedRefreshAt("");
+  }, [user]);
 
   const handleRunDbChecklist = async () => {
     const checkedAt = new Date().toISOString();
@@ -6563,7 +6715,7 @@ export default function App() {
             <span style={{ fontSize:12, fontWeight:700, color:C.danger }}>{votes.eliminate} votes to eliminate STRs so far</span>
             <button
               style={{ ...S.btn("outline"), padding: "7px 10px" }}
-              onClick={() => handleRefreshSharedData({ silent: false })}
+              onClick={() => handleRefreshSharedData({ silent: false, forceFull: true })}
               disabled={sharedDataBusy}
             >
               {sharedDataBusy ? "Refreshing…" : "Refresh shared data"}
@@ -6580,6 +6732,7 @@ export default function App() {
           {sharedDataMsg && (
             <div style={S.alert("success")}>
               {sharedDataMsg}
+              {lastSharedRefreshAt ? ` Last refresh: ${formatIsoDateTime(lastSharedRefreshAt)}.` : ""}
             </div>
           )}
           {user.isAdmin && (
@@ -6637,6 +6790,7 @@ export default function App() {
               onFetchDbRecords={handleFetchDbRecords}
               onRunDbChecklist={handleRunDbChecklist}
               onUpdateEligibility={handleUpdateEligibility}
+              onUpdateOutreach={handleUpdateOutreach}
               onUpdateTotalLots={handleUpdateTotalLots}
               onSetAdminAccessGrade={handleSetAdminAccessGrade}
               onGrantAdminAccess={handleGrantAdminAccess}

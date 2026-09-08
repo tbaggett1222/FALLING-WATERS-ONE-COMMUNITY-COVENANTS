@@ -12,7 +12,7 @@ const {
   getRecords,
   syncBackupToDatabase,
   buildBackupFromDatabase,
-  getSharedRefreshBundle,
+  buildSharedChangesFromDatabase,
   normalizeScopes,
 } = require("./repository");
 
@@ -286,35 +286,67 @@ app.post("/api/db/sync", async (req, res) => {
     const backup = body.backup || {};
     const mode = body.mode || "replace";
     const scopes = normalizeScopes(body.scopes);
-    const trackSnapshot = parseBoolean(body.trackSnapshot, true);
-    const snapshotKeepCount = parsePositiveInt(body.snapshotKeepCount, BACKUP_SNAPSHOT_KEEP_COUNT);
+    const createSnapshot = body.createSnapshot === true;
     const result = await syncBackupToDatabase({
       backup,
       mode,
       scopes,
-      trackSnapshot,
-      snapshotKeepCount: trackSnapshot ? snapshotKeepCount : 0,
+      createSnapshot,
     });
     res.json({
       ok: true,
       result,
-      message: trackSnapshot
-        ? "PostgreSQL sync completed and snapshot recorded."
-        : "PostgreSQL sync completed (snapshot skipped).",
+      message: createSnapshot
+        ? "PostgreSQL sync completed and a backup snapshot was recorded."
+        : "PostgreSQL sync completed.",
     });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message || "Could not sync data to PostgreSQL." });
   }
 });
 
-app.post("/api/db/export", async (_req, res) => {
+app.get("/api/db/shared/changes", async (req, res) => {
   try {
     await ensureSchemaReady();
+    const rawSince = String(req.query.since || "").trim();
+    let since = null;
+    if (rawSince) {
+      const parsed = new Date(rawSince);
+      if (Number.isNaN(parsed.getTime())) {
+        return res.status(400).json({ ok: false, error: "Invalid 'since' timestamp." });
+      }
+      since = parsed;
+    }
+    const result = await buildSharedChangesFromDatabase({ since });
+    res.json({
+      ok: true,
+      result,
+      message: since
+        ? "Shared refresh delta generated."
+        : "Shared refresh baseline generated.",
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message || "Could not fetch shared refresh changes." });
+  }
+});
+
+app.post("/api/db/export", async (req, res) => {
+  try {
+    await ensureSchemaReady();
+    const adminAction = String(req.headers["x-portal-admin-action"] || "").trim().toLowerCase();
+    if (!["backup", "restore"].includes(adminAction)) {
+      return res.status(403).json({
+        ok: false,
+        error: "Full export is restricted to administrator backup/restore actions.",
+      });
+    }
     const backup = await buildBackupFromDatabase();
     res.json({
       ok: true,
       backup,
-      message: "PostgreSQL export completed.",
+      scope: "full",
+      allowedFor: "administrator_backup_restore",
+      message: "PostgreSQL full export completed.",
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message || "Could not export data from PostgreSQL." });

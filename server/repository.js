@@ -17,6 +17,18 @@ const ALL_SCOPES = [
   "covenantFiles",
   "sessionUser",
 ];
+const SHARED_REFRESH_SCOPES = [
+  "lotSettings",
+  "votes",
+  "comments",
+  "ownerActivity",
+  "outreach",
+  "eligibility",
+  "primaryVoters",
+  "adminAccess",
+  "userDirectory",
+  "covenantDocs",
+];
 
 const SCOPE_CONFIG = {
   lotSettings: {
@@ -377,27 +389,10 @@ const applyAssets = async (client, assets, mode) => {
   }
 };
 
-const markScopeSynced = async (client, scope, mode) => {
-  await client.query(
-    `
-      INSERT INTO scope_sync_state(scope, last_mode, last_synced_at)
-      VALUES($1, $2, NOW())
-      ON CONFLICT (scope)
-      DO UPDATE SET last_mode = EXCLUDED.last_mode, last_synced_at = NOW()
-    `,
-    [scope, mode]
-  );
-};
-
-const syncBackupToDatabase = async ({
-  backup,
-  mode = "replace",
-  scopes = {},
-  trackSnapshot = true,
-  snapshotKeepCount = 60,
-} = {}) => {
+const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, createSnapshot = false }) => {
   const normalizedMode = mode === "merge" || mode === "missing" ? mode : "replace";
   const normalizedScopes = normalizeScopes(scopes);
+  const shouldCreateSnapshot = createSnapshot === true;
   if (!hasSelectedScope(normalizedScopes)) {
     throw new Error("At least one scope must be selected.");
   }
@@ -424,7 +419,7 @@ const syncBackupToDatabase = async ({
         await markScopeSynced(client, scope, normalizedMode);
       }
 
-      if (shouldTrackSnapshot) {
+      if (shouldCreateSnapshot) {
         await client.query(
           `
             INSERT INTO backup_snapshots(backup_type, version, mode, scopes_json, backup_json)
@@ -438,21 +433,6 @@ const syncBackupToDatabase = async ({
             JSON.stringify(backup || {}),
           ]
         );
-        if (safeSnapshotKeepCount > 0) {
-          const deleteResult = await client.query(
-            `
-              DELETE FROM backup_snapshots
-              WHERE id IN (
-                SELECT id
-                FROM backup_snapshots
-                ORDER BY id DESC
-                OFFSET $1
-              )
-            `,
-            [safeSnapshotKeepCount]
-          );
-          prunedSnapshots = deleteResult.rowCount || 0;
-        }
       }
 
       await client.query("COMMIT");
@@ -465,10 +445,171 @@ const syncBackupToDatabase = async ({
   return {
     mode: normalizedMode,
     scopes: normalizedScopes,
-    snapshotRecorded: shouldTrackSnapshot,
-    snapshotsPruned: prunedSnapshots,
+    snapshotCreated: shouldCreateSnapshot,
   };
 };
+
+const buildSharedChangesFromDatabase = async ({ since = null } = {}) =>
+  withClient(async (client) => {
+    const hasSince = since instanceof Date && !Number.isNaN(since.getTime());
+    const nowResult = await client.query("SELECT NOW() AS now");
+    const refreshedAt = new Date(nowResult.rows[0]?.now || Date.now()).toISOString();
+    const refreshCutoffDate = new Date(refreshedAt);
+
+    const sharedStateKeys = [
+      "fw_votes",
+      "fw_comments_data_version",
+      "fw_total_lots",
+      "fw_backup_health_threshold_days",
+      "fw_primary_voter_transfer_audit",
+      "fw_admin_access_entries",
+      "fw_admin_access_grades",
+      "fw_admin_two_factor_registry",
+    ];
+    const sharedRecordScopes = [
+      "comments",
+      "covenantDocs",
+      "ownerActivity",
+      "voteLedger",
+      "primaryVoters",
+      "outreach",
+      "userDirectory",
+      "adminAccess",
+      "adminAccessGrades",
+      "voteEligibility",
+      "legacyVoteEntries",
+    ];
+
+    const stateParams = [sharedStateKeys];
+    let stateWhere = "key = ANY($1::text[])";
+    if (hasSince) {
+      stateParams.push(since.toISOString(), refreshedAt);
+      stateWhere += " AND updated_at > $2::timestamptz AND updated_at <= $3::timestamptz";
+    }
+    const stateResult = await client.query(
+      `
+        SELECT key, value_json, updated_at
+        FROM state_values
+        WHERE ${stateWhere}
+      `,
+      stateParams
+    );
+
+    const scopeParams = [sharedRecordScopes];
+    let scopeWhere = "scope = ANY($1::text[])";
+    if (hasSince) {
+      scopeParams.push(since.toISOString(), refreshedAt);
+      scopeWhere += " AND updated_at > $2::timestamptz AND updated_at <= $3::timestamptz";
+    }
+    const scopeResult = await client.query(
+      `
+        SELECT scope, row_id, position, data_json, updated_at
+        FROM scope_records
+        WHERE ${scopeWhere}
+        ORDER BY scope, position NULLS LAST, row_id
+      `,
+      scopeParams
+    );
+
+    const stateMap = {};
+    let maxUpdatedAt = hasSince ? since : null;
+    const assignMaxTimestamp = (updatedAt) => {
+      const parsed = new Date(updatedAt || "");
+      if (Number.isNaN(parsed.getTime())) return;
+      if (!maxUpdatedAt || parsed > maxUpdatedAt) {
+        maxUpdatedAt = parsed;
+      }
+    };
+
+    stateResult.rows.forEach((row) => {
+      stateMap[row.key] = row.value_json;
+      assignMaxTimestamp(row.updated_at);
+    });
+
+    const grouped = {};
+    scopeResult.rows.forEach((row) => {
+      if (!grouped[row.scope]) grouped[row.scope] = [];
+      grouped[row.scope].push(row);
+      assignMaxTimestamp(row.updated_at);
+    });
+
+    const rowsToObject = (scopeName, valueResolver = (row) => row.data_json) => {
+      const out = {};
+      (grouped[scopeName] || []).forEach((row) => {
+        out[row.row_id] = valueResolver(row);
+      });
+      return out;
+    };
+
+    const payload = {};
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_votes")) payload.fw_votes = stateMap.fw_votes;
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_comments_data_version")) {
+      payload.fw_comments_data_version = stateMap.fw_comments_data_version;
+    }
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_total_lots")) payload.fw_total_lots = stateMap.fw_total_lots;
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_backup_health_threshold_days")) {
+      payload.fw_backup_health_threshold_days = stateMap.fw_backup_health_threshold_days;
+    }
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_primary_voter_transfer_audit")) {
+      payload.fw_primary_voter_transfer_audit = Array.isArray(stateMap.fw_primary_voter_transfer_audit)
+        ? stateMap.fw_primary_voter_transfer_audit
+        : [];
+    }
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_admin_access_entries")) {
+      payload.fw_admin_access_entries = Array.isArray(stateMap.fw_admin_access_entries)
+        ? stateMap.fw_admin_access_entries
+        : [];
+    }
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_admin_access_grades")) {
+      payload.fw_admin_access_grades = stateMap.fw_admin_access_grades || {};
+    }
+    if (Object.prototype.hasOwnProperty.call(stateMap, "fw_admin_two_factor_registry")) {
+      payload.fw_admin_two_factor_registry = stateMap.fw_admin_two_factor_registry || {};
+    }
+
+    if (grouped.comments) payload.fw_comments = grouped.comments.map((row) => row.data_json);
+    if (grouped.covenantDocs) payload.fw_covenant_docs = grouped.covenantDocs.map((row) => row.data_json);
+    if (grouped.ownerActivity) payload.fw_owner_activity = rowsToObject("ownerActivity");
+    if (grouped.primaryVoters) payload.fw_primary_voter_registry = rowsToObject("primaryVoters");
+    if (grouped.outreach) payload.fw_outreach_state = rowsToObject("outreach");
+    if (grouped.userDirectory) payload.fw_user_directory = rowsToObject("userDirectory");
+    if (grouped.voteEligibility) payload.fw_vote_eligibility = rowsToObject("voteEligibility");
+    if (grouped.voteLedger) {
+      payload.fw_vote_ledger = rowsToObject("voteLedger", (row) => row.data_json?.choice || row.data_json);
+    }
+    if (grouped.legacyVoteEntries) {
+      payload.legacy_vote_entries = rowsToObject("legacyVoteEntries", (row) => row.data_json?.choice || row.data_json);
+    }
+    if (grouped.adminAccess) {
+      payload.fw_admin_access_entries = (grouped.adminAccess || [])
+        .map((row) => String(row.data_json?.name || "").trim())
+        .filter(Boolean);
+    }
+    if (grouped.adminAccessGrades) {
+      payload.fw_admin_access_grades = rowsToObject("adminAccessGrades");
+    }
+
+    const backup = {
+      backupType: BACKUP_TYPE,
+      version: BACKUP_VERSION,
+      exportedAt: refreshedAt,
+      payload,
+    };
+
+    return {
+      backup,
+      refreshedAt,
+      nextSince: maxUpdatedAt ? maxUpdatedAt.toISOString() : refreshedAt,
+      incremental: hasSince,
+      scopes: SHARED_REFRESH_SCOPES,
+      excludedScopes: ["covenantFiles", "sessionUser"],
+      changed: {
+        stateValues: stateResult.rows.length,
+        scopeRecords: scopeResult.rows.length,
+      },
+      refreshCutoff: refreshCutoffDate.toISOString(),
+    };
+  });
 
 const buildBackupFromDatabase = async () => {
   const [stateResult, scopeResult, assetResult] = await Promise.all([
@@ -829,7 +970,7 @@ module.exports = {
   hasSelectedScope,
   syncBackupToDatabase,
   buildBackupFromDatabase,
-  getSharedRefreshBundle,
+  buildSharedChangesFromDatabase,
   getRecordCounts,
   getRecords,
 };
