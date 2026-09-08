@@ -163,7 +163,6 @@ const SHARED_REFRESH_SCOPE_KEYS = [
   "userDirectory",
   "covenantDocs",
 ];
-const SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1000;
 
 const defaultBackupRestoreScopes = () =>
   BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {

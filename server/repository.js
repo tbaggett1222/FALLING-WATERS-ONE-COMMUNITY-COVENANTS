@@ -93,18 +93,6 @@ const SCOPE_CONFIG = {
   },
 };
 
-const SHARED_REFRESH_SCOPES = [
-  "lotSettings",
-  "votes",
-  "comments",
-  "ownerActivity",
-  "outreach",
-  "eligibility",
-  "primaryVoters",
-  "adminAccess",
-  "userDirectory",
-];
-
 const normalizeNameKey = (name) =>
   String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
 
