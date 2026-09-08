@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - cursor/unified-ccr-portal-upgrade-8380
   workflow_dispatch:
 
 permissions:
