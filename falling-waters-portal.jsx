@@ -163,6 +163,11 @@ const SHARED_REFRESH_SCOPE_KEYS = [
   "userDirectory",
   "covenantDocs",
 ];
+// Minimum spacing between opportunistic (focus / tab-visible) shared refreshes.
+// The periodic interval and forced full refreshes ignore this guard; it only
+// suppresses redundant delta calls when a user rapidly re-focuses the tab,
+// which keeps Render request/bandwidth usage down.
+const SHARED_REFRESH_MIN_GAP_MS = 60 * 1000;
 
 const defaultBackupRestoreScopes = () =>
   BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
@@ -4931,6 +4936,7 @@ export default function App() {
   const sharedSyncModeRef = useRef("merge");
   const sharedRefreshSinceRef = useRef("");
   const sharedRefreshInFlightRef = useRef(null);
+  const sharedRefreshLastAtRef = useRef(0);
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
@@ -6399,10 +6405,19 @@ export default function App() {
     let cancelled = false;
     const runRefresh = async (forceFull = false) => {
       const result = await handleRefreshSharedData({ silent: true, forceFull });
+      sharedRefreshLastAtRef.current = Date.now();
       if (cancelled) return;
       if (result?.error) {
         setSharedDataErr(result.error);
       }
+    };
+
+    // Opportunistic (focus / tab-visible) refreshes are rate-limited so rapid
+    // tab switching does not fire a delta request every time; the periodic
+    // interval below is unaffected. This trims redundant Render calls.
+    const runOpportunisticRefresh = () => {
+      if (Date.now() - sharedRefreshLastAtRef.current < SHARED_REFRESH_MIN_GAP_MS) return;
+      void runRefresh(false);
     };
 
     // First refresh after login/session restore is a full baseline.
@@ -6414,11 +6429,11 @@ export default function App() {
     }, SHARED_REFRESH_INTERVAL_MS);
 
     const onFocus = () => {
-      void runRefresh(false);
+      runOpportunisticRefresh();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void runRefresh(false);
+        runOpportunisticRefresh();
       }
     };
     window.addEventListener("focus", onFocus);
@@ -6426,6 +6441,8 @@ export default function App() {
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [user?.userId, dbApiBaseUrl]);
 

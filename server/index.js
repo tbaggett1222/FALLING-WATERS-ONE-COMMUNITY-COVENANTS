@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const zlib = require("zlib");
 
 const { query } = require("./db");
 const {
@@ -30,6 +31,8 @@ const ALERT_MAX_SYNC_AGE_MINUTES = parsePositiveInt(process.env.ALERT_MAX_SYNC_A
 const ALERT_MIN_STATE_KEYS = parsePositiveInt(process.env.ALERT_MIN_STATE_KEYS, 1);
 const ALERT_MIN_SCOPE_RECORDS = parsePositiveInt(process.env.ALERT_MIN_SCOPE_RECORDS, 1);
 const BACKUP_SNAPSHOT_KEEP_COUNT = parsePositiveInt(process.env.BACKUP_SNAPSHOT_KEEP_COUNT, 60);
+// Only gzip JSON responses above this size; tiny bodies cost more in headers than they save.
+const GZIP_MIN_BYTES = parsePositiveInt(process.env.GZIP_MIN_BYTES, 1024);
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || value === "") return fallback;
   const raw = String(value).trim().toLowerCase();
@@ -50,6 +53,38 @@ app.use(
     },
   })
 );
+// Gzip JSON responses to minimize outbound bandwidth (Render egress). Uses the
+// built-in zlib so no extra dependency/lockfile change is required. Applies to
+// every res.json() payload once it clears GZIP_MIN_BYTES.
+app.use((req, res, next) => {
+  const acceptEncoding = String(req.headers["accept-encoding"] || "");
+  const clientAcceptsGzip = /\bgzip\b/i.test(acceptEncoding);
+  const sendJson = res.json.bind(res);
+  res.json = (body) => {
+    let payload;
+    try {
+      payload = JSON.stringify(body === undefined ? null : body);
+    } catch {
+      return sendJson(body);
+    }
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Vary", "Accept-Encoding");
+    if (!clientAcceptsGzip || res.getHeader("Content-Encoding") || Buffer.byteLength(payload) < GZIP_MIN_BYTES) {
+      return res.end(payload);
+    }
+    zlib.gzip(payload, (error, compressed) => {
+      if (error) {
+        res.removeHeader("Content-Encoding");
+        return res.end(payload);
+      }
+      res.setHeader("Content-Encoding", "gzip");
+      res.setHeader("Content-Length", compressed.length);
+      res.end(compressed);
+    });
+    return res;
+  };
+  next();
+});
 app.use(express.json({ limit: "100mb" }));
 
 let schemaReady = false;
