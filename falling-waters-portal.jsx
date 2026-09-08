@@ -163,7 +163,11 @@ const SHARED_REFRESH_SCOPE_KEYS = [
   "userDirectory",
   "covenantDocs",
 ];
-const SHARED_REFRESH_INTERVAL_MS = 12 * 60 * 1000;
+// Minimum spacing between opportunistic (focus / tab-visible) shared refreshes.
+// The periodic interval and forced full refreshes ignore this guard; it only
+// suppresses redundant delta calls when a user rapidly re-focuses the tab,
+// which keeps Render request/bandwidth usage down.
+const SHARED_REFRESH_MIN_GAP_MS = 60 * 1000;
 
 const defaultBackupRestoreScopes = () =>
   BACKUP_RESTORE_SCOPE_OPTIONS.reduce((acc, scope) => {
@@ -1389,13 +1393,43 @@ const S = {
 };
 
 // ── LOGIN SCREEN ─────────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, adminAccessEntries }) {
+function LoginScreen({ onLogin, adminAccessEntries, onRequestReset }) {
   const [lot, setLot] = useState("");
   const [name, setName] = useState("");
   const [pw, setPw] = useState("");
   const [accessRole, setAccessRole] = useState(ACCESS_ROLES.primary);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showReset, setShowReset] = useState(false);
+  const [resetLot, setResetLot] = useState("");
+  const [resetName, setResetName] = useState("");
+  const [resetMessage, setResetMessage] = useState("");
+  const [resetErr, setResetErr] = useState("");
+  const [resetMsg, setResetMsg] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+
+  const submitReset = async (e) => {
+    e.preventDefault();
+    if (resetBusy) return;
+    setResetErr("");
+    setResetMsg("");
+    setResetBusy(true);
+    try {
+      const result = await onRequestReset?.({ name: resetName, lots: resetLot, message: resetMessage });
+      if (result?.error) {
+        setResetErr(result.error);
+        return;
+      }
+      setResetMsg(result?.message || "Password reset request submitted. An administrator will review it.");
+      setResetName("");
+      setResetLot("");
+      setResetMessage("");
+    } catch (error) {
+      setResetErr(error?.message || "Could not submit your password reset request.");
+    } finally {
+      setResetBusy(false);
+    }
+  };
   const handle = async (e) => {
     e.preventDefault();
     if (busy) return;
@@ -1504,6 +1538,42 @@ function LoginScreen({ onLogin, adminAccessEntries }) {
             <Icon.lock/> {busy ? "Signing in..." : "Enter the portal"}
           </button>
         </form>
+        <div style={{ textAlign:"center", marginTop:14 }}>
+          <button
+            type="button"
+            onClick={() => { setShowReset((v) => !v); setResetErr(""); setResetMsg(""); }}
+            style={{ background:"none", border:"none", color:C.forest, fontSize:12, fontWeight:600, cursor:"pointer", textDecoration:"underline", padding:0 }}
+          >
+            {showReset ? "Hide password reset request" : "Forgot your password? Request an admin reset"}
+          </button>
+        </div>
+        {showReset && (
+          <div style={{ marginTop:14, padding:"16px", border:`1px solid ${C.border}`, borderRadius:8, background:C.parchmentDark || "#f3efe7" }}>
+            <div style={{ fontSize:13, fontWeight:700, color:C.forest, marginBottom:6 }}>Request an admin password reset</div>
+            <div style={{ fontSize:12, color:C.muted, marginBottom:10, lineHeight:1.6 }}>
+              Enter your name and lot number(s). An administrator will clear your voting password so you can set a new one the next time you sign in.
+            </div>
+            {resetErr && <div style={S.alert("danger")}>{resetErr}</div>}
+            {resetMsg && <div style={S.alert("success")}>{resetMsg}</div>}
+            <form onSubmit={submitReset}>
+              <div style={{ marginBottom:10 }}>
+                <label style={S.label}>Your name</label>
+                <input style={S.input} value={resetName} onChange={(e)=>setResetName(e.target.value)} disabled={resetBusy} placeholder="First and last name" autoCapitalize="words" />
+              </div>
+              <div style={{ marginBottom:10 }}>
+                <label style={S.label}>Lot number(s)</label>
+                <input style={S.input} value={resetLot} onChange={(e)=>setResetLot(e.target.value)} disabled={resetBusy} placeholder="e.g. Lot 36, Lot 37" autoCapitalize="none" autoCorrect="off" />
+              </div>
+              <div style={{ marginBottom:10 }}>
+                <label style={S.label}>Message to admin (optional)</label>
+                <textarea style={{ ...S.textarea, minHeight:70 }} value={resetMessage} onChange={(e)=>setResetMessage(e.target.value)} disabled={resetBusy} placeholder="Anything that helps verify your identity" />
+              </div>
+              <button type="submit" style={{ ...S.btn("outline"), width:"100%", justifyContent:"center" }} disabled={resetBusy}>
+                {resetBusy ? "Submitting..." : "Submit reset request"}
+              </button>
+            </form>
+          </div>
+        )}
         <div style={{ fontSize:11, color:C.muted, marginTop:16, textAlign:"center", lineHeight:1.6 }}>
           This portal is for Falling Waters lot owners only.<br/>Your participation is voluntary and your vote is confidential.
         </div>
@@ -2835,7 +2905,7 @@ function CommentsPage({ user, comments, onAdd, onUpdate, onDelete }) {
 }
 
 // ── PROFILE PAGE ──────────────────────────────────────────────────────────────
-function ProfilePage({ user, voteLedger, onUpdateProfile }) {
+function ProfilePage({ user, voteLedger, onUpdateProfile, onChangeVotingPassword }) {
   const [name, setName] = useState(user.name || "");
   const [lotsInput, setLotsInput] = useState(normalizeUserLots(user).filter((lot) => lot !== "ADMIN").join(", "));
   const [accessRole, setAccessRole] = useState(normalizeAccessRole(user.accessRole));
@@ -2944,7 +3014,213 @@ function ProfilePage({ user, voteLedger, onUpdateProfile }) {
             );
           })}
         </div>
+
+        {normalizeAccessRole(user.accessRole) === ACCESS_ROLES.primary && lots.length > 0 && (
+          <ChangeVotingPasswordCard onChangeVotingPassword={onChangeVotingPassword} />
+        )}
       </div>
+    </div>
+  );
+}
+
+// Lets a signed-in primary voter rotate their own voting password.
+function ChangeVotingPasswordCard({ onChangeVotingPassword }) {
+  const [currentSecret, setCurrentSecret] = useState("");
+  const [newSecret, setNewSecret] = useState("");
+  const [confirmSecret, setConfirmSecret] = useState("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    setMsg("");
+    setErr("");
+    if (newSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+      setErr(`New password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.`);
+      return;
+    }
+    if (newSecret !== confirmSecret) {
+      setErr("New password and confirmation do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await onChangeVotingPassword?.({ currentSecret, newSecret });
+      if (result?.error) {
+        setErr(result.error);
+        return;
+      }
+      setMsg(result?.message || "Voting password updated.");
+      setCurrentSecret("");
+      setNewSecret("");
+      setConfirmSecret("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardTitle}>Change voting password</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.6 }}>
+        Update the password used to cast votes for your lot(s). If you have forgotten your current
+        password, sign out and use “Request an admin reset” on the sign-in screen.
+      </div>
+      {err && <div style={S.alert("danger")}>{err}</div>}
+      {msg && <div style={S.alert("success")}>{msg}</div>}
+      <form onSubmit={submit}>
+        <div style={{ marginBottom: 12 }}>
+          <label style={S.label}>Current password</label>
+          <input
+            style={S.input}
+            type="password"
+            value={currentSecret}
+            onChange={(e) => setCurrentSecret(e.target.value)}
+            disabled={busy}
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={S.label}>New password</label>
+          <input
+            style={S.input}
+            type="password"
+            placeholder={`Minimum ${MIN_LOGIN_SECRET_LENGTH} characters`}
+            value={newSecret}
+            onChange={(e) => setNewSecret(e.target.value)}
+            disabled={busy}
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <label style={S.label}>Confirm new password</label>
+          <input
+            style={S.input}
+            type="password"
+            value={confirmSecret}
+            onChange={(e) => setConfirmSecret(e.target.value)}
+            disabled={busy}
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+        </div>
+        <button type="submit" style={S.btn("primary")} disabled={busy}>
+          {busy ? "Updating..." : "Update voting password"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// Admin card: review resident password reset requests and clear the relevant
+// lot's voting password so the resident can set a new one at next sign-in.
+function PasswordResetRequestsCard({ onFetchResetRequests, onResolveResetRequest, onClearLotPassword }) {
+  const [requests, setRequests] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const result = await onFetchResetRequests?.();
+      if (result?.error) {
+        setErr(result.error);
+        return;
+      }
+      setRequests(Array.isArray(result?.requests) ? result.requests : []);
+      setLoaded(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearAndResolve = async (request) => {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const lots = Array.isArray(request?.lots) && request.lots.length > 0
+        ? request.lots
+        : String(request?.lot || "").split(",").map((value) => value.trim()).filter(Boolean);
+      const cleared = [];
+      for (const lot of lots) {
+        const result = onClearLotPassword?.(lot);
+        if (result?.error) {
+          setErr(result.error);
+          setBusy(false);
+          return;
+        }
+        cleared.push(result?.message || `${lot} cleared.`);
+      }
+      const resolveResult = await onResolveResetRequest?.({ id: request.id, status: "resolved" });
+      if (resolveResult?.error) {
+        setErr(resolveResult.error);
+        return;
+      }
+      setRequests((prev) => prev.filter((item) => item.id !== request.id));
+      setMsg(`${cleared.join(" ")} Request marked resolved.`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = async (request) => {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const resolveResult = await onResolveResetRequest?.({ id: request.id, status: "denied" });
+      if (resolveResult?.error) {
+        setErr(resolveResult.error);
+        return;
+      }
+      setRequests((prev) => prev.filter((item) => item.id !== request.id));
+      setMsg("Request dismissed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardTitle}>Password reset requests</div>
+      <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
+        Residents who forgot their voting password can request a reset from the sign-in screen. Clearing a
+        request removes the stored password for the requested lot(s); the primary voter keeps their identity
+        and sets a new password the next time they sign in.
+      </div>
+      {err && <div style={S.alert("danger")}>{err}</div>}
+      {msg && <div style={S.alert("success")}>{msg}</div>}
+      <button type="button" style={S.btn("stone")} onClick={load} disabled={busy}>
+        {busy ? "Loading..." : loaded ? "Refresh requests" : "Load reset requests"}
+      </button>
+      {loaded && requests.length === 0 && (
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 12 }}>No pending password reset requests.</div>
+      )}
+      {requests.map((request) => (
+        <div key={request.id} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", marginTop: 10 }}>
+          <div style={{ fontWeight: 700, color: C.forest, fontSize: 13 }}>{request.name || "Unknown resident"}</div>
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Lot(s): {request.lot || (Array.isArray(request.lots) ? request.lots.join(", ") : "—")}</div>
+          {request.message && <div style={{ fontSize: 12, color: C.ink, marginTop: 6, lineHeight: 1.5 }}>“{request.message}”</div>}
+          {request.createdAt && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Requested: {formatIsoDateTime(request.createdAt)}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button type="button" style={S.btn("primary")} onClick={() => clearAndResolve(request)} disabled={busy}>
+              Clear password &amp; resolve
+            </button>
+            <button type="button" style={S.btn("outline")} onClick={() => dismiss(request)} disabled={busy}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2987,6 +3263,9 @@ function AdminVotingPage({
   onGrantAdminAccess,
   onRevokeAdminAccess,
   onTransferPrimaryVoter,
+  onFetchResetRequests,
+  onResolveResetRequest,
+  onClearLotPassword,
 }) {
   const [filter, setFilter] = useState("all");
   const [lotQuery, setLotQuery] = useState("");
@@ -3957,6 +4236,12 @@ function AdminVotingPage({
         </div>
       </div>
 
+      <PasswordResetRequestsCard
+        onFetchResetRequests={onFetchResetRequests}
+        onResolveResetRequest={onResolveResetRequest}
+        onClearLotPassword={onClearLotPassword}
+      />
+
       <div style={S.card}>
         <div style={S.cardTitle}>Primary voter transfer (admin only)</div>
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 10 }}>
@@ -4899,13 +5184,6 @@ export default function App() {
     const saved = store.get(LAST_DB_SYNC_AT_KEY);
     return typeof saved === "string" && saved.trim() ? saved : "";
   });
-  const [lastSharedRefreshCursor, setLastSharedRefreshCursor] = useState(() => {
-    const saved = store.get(LAST_SHARED_REFRESH_CURSOR_KEY);
-    if (typeof saved !== "string") return "";
-    const trimmed = saved.trim();
-    if (!trimmed) return "";
-    return Number.isNaN(Date.parse(trimmed)) ? "" : new Date(trimmed).toISOString();
-  });
   const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
     const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
     if (
@@ -4932,6 +5210,7 @@ export default function App() {
   const sharedSyncModeRef = useRef("merge");
   const sharedRefreshSinceRef = useRef("");
   const sharedRefreshInFlightRef = useRef(null);
+  const sharedRefreshLastAtRef = useRef(0);
   const [sharedSyncNonce, setSharedSyncNonce] = useState(0);
   const allLotLabels = buildLotLabels(totalLots);
   const votesNeeded = votesNeededForLots(totalLots);
@@ -4965,10 +5244,6 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
   useEffect(() => { store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || ""); }, [lastDbSyncAt]);
-  useEffect(() => { store.set(LAST_SHARED_REFRESH_CURSOR_KEY, lastSharedRefreshCursor || ""); }, [lastSharedRefreshCursor]);
-  useEffect(() => {
-    sharedRefreshCursorRef.current = lastSharedRefreshCursor || "";
-  }, [lastSharedRefreshCursor]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
@@ -6400,10 +6675,19 @@ export default function App() {
     let cancelled = false;
     const runRefresh = async (forceFull = false) => {
       const result = await handleRefreshSharedData({ silent: true, forceFull });
+      sharedRefreshLastAtRef.current = Date.now();
       if (cancelled) return;
       if (result?.error) {
         setSharedDataErr(result.error);
       }
+    };
+
+    // Opportunistic (focus / tab-visible) refreshes are rate-limited so rapid
+    // tab switching does not fire a delta request every time; the periodic
+    // interval below is unaffected. This trims redundant Render calls.
+    const runOpportunisticRefresh = () => {
+      if (Date.now() - sharedRefreshLastAtRef.current < SHARED_REFRESH_MIN_GAP_MS) return;
+      void runRefresh(false);
     };
 
     // First refresh after login/session restore is a full baseline.
@@ -6415,11 +6699,11 @@ export default function App() {
     }, SHARED_REFRESH_INTERVAL_MS);
 
     const onFocus = () => {
-      void runRefresh(false);
+      runOpportunisticRefresh();
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void runRefresh(false);
+        runOpportunisticRefresh();
       }
     };
     window.addEventListener("focus", onFocus);
@@ -6427,6 +6711,8 @@ export default function App() {
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [user?.userId, dbApiBaseUrl]);
 
@@ -6510,6 +6796,119 @@ export default function App() {
     };
   };
 
+  // ── PASSWORD RESET ─────────────────────────────────────────────────────────
+  // Locked-out residents (forgot their per-lot voting password) submit a request
+  // from the sign-in screen; it is stored server-side for an admin to review.
+  const handleRequestPasswordReset = async ({ name, lots, message } = {}) => {
+    const safeName = String(name || "").trim();
+    const safeLots = parseLotsInput(Array.isArray(lots) ? lots.join(", ") : lots).filter((lot) => lot !== "ADMIN");
+    if (!safeName) return { error: "Please enter your name." };
+    if (safeLots.length === 0) return { error: "Please enter at least one lot number." };
+    try {
+      const result = await callDbApi("/api/db/reset-requests", {
+        method: "POST",
+        body: JSON.stringify({ name: safeName, lots: safeLots, message: String(message || "").trim() }),
+      });
+      return {
+        message:
+          result?.message ||
+          "Password reset request submitted. An administrator will clear your voting password so you can set a new one.",
+      };
+    } catch (error) {
+      return { error: error?.message || "Could not submit your password reset request." };
+    }
+  };
+
+  // Signed-in primary voters rotate their own voting password (requires the
+  // current one where a credential is already set).
+  const handleChangeVotingPassword = ({ currentSecret, newSecret } = {}) => {
+    if (!user || user.isAdmin) {
+      return { error: "Only primary voters can change a voting password." };
+    }
+    const lots = normalizeUserLots(user).filter((lot) => lot !== "ADMIN");
+    if (lots.length === 0) {
+      return { error: "No voting lots are associated with your account." };
+    }
+    const nextSecret = normalizeLoginSecret(newSecret);
+    if (nextSecret.length < MIN_LOGIN_SECRET_LENGTH) {
+      return { error: `New password must be at least ${MIN_LOGIN_SECRET_LENGTH} characters.` };
+    }
+    const currentHashInput = normalizeLoginSecret(currentSecret);
+    for (const lot of lots) {
+      const existing = primaryVoterRegistry?.[lot];
+      if (existing?.credentialHash && buildPrimaryCredentialHash(lot, currentHashInput) !== existing.credentialHash) {
+        return { error: `Current password is incorrect for ${lot}.` };
+      }
+    }
+    setPrimaryVoterRegistry((prev) => {
+      const next = { ...prev };
+      lots.forEach((lot) => {
+        const existing = next[lot] || {
+          name: user.name,
+          nameKey: normalizeNameKey(user.name),
+          userId: user.userId,
+          assignedAt: todayLabel(),
+        };
+        next[lot] = { ...existing, credentialHash: buildPrimaryCredentialHash(lot, nextSecret) };
+      });
+      return next;
+    });
+    queueSharedChangesSync(["primaryVoters"], { mode: "replace" });
+    return {
+      message: `Voting password updated for ${lots.length} lot${lots.length === 1 ? "" : "s"}.`,
+    };
+  };
+
+  // Admin: fetch pending reset requests on demand (kept out of the periodic
+  // shared refresh to avoid extra bandwidth).
+  const handleFetchResetRequests = async () => {
+    if (!user?.isAdmin) return { error: "Admin access required.", requests: [] };
+    try {
+      const result = await callDbApi("/api/db/reset-requests?status=pending", {
+        method: "GET",
+        headers: { "x-portal-admin-action": "reset-review" },
+      });
+      return { requests: Array.isArray(result?.requests) ? result.requests : [] };
+    } catch (error) {
+      return { error: error?.message || "Could not load password reset requests.", requests: [] };
+    }
+  };
+
+  const handleResolveResetRequest = async ({ id, status = "resolved" } = {}) => {
+    if (!user?.isAdmin) return { error: "Admin access required." };
+    try {
+      const result = await callDbApi("/api/db/reset-requests/resolve", {
+        method: "POST",
+        headers: { "x-portal-admin-action": "reset-resolve" },
+        body: JSON.stringify({ id, status, resolvedBy: user?.name || "" }),
+      });
+      return { message: result?.message || "Request updated." };
+    } catch (error) {
+      return { error: error?.message || "Could not update the reset request." };
+    }
+  };
+
+  // Admin: clear a lot's stored voting password so the primary voter can set a
+  // new one at next sign-in, without changing who the primary voter is.
+  const handleClearLotPassword = (lot) => {
+    if (!user?.isAdmin) return { error: "Admin access required." };
+    const normalizedLot = normalizeLotLabel(lot);
+    if (!normalizedLot) return { error: "Select a valid lot number." };
+    const existing = primaryVoterRegistry?.[normalizedLot];
+    if (!existing) {
+      return { message: `${normalizedLot} has no primary voter on record yet; nothing to clear.` };
+    }
+    setPrimaryVoterRegistry((prev) => {
+      const current = prev?.[normalizedLot];
+      if (!current) return prev;
+      return { ...prev, [normalizedLot]: { ...current, credentialHash: null } };
+    });
+    queueSharedChangesSync(["primaryVoters"], { mode: "replace" });
+    return {
+      message: `${normalizedLot} voting password cleared. ${existing.name || "The primary voter"} can set a new password at next sign-in.`,
+    };
+  };
+
   const activityRows = Object.values(ownerActivity);
   const votedLotsFromLedger = allLotLabels.filter((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`))).length;
   const commentedLotsFromActivity = allLotLabels.filter((lot) => !!ownerActivity?.[lot]?.commented).length;
@@ -6564,6 +6963,7 @@ export default function App() {
       <LoginScreen
         onLogin={handleLogin}
         adminAccessEntries={adminAccessEntries}
+        onRequestReset={handleRequestPasswordReset}
       />
     );
   }
@@ -6746,7 +7146,7 @@ export default function App() {
           {page === "proposed" && <ProposedCovenantPage/>}
           {page === "risks" && <RisksPage/>}
           {page === "str" && <STRPage user={user} votes={votes} voteLedger={voteLedger} onVote={handleVote} totalLots={totalLots} votesNeeded={votesNeeded}/>}
-          {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile}/>}
+          {page === "profile" && !user.isAdmin && <ProfilePage user={user} voteLedger={voteLedger} onUpdateProfile={handleUpdateProfile} onChangeVotingPassword={handleChangeVotingPassword}/>}
           {page === "comments" && <CommentsPage user={user} comments={comments} onAdd={handleAddComment} onUpdate={handleUpdateComment} onDelete={handleDeleteComment}/>}
           {page === "dashboard" && (
             <DashboardPage
@@ -6796,6 +7196,9 @@ export default function App() {
               onGrantAdminAccess={handleGrantAdminAccess}
               onRevokeAdminAccess={handleRevokeAdminAccess}
               onTransferPrimaryVoter={handleTransferPrimaryVoter}
+              onFetchResetRequests={handleFetchResetRequests}
+              onResolveResetRequest={handleResolveResetRequest}
+              onClearLotPassword={handleClearLotPassword}
             />
           )}
           {page === "admin-docs" && user.isAdmin && (

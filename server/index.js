@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 
 const { query } = require("./db");
+const { createGzipJsonMiddleware } = require("./gzipJsonMiddleware");
 const {
   ALL_SCOPES,
   BACKUP_TYPE,
@@ -13,6 +14,9 @@ const {
   syncBackupToDatabase,
   buildBackupFromDatabase,
   buildSharedChangesFromDatabase,
+  createPasswordResetRequest,
+  listPasswordResetRequests,
+  resolvePasswordResetRequest,
   normalizeScopes,
 } = require("./repository");
 
@@ -30,6 +34,8 @@ const ALERT_MAX_SYNC_AGE_MINUTES = parsePositiveInt(process.env.ALERT_MAX_SYNC_A
 const ALERT_MIN_STATE_KEYS = parsePositiveInt(process.env.ALERT_MIN_STATE_KEYS, 1);
 const ALERT_MIN_SCOPE_RECORDS = parsePositiveInt(process.env.ALERT_MIN_SCOPE_RECORDS, 1);
 const BACKUP_SNAPSHOT_KEEP_COUNT = parsePositiveInt(process.env.BACKUP_SNAPSHOT_KEEP_COUNT, 60);
+// Only gzip JSON responses above this size; tiny bodies cost more in headers than they save.
+const GZIP_MIN_BYTES = parsePositiveInt(process.env.GZIP_MIN_BYTES, 1024);
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || value === "") return fallback;
   const raw = String(value).trim().toLowerCase();
@@ -50,6 +56,8 @@ app.use(
     },
   })
 );
+// Gzip JSON responses to minimize outbound bandwidth (Render egress).
+app.use(createGzipJsonMiddleware({ minBytes: GZIP_MIN_BYTES }));
 app.use(express.json({ limit: "100mb" }));
 
 let schemaReady = false;
@@ -302,6 +310,71 @@ app.post("/api/db/sync", async (req, res) => {
     });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message || "Could not sync data to PostgreSQL." });
+  }
+});
+
+// Residents who are locked out (forgot their per-lot voting password) file a
+// reset request here without being signed in. Kept intentionally narrow: it can
+// only append a request, never read or overwrite portal data.
+app.post("/api/db/reset-requests", async (req, res) => {
+  try {
+    await ensureSchemaReady();
+    const body = req.body || {};
+    const request = await createPasswordResetRequest({
+      name: body.name,
+      lots: body.lots,
+      lot: body.lot,
+      message: body.message,
+    });
+    res.json({
+      ok: true,
+      request,
+      message: "Password reset request submitted. An administrator will review it.",
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message || "Could not submit password reset request." });
+  }
+});
+
+// Admin-only review + resolution of reset requests. Gated by the same
+// x-portal-admin-action header the export/restore endpoints use.
+const requireAdminAction = (req, res, allowed) => {
+  const action = String(req.headers["x-portal-admin-action"] || "").trim().toLowerCase();
+  if (!allowed.includes(action)) {
+    res.status(403).json({
+      ok: false,
+      error: "This action is restricted to portal administrators.",
+    });
+    return false;
+  }
+  return true;
+};
+
+app.get("/api/db/reset-requests", async (req, res) => {
+  if (!requireAdminAction(req, res, ["reset-review", "reset-resolve", "backup", "restore"])) return;
+  try {
+    await ensureSchemaReady();
+    const status = req.query.status ? String(req.query.status) : null;
+    const requests = await listPasswordResetRequests({ status });
+    res.json({ ok: true, requests });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message || "Could not load password reset requests." });
+  }
+});
+
+app.post("/api/db/reset-requests/resolve", async (req, res) => {
+  if (!requireAdminAction(req, res, ["reset-resolve", "reset-review"])) return;
+  try {
+    await ensureSchemaReady();
+    const body = req.body || {};
+    const request = await resolvePasswordResetRequest({
+      id: body.id,
+      status: body.status,
+      resolvedBy: body.resolvedBy,
+    });
+    res.json({ ok: true, request, message: "Password reset request updated." });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message || "Could not update password reset request." });
   }
 });
 
