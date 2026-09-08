@@ -5184,13 +5184,6 @@ export default function App() {
     const saved = store.get(LAST_DB_SYNC_AT_KEY);
     return typeof saved === "string" && saved.trim() ? saved : "";
   });
-  const [lastSharedRefreshCursor, setLastSharedRefreshCursor] = useState(() => {
-    const saved = store.get(LAST_SHARED_REFRESH_CURSOR_KEY);
-    if (typeof saved !== "string") return "";
-    const trimmed = saved.trim();
-    if (!trimmed) return "";
-    return Number.isNaN(Date.parse(trimmed)) ? "" : new Date(trimmed).toISOString();
-  });
   const [backupHealthThresholdDays, setBackupHealthThresholdDays] = useState(() => {
     const saved = Number(store.get(BACKUP_HEALTH_THRESHOLD_KEY));
     if (
@@ -5251,10 +5244,6 @@ export default function App() {
   useEffect(() => { store.set("fw_vote_eligibility", eligibilityState); }, [eligibilityState]);
   useEffect(() => { store.set(LAST_BACKUP_EXPORT_KEY, lastBackupExportAt || ""); }, [lastBackupExportAt]);
   useEffect(() => { store.set(LAST_DB_SYNC_AT_KEY, lastDbSyncAt || ""); }, [lastDbSyncAt]);
-  useEffect(() => { store.set(LAST_SHARED_REFRESH_CURSOR_KEY, lastSharedRefreshCursor || ""); }, [lastSharedRefreshCursor]);
-  useEffect(() => {
-    sharedRefreshCursorRef.current = lastSharedRefreshCursor || "";
-  }, [lastSharedRefreshCursor]);
   useEffect(() => { store.set(BACKUP_HEALTH_THRESHOLD_KEY, backupHealthThresholdDays); }, [backupHealthThresholdDays]);
   useEffect(() => { store.set(DB_API_BASE_URL_KEY, dbApiBaseUrl || ""); }, [dbApiBaseUrl]);
   useEffect(() => {
