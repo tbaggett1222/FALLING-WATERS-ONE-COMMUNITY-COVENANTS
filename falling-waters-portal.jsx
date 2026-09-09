@@ -2759,6 +2759,15 @@ function CommentsPage({ user, comments, onAdd, onUpdate, onDelete }) {
                 <label style={S.label}>Your comment</label>
                 <textarea style={S.textarea} placeholder="Share your perspective, concerns, or questions. Min 20 characters." value={text} onChange={e=>setText(e.target.value)}/>
                 <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>Commenting as {user.name} · {user.lot}</div>
+                {text.trim().length < 20 ? (
+                  <div style={{ fontSize:12, color:C.amber, marginTop:6 }}>
+                    {text.trim().length === 0
+                      ? "Enter at least 20 characters to enable the Post comment button."
+                      : `${20 - text.trim().length} more character${20 - text.trim().length === 1 ? "" : "s"} needed (minimum 20) to enable posting.`}
+                  </div>
+                ) : (
+                  <div style={{ fontSize:12, color:C.success, marginTop:6 }}>Ready to post.</div>
+                )}
               </div>
               <button type="submit" style={S.btn("primary")} disabled={submitting || text.trim().length < 20}>
                 {submitting ? "Posting…" : "Post comment →"}
