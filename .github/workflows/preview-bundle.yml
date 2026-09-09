@@ -1,0 +1,48 @@
+name: Preview bundle (temporary)
+
+# Temporary helper: builds the static bundle and force-pushes it to a preview
+# branch so it can be fetched over git (github.com) for manual UI testing in
+# environments where CI artifact storage is not reachable. Safe to delete.
+
+on:
+  push:
+    branches:
+      - "cursor/portal-comment-sync-resilience-5040"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build static bundle
+        run: npm run build:min
+
+      - name: Publish bundle to preview branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p preview
+          cp index.html app.js manifest.webmanifest service-worker.js pwa-icon.svg maskable-icon.svg preview/
+          cd preview
+          git init -q
+          git checkout -qb cursor/portal-preview-bundle-5040
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -qm "Preview bundle from ${{ github.sha }}"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" cursor/portal-preview-bundle-5040
