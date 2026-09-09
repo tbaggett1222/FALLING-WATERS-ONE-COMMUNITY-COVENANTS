@@ -5223,7 +5223,11 @@ export default function App() {
   }, []);
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
-  useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+  // Always-current snapshot of local comments so the shared-refresh flow can
+  // detect (and preserve) locally created comments that have not yet reached the
+  // database, instead of letting a full refresh silently drop them.
+  const commentsRef = useRef(comments);
+  useEffect(() => { store.set("fw_comments", comments); commentsRef.current = comments; }, [comments]);
   useEffect(() => {
     const deduped = mergeCommentsBySignature([], comments);
     if (deduped.length !== comments.length) {
@@ -6582,6 +6586,11 @@ export default function App() {
         setSharedDataBusy(true);
       }
 
+      // Snapshot local comments before a full (replace) refresh so we can rescue
+      // any that never made it to the database (e.g. a save that failed while the
+      // API was unavailable). Without this, the replace silently drops them.
+      const priorComments = Array.isArray(commentsRef.current) ? commentsRef.current : [];
+
       try {
         const apiResult = await callDbApi(refreshPath, { method: "GET" });
         const sharedRefresh = apiResult?.result || {};
@@ -6590,6 +6599,26 @@ export default function App() {
         if (restoreResult?.error) {
           if (!silent) setSharedDataErr(restoreResult.error);
           return restoreResult;
+        }
+
+        // A full refresh replaces the comment list with the database copy. Re-add
+        // any local comments the database doesn't have yet and re-queue them for
+        // sync, so unsynced comments are preserved and self-heal once the API is
+        // reachable again (rather than disappearing on reload).
+        if (!sharedRefresh.incremental && scopes?.comments && priorComments.length > 0) {
+          const incomingComments = Array.isArray(sharedRefresh.backup?.payload?.fw_comments)
+            ? sharedRefresh.backup.payload.fw_comments
+            : [];
+          const incomingIds = new Set(incomingComments.map((c) => String(c?.id)));
+          const localOnly = priorComments.filter((c) => c && c.id != null && !incomingIds.has(String(c.id)));
+          if (localOnly.length > 0) {
+            setComments((prev) => {
+              const seen = new Set((prev || []).map((c) => String(c?.id)));
+              const additions = localOnly.filter((c) => !seen.has(String(c.id)));
+              return additions.length > 0 ? [...additions, ...prev] : prev;
+            });
+            queueSharedChangesSync(["comments"], { mode: "replace" });
+          }
         }
 
         const nextSince = String(sharedRefresh.nextSince || sharedRefresh.refreshedAt || "").trim();
