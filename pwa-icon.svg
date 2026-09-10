@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#1C3A2E"/>
+  <path d="M54 376L148 192L214 286L302 132L390 250L458 188V376H54z" fill="#C4A882" opacity="0.32"/>
+  <path d="M88 364L178 214L242 288L330 160L404 258L438 228V364H88z" fill="#F7F4EF" opacity="0.9"/>
+  <text x="256" y="438" text-anchor="middle" font-family="Georgia, serif" font-size="52" fill="#F7F4EF">FW</text>
+</svg>
