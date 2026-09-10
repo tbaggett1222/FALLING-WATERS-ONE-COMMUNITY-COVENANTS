@@ -3720,7 +3720,7 @@ function AdminVotingPage({
         primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
         primary_voter_transfer_audit_records: transferAuditRows.length,
         admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
-        admin_two_factor_enabled: Object.values(normalizedAdminTwoFactorRegistry).filter((entry) => entry?.enabled && entry?.secret).length,
+        admin_two_factor_enabled: Object.values(normalizeAdminTwoFactorRegistry(adminTwoFactorRegistry)).filter((entry) => entry?.enabled && entry?.secret).length,
         user_directory_records: Object.keys(userDirectory || {}).length,
         covenant_docs: covenantDocCount,
         raw_storage_keys_exported: storageKeys.length,

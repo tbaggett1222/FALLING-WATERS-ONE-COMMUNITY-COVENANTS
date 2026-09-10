@@ -257,16 +257,18 @@ app.get("/api/db/summary", async (_req, res) => {
 app.get("/api/db/shared-refresh", async (req, res) => {
   try {
     await ensureSchemaReady();
-    const since = req.query.since ? String(req.query.since) : null;
-    const refresh = await getSharedRefreshBundle({ since });
+    const rawSince = String(req.query.since || "").trim();
+    let since = null;
+    if (rawSince) {
+      const parsed = new Date(rawSince);
+      if (!Number.isNaN(parsed.getTime())) since = parsed;
+    }
+    const refresh = await buildSharedChangesFromDatabase({ since });
     res.json({
       ok: true,
       sharedScopes: SHARED_REFRESH_SCOPES,
       refresh,
-      message:
-        Object.keys(refresh.scopes || {}).length > 0
-          ? `Shared refresh payload ready for ${Object.keys(refresh.scopes || {}).length} scope(s).`
-          : "No shared scope changes since the provided cursor.",
+      message: since ? "Shared refresh delta ready." : "Shared refresh baseline ready.",
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message || "Could not load shared refresh data." });
