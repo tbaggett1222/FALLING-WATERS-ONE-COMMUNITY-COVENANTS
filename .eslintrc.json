@@ -1,0 +1,29 @@
+{
+  "root": true,
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module",
+    "ecmaFeatures": { "jsx": true }
+  },
+  "env": {
+    "browser": true,
+    "es2021": true
+  },
+  "rules": {
+    "no-undef": "error",
+    "no-redeclare": "error",
+    "no-dupe-keys": "error",
+    "no-dupe-args": "error",
+    "no-dupe-class-members": "error",
+    "no-func-assign": "error",
+    "no-const-assign": "error",
+    "no-unused-vars": "off"
+  },
+  "overrides": [
+    {
+      "files": ["server/**/*.js"],
+      "parserOptions": { "sourceType": "script" },
+      "env": { "browser": false, "node": true, "es2021": true }
+    }
+  ]
+}
