@@ -502,7 +502,52 @@ const normalizeUserDirectoryLotsState = (value) => {
     next[key] = normalized.value;
     if (normalized.changed) changed = true;
   });
-  return { value: next, changed };
+  const deduped = dedupeUserDirectory(next);
+  if (Object.keys(deduped).length !== Object.keys(next).length) changed = true;
+  return { value: deduped, changed };
+};
+
+// Collapses duplicate directory records for the same person into one entry.
+// Each sign-in historically minted a fresh timestamped userId, so one person
+// could accumulate many rows; this merges them by identity (name + admin flag),
+// keeping the most recent "last seen", unioning lots, and using a stable
+// (lowest) userId so repeated logins update a single record instead of piling up.
+const dedupeUserDirectory = (directory) => {
+  const source = isPlainObject(directory) ? directory : {};
+  const parseSeen = (label) => {
+    const t = Date.parse(String(label || ""));
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const groups = new Map();
+  Object.entries(source).forEach(([key, entry]) => {
+    if (!entry || typeof entry !== "object") return;
+    const nameKey = normalizeNameKey(entry.nameKey || entry.name || "");
+    const identity = nameKey ? `${entry.isAdmin ? "admin" : "resident"}:${nameKey}` : `raw:${key}`;
+    if (!groups.has(identity)) groups.set(identity, []);
+    groups.get(identity).push({ key, entry });
+  });
+  const out = {};
+  groups.forEach((items) => {
+    if (items.length === 1) {
+      const { key, entry } = items[0];
+      out[String(entry.userId || key)] = entry;
+      return;
+    }
+    const newest = [...items].sort((a, b) => parseSeen(b.entry.lastSeen) - parseSeen(a.entry.lastSeen))[0].entry;
+    const canonicalUserId = items.map((it) => String(it.entry.userId || it.key)).sort()[0];
+    const lots = Array.from(
+      new Set(items.flatMap((it) => (Array.isArray(it.entry.lots) ? it.entry.lots : [])).filter(Boolean))
+    );
+    out[canonicalUserId] = {
+      ...newest,
+      userId: canonicalUserId,
+      nameKey: normalizeNameKey(newest.nameKey || newest.name || ""),
+      isAdmin: items.some((it) => !!it.entry.isAdmin),
+      lots,
+      lastSeen: newest.lastSeen,
+    };
+  });
+  return out;
 };
 
 const migrateLegacyVoteStorageLots = () => {
@@ -5552,18 +5597,20 @@ export default function App() {
     if (!profile?.name) return;
     const profileLots = profile.isAdmin ? ["ADMIN"] : normalizeUserLots(profile).filter((lot) => lot !== "ADMIN");
     const userId = profile.userId || `usr_${normalizeNameKey(profile.name)}`;
-    setUserDirectory((prev) => ({
-      ...prev,
-      [userId]: {
-        userId,
-        name: profile.name,
-        nameKey: normalizeNameKey(profile.name),
-        isAdmin: !!profile.isAdmin,
-        accessRole: profile.isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(profile.accessRole),
-        lots: profileLots,
-        lastSeen: todayLabel(),
-      },
-    }));
+    setUserDirectory((prev) =>
+      dedupeUserDirectory({
+        ...prev,
+        [userId]: {
+          userId,
+          name: profile.name,
+          nameKey: normalizeNameKey(profile.name),
+          isAdmin: !!profile.isAdmin,
+          accessRole: profile.isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(profile.accessRole),
+          lots: profileLots,
+          lastSeen: todayLabel(),
+        },
+      })
+    );
   };
 
   const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null, options = {}) => {
