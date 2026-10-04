@@ -1695,7 +1695,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
           </div>
           <div style={{ marginTop:8, fontSize:12, color:C.muted, lineHeight:1.55 }}>
-            Resident accounts: <strong>{stats.registeredUsers}</strong> registered · <strong>{stats.engagedUsers}</strong> engaged (commented or voted) · <strong>{stats.totalVotesCast}</strong> votes recorded.
+            Account holders: <strong>{stats.registeredUsers}</strong> registered · <strong>{stats.engagedUsers}</strong> engaged (commented or voted) · <strong>{stats.totalVotesCast}</strong> votes recorded.
           </div>
         </div>
         <div style={S.card}>
@@ -5027,7 +5027,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
       <div style={S.card}>
         <div style={S.cardTitle}>Resident registration and engagement (accounts)</div>
         <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>
-          Registered users are resident accounts on file. Engaged users have commented or cast at least one lot vote.
+          Registered users are account holders on file (residents and lot-owning admins). Engaged users have commented or cast at least one lot vote.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
           {[
@@ -7009,20 +7009,23 @@ export default function App() {
   const nonEligibleVotedLotsCount = allLotLabels.filter(
     (lot) => eligibilityState?.[lot]?.eligible === false && !!(voteLedger[lot] || store.get(`vote_${lot}`))
   ).length;
-  const residentDirectoryMap = new Map();
+  // Count every distinct registered account holder — residents and admins who
+  // also own lots (e.g. an owner who administers the portal). Keyed by identity
+  // so one person is counted once regardless of role.
+  const accountDirectoryMap = new Map();
   Object.values(userDirectory || {}).forEach((entry) => {
-    if (!entry || typeof entry !== "object" || entry.isAdmin) return;
-    const key = String(entry.userId || normalizeNameKey(entry.name) || "").trim();
-    if (!key || residentDirectoryMap.has(key)) return;
-    residentDirectoryMap.set(key, entry);
+    if (!entry || typeof entry !== "object") return;
+    const key = normalizeNameKey(entry.name) || String(entry.userId || "").trim();
+    if (!key || accountDirectoryMap.has(key)) return;
+    accountDirectoryMap.set(key, entry);
   });
-  if (user && !user.isAdmin) {
-    const currentKey = String(user.userId || normalizeNameKey(user.name) || "").trim();
-    if (currentKey && !residentDirectoryMap.has(currentKey)) {
-      residentDirectoryMap.set(currentKey, user);
+  if (user) {
+    const currentKey = normalizeNameKey(user.name) || String(user.userId || "").trim();
+    if (currentKey && !accountDirectoryMap.has(currentKey)) {
+      accountDirectoryMap.set(currentKey, user);
     }
   }
-  const residentDirectoryRows = Array.from(residentDirectoryMap.values());
+  const residentDirectoryRows = Array.from(accountDirectoryMap.values());
   const hasUserEngagement = (profile) => {
     const profileLots = normalizeUserLots(profile).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
     if (profileLots.some((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`) || ownerActivity?.[lot]?.commented))) {
