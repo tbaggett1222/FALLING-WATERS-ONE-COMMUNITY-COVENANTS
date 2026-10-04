@@ -386,9 +386,6 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, cre
   }
 
   const serialized = serializeBackup(backup || {});
-  const shouldTrackSnapshot = trackSnapshot !== false;
-  const safeSnapshotKeepCount = Math.max(0, Number(snapshotKeepCount) || 0);
-  let prunedSnapshots = 0;
 
   await withClient(async (client) => {
     await client.query("BEGIN");
@@ -404,7 +401,6 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, cre
         if (config.includesAssets) {
           await applyAssets(client, serialized.assets, normalizedMode);
         }
-        await markScopeSynced(client, scope, normalizedMode);
       }
 
       if (shouldCreateSnapshot) {

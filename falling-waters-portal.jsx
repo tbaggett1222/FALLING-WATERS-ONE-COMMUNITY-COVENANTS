@@ -2759,6 +2759,15 @@ function CommentsPage({ user, comments, onAdd, onUpdate, onDelete }) {
                 <label style={S.label}>Your comment</label>
                 <textarea style={S.textarea} placeholder="Share your perspective, concerns, or questions. Min 20 characters." value={text} onChange={e=>setText(e.target.value)}/>
                 <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>Commenting as {user.name} · {user.lot}</div>
+                {text.trim().length < 20 ? (
+                  <div style={{ fontSize:12, color:C.amber, marginTop:6 }}>
+                    {text.trim().length === 0
+                      ? "Enter at least 20 characters to enable the Post comment button."
+                      : `${20 - text.trim().length} more character${20 - text.trim().length === 1 ? "" : "s"} needed (minimum 20) to enable posting.`}
+                  </div>
+                ) : (
+                  <div style={{ fontSize:12, color:C.success, marginTop:6 }}>Ready to post.</div>
+                )}
               </div>
               <button type="submit" style={S.btn("primary")} disabled={submitting || text.trim().length < 20}>
                 {submitting ? "Posting…" : "Post comment →"}
@@ -3711,7 +3720,7 @@ function AdminVotingPage({
         primary_voter_records: Object.keys(primaryVoterRegistry || {}).length,
         primary_voter_transfer_audit_records: transferAuditRows.length,
         admin_access_entries: (Array.isArray(adminAccessEntries) ? adminAccessEntries : []).length,
-        admin_two_factor_enabled: Object.values(normalizedAdminTwoFactorRegistry).filter((entry) => entry?.enabled && entry?.secret).length,
+        admin_two_factor_enabled: Object.values(normalizeAdminTwoFactorRegistry(store.get(ADMIN_TWO_FACTOR_REGISTRY_KEY))).filter((entry) => entry?.enabled && entry?.secret).length,
         user_directory_records: Object.keys(userDirectory || {}).length,
         covenant_docs: covenantDocCount,
         raw_storage_keys_exported: storageKeys.length,
@@ -5223,7 +5232,11 @@ export default function App() {
   }, []);
 
   useEffect(() => { store.set("fw_votes", votes); }, [votes]);
-  useEffect(() => { store.set("fw_comments", comments); }, [comments]);
+  // Always-current snapshot of local comments so the shared-refresh flow can
+  // detect (and preserve) locally created comments that have not yet reached the
+  // database, instead of letting a full refresh silently drop them.
+  const commentsRef = useRef(comments);
+  useEffect(() => { store.set("fw_comments", comments); commentsRef.current = comments; }, [comments]);
   useEffect(() => {
     const deduped = mergeCommentsBySignature([], comments);
     if (deduped.length !== comments.length) {
@@ -6582,6 +6595,11 @@ export default function App() {
         setSharedDataBusy(true);
       }
 
+      // Snapshot local comments before a full (replace) refresh so we can rescue
+      // any that never made it to the database (e.g. a save that failed while the
+      // API was unavailable). Without this, the replace silently drops them.
+      const priorComments = Array.isArray(commentsRef.current) ? commentsRef.current : [];
+
       try {
         const apiResult = await callDbApi(refreshPath, { method: "GET" });
         const sharedRefresh = apiResult?.result || {};
@@ -6590,6 +6608,26 @@ export default function App() {
         if (restoreResult?.error) {
           if (!silent) setSharedDataErr(restoreResult.error);
           return restoreResult;
+        }
+
+        // A full refresh replaces the comment list with the database copy. Re-add
+        // any local comments the database doesn't have yet and re-queue them for
+        // sync, so unsynced comments are preserved and self-heal once the API is
+        // reachable again (rather than disappearing on reload).
+        if (!sharedRefresh.incremental && scopes?.comments && priorComments.length > 0) {
+          const incomingComments = Array.isArray(sharedRefresh.backup?.payload?.fw_comments)
+            ? sharedRefresh.backup.payload.fw_comments
+            : [];
+          const incomingIds = new Set(incomingComments.map((c) => String(c?.id)));
+          const localOnly = priorComments.filter((c) => c && c.id != null && !incomingIds.has(String(c.id)));
+          if (localOnly.length > 0) {
+            setComments((prev) => {
+              const seen = new Set((prev || []).map((c) => String(c?.id)));
+              const additions = localOnly.filter((c) => !seen.has(String(c.id)));
+              return additions.length > 0 ? [...additions, ...prev] : prev;
+            });
+            queueSharedChangesSync(["comments"], { mode: "replace" });
+          }
         }
 
         const nextSince = String(sharedRefresh.nextSince || sharedRefresh.refreshedAt || "").trim();
