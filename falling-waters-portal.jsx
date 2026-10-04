@@ -6775,8 +6775,15 @@ export default function App() {
       void runRefresh(false);
     };
 
-    // First refresh after login/session restore is a full baseline.
-    void runRefresh(true);
+    // First refresh after login/session restore is a full baseline. After it
+    // completes, re-stamp the current user's directory record so "last seen"
+    // reflects today's login — the refresh pulls the older synced record, which
+    // would otherwise mask the current sign-in — and persist that update.
+    void runRefresh(true).then(() => {
+      if (cancelled) return;
+      trackUserAccess(user);
+      queueSharedChangesSync(["userDirectory"], { mode: "merge" });
+    });
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
