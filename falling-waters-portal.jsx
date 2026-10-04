@@ -6297,6 +6297,9 @@ export default function App() {
     const nextOutreach = scopeFlags.outreach
       ? normalizeLotKeyedObjectState(mergeObjectState(outreachState, candidate.fw_outreach_state)).value
       : outreachState;
+    const nextUserDirectory = scopeFlags.userDirectory
+      ? normalizeUserDirectoryLotsState(mergeObjectState(userDirectory, candidate.fw_user_directory)).value
+      : userDirectory;
     const nextEligibility = scopeFlags.eligibility
       ? normalizeLotKeyedObjectState(mergeObjectState(eligibilityState, candidate.fw_vote_eligibility)).value
       : eligibilityState;
@@ -6368,12 +6371,7 @@ export default function App() {
       setPrimaryVoterTransferAudit(nextPrimaryTransferAudit);
     }
     if (scopeFlags.outreach) setOutreachState(nextOutreach);
-    if (scopeFlags.userDirectory) {
-      // Functional update merges against the latest state (not the stale closure),
-      // so a concurrent login update (today's "last seen") survives the shared
-      // refresh; dedupe keeps the most recent record per person.
-      setUserDirectory((prev) => normalizeUserDirectoryLotsState(mergeObjectState(prev, candidate.fw_user_directory)).value);
-    }
+    if (scopeFlags.userDirectory) setUserDirectory(nextUserDirectory);
     if (scopeFlags.eligibility) setEligibilityState(nextEligibility);
     if (scopeFlags.adminAccess) {
       setAdminAccessEntries(effectiveAdminEntries);
