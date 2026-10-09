@@ -502,7 +502,52 @@ const normalizeUserDirectoryLotsState = (value) => {
     next[key] = normalized.value;
     if (normalized.changed) changed = true;
   });
-  return { value: next, changed };
+  const deduped = dedupeUserDirectory(next);
+  if (Object.keys(deduped).length !== Object.keys(next).length) changed = true;
+  return { value: deduped, changed };
+};
+
+// Collapses duplicate directory records for the same person into one entry.
+// Each sign-in historically minted a fresh timestamped userId, so one person
+// could accumulate many rows; this merges them by identity (name + admin flag),
+// keeping the most recent "last seen", unioning lots, and using a stable
+// (lowest) userId so repeated logins update a single record instead of piling up.
+const dedupeUserDirectory = (directory) => {
+  const source = isPlainObject(directory) ? directory : {};
+  const parseSeen = (label) => {
+    const t = Date.parse(String(label || ""));
+    return Number.isNaN(t) ? 0 : t;
+  };
+  const groups = new Map();
+  Object.entries(source).forEach(([key, entry]) => {
+    if (!entry || typeof entry !== "object") return;
+    const nameKey = normalizeNameKey(entry.nameKey || entry.name || "");
+    const identity = nameKey ? `${entry.isAdmin ? "admin" : "resident"}:${nameKey}` : `raw:${key}`;
+    if (!groups.has(identity)) groups.set(identity, []);
+    groups.get(identity).push({ key, entry });
+  });
+  const out = {};
+  groups.forEach((items) => {
+    if (items.length === 1) {
+      const { key, entry } = items[0];
+      out[String(entry.userId || key)] = entry;
+      return;
+    }
+    const newest = [...items].sort((a, b) => parseSeen(b.entry.lastSeen) - parseSeen(a.entry.lastSeen))[0].entry;
+    const canonicalUserId = items.map((it) => String(it.entry.userId || it.key)).sort()[0];
+    const lots = Array.from(
+      new Set(items.flatMap((it) => (Array.isArray(it.entry.lots) ? it.entry.lots : [])).filter(Boolean))
+    );
+    out[canonicalUserId] = {
+      ...newest,
+      userId: canonicalUserId,
+      nameKey: normalizeNameKey(newest.nameKey || newest.name || ""),
+      isAdmin: items.some((it) => !!it.entry.isAdmin),
+      lots,
+      lastSeen: newest.lastSeen,
+    };
+  });
+  return out;
 };
 
 const migrateLegacyVoteStorageLots = () => {
@@ -1650,7 +1695,7 @@ function HomePage({ votes, stats, totalLots, votesNeeded }) {
             Portal-tracked engagement: <strong>{stats.loggedInLots}</strong> lots logged in · <strong>{stats.commentedLots}</strong> lots commented · <strong>{stats.votedLots}</strong> lots cast a portal vote.
           </div>
           <div style={{ marginTop:8, fontSize:12, color:C.muted, lineHeight:1.55 }}>
-            Resident accounts: <strong>{stats.registeredUsers}</strong> registered · <strong>{stats.engagedUsers}</strong> engaged (commented or voted) · <strong>{stats.totalVotesCast}</strong> votes recorded.
+            Account holders: <strong>{stats.registeredUsers}</strong> registered · <strong>{stats.engagedUsers}</strong> engaged (commented or voted) · <strong>{stats.totalVotesCast}</strong> votes recorded.
           </div>
         </div>
         <div style={S.card}>
@@ -4982,7 +5027,7 @@ function DashboardPage({ votes, comments, stats, totalLots, votesNeeded, operati
       <div style={S.card}>
         <div style={S.cardTitle}>Resident registration and engagement (accounts)</div>
         <div style={{ fontSize:12, color:C.muted, marginBottom:10 }}>
-          Registered users are resident accounts on file. Engaged users have commented or cast at least one lot vote.
+          Registered users are account holders on file (residents and lot-owning admins). Engaged users have commented or cast at least one lot vote.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
           {[
@@ -5552,18 +5597,20 @@ export default function App() {
     if (!profile?.name) return;
     const profileLots = profile.isAdmin ? ["ADMIN"] : normalizeUserLots(profile).filter((lot) => lot !== "ADMIN");
     const userId = profile.userId || `usr_${normalizeNameKey(profile.name)}`;
-    setUserDirectory((prev) => ({
-      ...prev,
-      [userId]: {
-        userId,
-        name: profile.name,
-        nameKey: normalizeNameKey(profile.name),
-        isAdmin: !!profile.isAdmin,
-        accessRole: profile.isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(profile.accessRole),
-        lots: profileLots,
-        lastSeen: todayLabel(),
-      },
-    }));
+    setUserDirectory((prev) =>
+      dedupeUserDirectory({
+        ...prev,
+        [userId]: {
+          userId,
+          name: profile.name,
+          nameKey: normalizeNameKey(profile.name),
+          isAdmin: !!profile.isAdmin,
+          accessRole: profile.isAdmin ? ACCESS_ROLES.primary : normalizeAccessRole(profile.accessRole),
+          lots: profileLots,
+          lastSeen: todayLabel(),
+        },
+      })
+    );
   };
 
   const reconcilePrimaryVoterRegistry = (candidateUser, previousUser = null, options = {}) => {
@@ -6728,8 +6775,15 @@ export default function App() {
       void runRefresh(false);
     };
 
-    // First refresh after login/session restore is a full baseline.
-    void runRefresh(true);
+    // First refresh after login/session restore is a full baseline. After it
+    // completes, re-stamp the current user's directory record so "last seen"
+    // reflects today's login — the refresh pulls the older synced record, which
+    // would otherwise mask the current sign-in — and persist that update.
+    void runRefresh(true).then(() => {
+      if (cancelled) return;
+      trackUserAccess(user);
+      queueSharedChangesSync(["userDirectory"], { mode: "merge" });
+    });
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -6955,20 +7009,23 @@ export default function App() {
   const nonEligibleVotedLotsCount = allLotLabels.filter(
     (lot) => eligibilityState?.[lot]?.eligible === false && !!(voteLedger[lot] || store.get(`vote_${lot}`))
   ).length;
-  const residentDirectoryMap = new Map();
+  // Count every distinct registered account holder — residents and admins who
+  // also own lots (e.g. an owner who administers the portal). Keyed by identity
+  // so one person is counted once regardless of role.
+  const accountDirectoryMap = new Map();
   Object.values(userDirectory || {}).forEach((entry) => {
-    if (!entry || typeof entry !== "object" || entry.isAdmin) return;
-    const key = String(entry.userId || normalizeNameKey(entry.name) || "").trim();
-    if (!key || residentDirectoryMap.has(key)) return;
-    residentDirectoryMap.set(key, entry);
+    if (!entry || typeof entry !== "object") return;
+    const key = normalizeNameKey(entry.name) || String(entry.userId || "").trim();
+    if (!key || accountDirectoryMap.has(key)) return;
+    accountDirectoryMap.set(key, entry);
   });
-  if (user && !user.isAdmin) {
-    const currentKey = String(user.userId || normalizeNameKey(user.name) || "").trim();
-    if (currentKey && !residentDirectoryMap.has(currentKey)) {
-      residentDirectoryMap.set(currentKey, user);
+  if (user) {
+    const currentKey = normalizeNameKey(user.name) || String(user.userId || "").trim();
+    if (currentKey && !accountDirectoryMap.has(currentKey)) {
+      accountDirectoryMap.set(currentKey, user);
     }
   }
-  const residentDirectoryRows = Array.from(residentDirectoryMap.values());
+  const residentDirectoryRows = Array.from(accountDirectoryMap.values());
   const hasUserEngagement = (profile) => {
     const profileLots = normalizeUserLots(profile).filter((lot) => lot !== "ADMIN" && allLotLabels.includes(lot));
     if (profileLots.some((lot) => !!(voteLedger[lot] || store.get(`vote_${lot}`) || ownerActivity?.[lot]?.commented))) {
