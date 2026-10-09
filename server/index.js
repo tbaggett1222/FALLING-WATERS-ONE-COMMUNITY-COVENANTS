@@ -297,18 +297,27 @@ app.post("/api/db/sync", async (req, res) => {
     const mode = body.mode || "replace";
     const scopes = normalizeScopes(body.scopes);
     const createSnapshot = body.createSnapshot === true;
+    const force = body.force === true;
     const result = await syncBackupToDatabase({
       backup,
       mode,
       scopes,
       createSnapshot,
+      force,
     });
+    const protectedScopes = Array.isArray(result?.protectedScopes) ? result.protectedScopes : [];
+    let message = createSnapshot
+      ? "PostgreSQL sync completed and a backup snapshot was recorded."
+      : "PostgreSQL sync completed.";
+    if (protectedScopes.length > 0) {
+      const names = protectedScopes.map((p) => p.scope).join(", ");
+      message += ` Protected from an empty "replace" (not wiped): ${names}. Re-send with force=true only if you intend to clear them.`;
+    }
     res.json({
       ok: true,
       result,
-      message: createSnapshot
-        ? "PostgreSQL sync completed and a backup snapshot was recorded."
-        : "PostgreSQL sync completed.",
+      protectedScopes,
+      message,
     });
   } catch (error) {
     res.status(400).json({ ok: false, error: error.message || "Could not sync data to PostgreSQL." });
