@@ -283,10 +283,23 @@ const serializeBackup = (backup) => {
   };
 };
 
-const applyStateValues = async (client, stateValues, keys, mode) => {
+const applyStateValues = async (client, stateValues, keys, mode, { force = false } = {}) => {
   const safeKeys = Array.isArray(keys) ? keys : [];
-  if (safeKeys.length === 0) return;
+  if (safeKeys.length === 0) return { skipped: false };
   if (mode === "replace") {
+    // Safety guard: refuse to delete populated state keys when the incoming
+    // payload provides none of them (e.g. an empty/partial browser doing a
+    // "replace"). This prevents an accidental wipe. Pass force to override.
+    const anyPresent = safeKeys.some((k) => Object.prototype.hasOwnProperty.call(stateValues || {}, k));
+    if (!anyPresent && !force) {
+      const existing = await client.query(
+        "SELECT COUNT(*)::int AS n FROM state_values WHERE key = ANY($1::text[])",
+        [safeKeys]
+      );
+      if (Number(existing.rows[0]?.n || 0) > 0) {
+        return { skipped: true, preserved: Number(existing.rows[0].n) };
+      }
+    }
     await client.query("DELETE FROM state_values WHERE key = ANY($1::text[])", [safeKeys]);
   }
   for (const key of safeKeys) {
@@ -309,10 +322,23 @@ const applyStateValues = async (client, stateValues, keys, mode) => {
       [key, JSON.stringify(value)]
     );
   }
+  return { skipped: false };
 };
 
-const applyScopeRows = async (client, scopeName, rows, mode) => {
+const applyScopeRows = async (client, scopeName, rows, mode, { force = false } = {}) => {
   if (mode === "replace") {
+    // Safety guard: do not wipe a populated scope with an empty "replace"
+    // payload (the failure mode that erased votes/primary voters). Pass force
+    // to override (e.g. an intentional clear).
+    if ((rows?.length || 0) === 0 && !force) {
+      const existing = await client.query(
+        "SELECT COUNT(*)::int AS n FROM scope_records WHERE scope = $1",
+        [scopeName]
+      );
+      if (Number(existing.rows[0]?.n || 0) > 0) {
+        return { skipped: true, scope: scopeName, preserved: Number(existing.rows[0].n) };
+      }
+    }
     await client.query("DELETE FROM scope_records WHERE scope = $1", [scopeName]);
   }
   for (const row of rows) {
@@ -342,10 +368,18 @@ const applyScopeRows = async (client, scopeName, rows, mode) => {
       [scopeName, rowId, Number.isInteger(row.position) ? row.position : null, JSON.stringify(row.data)]
     );
   }
+  return { skipped: false, scope: scopeName };
 };
 
-const applyAssets = async (client, assets, mode) => {
+const applyAssets = async (client, assets, mode, { force = false } = {}) => {
   if (mode === "replace") {
+    // Safety guard: do not wipe stored covenant files with an empty "replace".
+    if ((assets?.length || 0) === 0 && !force) {
+      const existing = await client.query("SELECT COUNT(*)::int AS n FROM covenant_assets");
+      if (Number(existing.rows[0]?.n || 0) > 0) {
+        return { skipped: true, scope: "covenantFiles", preserved: Number(existing.rows[0].n) };
+      }
+    }
     await client.query("DELETE FROM covenant_assets");
   }
   for (const asset of assets) {
@@ -375,17 +409,20 @@ const applyAssets = async (client, assets, mode) => {
       [asset.assetId, asset.fileName, asset.fileType, asset.updatedAtMs, asset.blobDataUrl]
     );
   }
+  return { skipped: false, scope: "covenantFiles" };
 };
 
-const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, createSnapshot = false }) => {
+const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, createSnapshot = false, force = false }) => {
   const normalizedMode = mode === "merge" || mode === "missing" ? mode : "replace";
   const normalizedScopes = normalizeScopes(scopes);
   const shouldCreateSnapshot = createSnapshot === true;
+  const forceReplace = force === true;
   if (!hasSelectedScope(normalizedScopes)) {
     throw new Error("At least one scope must be selected.");
   }
 
   const serialized = serializeBackup(backup || {});
+  const protectedScopes = [];
 
   await withClient(async (client) => {
     await client.query("BEGIN");
@@ -394,12 +431,15 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, cre
         if (!normalizedScopes[scope]) continue;
         const config = SCOPE_CONFIG[scope];
         if (!config) continue;
-        await applyStateValues(client, serialized.stateValues, config.stateKeys, normalizedMode);
+        const stateResult = await applyStateValues(client, serialized.stateValues, config.stateKeys, normalizedMode, { force: forceReplace });
+        if (stateResult?.skipped) protectedScopes.push({ scope: `${scope}:state`, preserved: stateResult.preserved });
         for (const recordScope of config.recordScopes) {
-          await applyScopeRows(client, recordScope, serialized.rowsByScope[recordScope] || [], normalizedMode);
+          const rowsResult = await applyScopeRows(client, recordScope, serialized.rowsByScope[recordScope] || [], normalizedMode, { force: forceReplace });
+          if (rowsResult?.skipped) protectedScopes.push({ scope: recordScope, preserved: rowsResult.preserved });
         }
         if (config.includesAssets) {
-          await applyAssets(client, serialized.assets, normalizedMode);
+          const assetResult = await applyAssets(client, serialized.assets, normalizedMode, { force: forceReplace });
+          if (assetResult?.skipped) protectedScopes.push({ scope: "covenantFiles", preserved: assetResult.preserved });
         }
       }
 
@@ -430,6 +470,7 @@ const syncBackupToDatabase = async ({ backup, mode = "replace", scopes = {}, cre
     mode: normalizedMode,
     scopes: normalizedScopes,
     snapshotCreated: shouldCreateSnapshot,
+    protectedScopes,
   };
 };
 
